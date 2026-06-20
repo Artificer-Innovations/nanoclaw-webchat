@@ -140,6 +140,15 @@ function latestWebSocket<T extends { instances: MockWebSocket[] }>(MockWebSocket
   return ws;
 }
 
+async function waitForWebSocket<T extends { instances: MockWebSocket[] }>(
+  MockWebSocket: T,
+): Promise<MockWebSocket> {
+  await waitFor(() => {
+    expect(MockWebSocket.instances.length).toBeGreaterThan(0);
+  });
+  return latestWebSocket(MockWebSocket);
+}
+
 function messageText(text: string): HTMLElement {
   const node = document.querySelector('.msg');
   if (!node?.textContent?.includes(text)) {
@@ -167,6 +176,7 @@ describe('App', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     cleanup();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
@@ -490,7 +500,7 @@ describe('App', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'Lobby' });
 
-    const ws = latestWebSocket(MockWebSocket);
+    const ws = await waitForWebSocket(MockWebSocket);
     ws.onmessage?.({
       data: JSON.stringify({ type: 'message', message: messageFixture }),
     } as MessageEvent);
@@ -508,7 +518,7 @@ describe('App', () => {
     render(<App />);
     await screen.findByText('Agent reply');
 
-    const ws = latestWebSocket(MockWebSocket);
+    const ws = await waitForWebSocket(MockWebSocket);
     await act(async () => {
       ws.onmessage?.({
         data: JSON.stringify({ type: 'message', message: messageFixture }),
@@ -524,7 +534,7 @@ describe('App', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'Lobby' });
 
-    const ws = latestWebSocket(MockWebSocket);
+    const ws = await waitForWebSocket(MockWebSocket);
     ws.onmessage?.({
       data: JSON.stringify({ type: 'message', message: messageFixture }),
     } as MessageEvent);
@@ -549,7 +559,7 @@ describe('App', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'Lobby' });
 
-    const ws = latestWebSocket(MockWebSocket);
+    const ws = await waitForWebSocket(MockWebSocket);
     ws.onmessage?.({
       data: JSON.stringify({
         type: 'message',
@@ -587,7 +597,7 @@ describe('App', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'Lobby' });
 
-    const ws = latestWebSocket(MockWebSocket);
+    const ws = await waitForWebSocket(MockWebSocket);
     ws.onmessage?.({
       data: JSON.stringify({
         type: 'message',
@@ -612,7 +622,7 @@ describe('App', () => {
     await user.click(screen.getByRole('button', { name: 'Sarah' }));
     expect(await screen.findByRole('heading', { name: 'Sarah' })).toBeInTheDocument();
 
-    const ws = latestWebSocket(MockWebSocket);
+    const ws = await waitForWebSocket(MockWebSocket);
     ws.onmessage?.({
       data: JSON.stringify({ type: 'message', message: messageFixture }),
     } as MessageEvent);
@@ -653,7 +663,7 @@ describe('App', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'Lobby' });
 
-    const ws = latestWebSocket(MockWebSocket);
+    const ws = await waitForWebSocket(MockWebSocket);
     await act(async () => {
       ws.onopen?.();
       await Promise.resolve();
@@ -701,7 +711,7 @@ describe('App', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'Lobby' });
 
-    const ws = latestWebSocket(MockWebSocket);
+    const ws = await waitForWebSocket(MockWebSocket);
     const callsBeforeOpen = fetchMessagesSpy.mock.calls.length;
     await act(async () => {
       ws.onopen?.();
@@ -738,7 +748,7 @@ describe('App', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'Lobby' });
 
-    const ws = latestWebSocket(MockWebSocket);
+    const ws = await waitForWebSocket(MockWebSocket);
     await act(async () => {
       ws.onopen?.();
       await Promise.resolve();
@@ -768,7 +778,7 @@ describe('App', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'Lobby' });
 
-    const ws = latestWebSocket(MockWebSocket);
+    const ws = await waitForWebSocket(MockWebSocket);
     const inactiveMessage = { ...messageFixture, id: 'msg-dm', platformId: 'dm-sarah' };
     ws.onmessage?.({
       data: JSON.stringify({ type: 'message', message: inactiveMessage }),
@@ -794,7 +804,7 @@ describe('App', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'Lobby' });
 
-    const ws = latestWebSocket(MockWebSocket);
+    const ws = await waitForWebSocket(MockWebSocket);
     await act(async () => {
       ws.onopen?.();
       await Promise.resolve();
@@ -823,7 +833,7 @@ describe('App', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'Lobby' });
 
-    const ws = latestWebSocket(MockWebSocket);
+    const ws = await waitForWebSocket(MockWebSocket);
     ws.onmessage?.({
       data: JSON.stringify({
         type: 'message',
@@ -910,7 +920,7 @@ describe('App', () => {
     const { unmount } = render(<App />);
     await screen.findByRole('heading', { name: 'Lobby' });
 
-    const ws = latestWebSocket(MockWebSocket);
+    const ws = await waitForWebSocket(MockWebSocket);
     unmount();
 
     expect(ws.close).toHaveBeenCalled();
@@ -1015,7 +1025,9 @@ describe('App', () => {
 
     resolveBootstrap(jsonResponse(bootstrapFixture));
     await screen.findByRole('heading', { name: 'Lobby' });
-    expect(MockWebSocket.instances.length).toBeGreaterThan(0);
+    await waitFor(() => {
+      expect(MockWebSocket.instances.length).toBeGreaterThan(0);
+    });
   });
 
   it('omits the extra @team suffix when @team is not configured', async () => {
