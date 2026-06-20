@@ -39,7 +39,16 @@ Returns in-memory history for a thread (ring buffer, newest last).
       "timestamp": 1710000000000,
       "platformId": "lobby",
       "threadId": "thread_abc",
-      "senderName": "Sarah"
+      "senderName": "Sarah",
+      "attachments": [
+        {
+          "name": "screenshot.png",
+          "mimeType": "image/png",
+          "type": "image",
+          "size": 12345,
+          "data": "<base64>"
+        }
+      ]
     }
   ]
 }
@@ -47,7 +56,25 @@ Returns in-memory history for a thread (ring buffer, newest last).
 
 ### `POST /api/rooms/:platformId/threads/:threadId/messages`
 
-Body: `{ "text": "message body" }`
+Body:
+
+```json
+{
+  "text": "optional caption",
+  "attachments": [
+    {
+      "name": "screenshot.png",
+      "mimeType": "image/png",
+      "type": "image",
+      "data": "<base64>"
+    }
+  ]
+}
+```
+
+- `text` is optional when `attachments` is non-empty.
+- Max 4 attachments per message; max 5 MB decoded per attachment.
+- Any file type is accepted; MIME type may be inferred from the filename when omitted.
 
 Response: `{ "messageId": "web-123", "timestamp": 1710000000000 }`
 
@@ -67,7 +94,16 @@ Push events (server → client):
     "timestamp": 1710000000000,
     "platformId": "lobby",
     "threadId": "thread_abc",
-    "senderName": "Sarah"
+    "senderName": "Sarah",
+    "attachments": [
+      {
+        "name": "report.pdf",
+        "mimeType": "application/pdf",
+        "type": "file",
+        "size": 54321,
+        "data": "<base64>"
+      }
+    ]
   }
 }
 ```

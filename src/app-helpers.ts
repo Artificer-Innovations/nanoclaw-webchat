@@ -32,8 +32,9 @@ export function canSendMessage(
   room: WebChatRoom | null,
   draft: string,
   sending: boolean,
+  attachmentCount = 0,
 ): room is WebChatRoom {
-  return Boolean(token && room && draft.trim() && !sending);
+  return Boolean(token && room && !sending && (draft.trim() || attachmentCount > 0));
 }
 
 export function canCreateThread(room: WebChatRoom | null): room is WebChatRoom {

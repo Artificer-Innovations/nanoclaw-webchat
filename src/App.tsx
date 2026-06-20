@@ -17,10 +17,18 @@ import {
   unreadKey,
   updateSyncCursor,
 } from './app-helpers';
+import {
+  readAttachmentFiles,
+  removePendingAtIndex,
+  revokeAttachmentPreviews,
+  toSendAttachments,
+  type PendingAttachment,
+} from './attachments';
+import { MessageAttachments } from './MessageAttachments';
 import { formatMessageTime } from './format-message-time';
 import { FormattedMessage } from './FormattedMessage';
 import { messageSenderLabel } from './message-sender';
-import { SendArrowIcon } from './nav-icons';
+import { SendArrowIcon, PlusIcon } from './nav-icons';
 import { senderColor } from './sender-color';
 import { SidebarSection } from './SidebarRoom';
 import { ThemeToggle } from './ThemeToggle';
@@ -59,9 +67,14 @@ export function App() {
   const [messages, setMessages] = useState<WebChatMessage[]>([]);
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
   const [draft, setDraft] = useState('');
+  const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
+  const [composerDragOver, setComposerDragOver] = useState(false);
   const [sending, setSending] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const pendingAttachmentsRef = useRef(pendingAttachments);
+  pendingAttachmentsRef.current = pendingAttachments;
   const roomRef = useRef(room);
   const threadIdRef = useRef(threadId);
   const threadsByRoomRef = useRef(threadsByRoom);
@@ -211,7 +224,13 @@ export function App() {
 
   useEffect(() => {
     resizeComposer();
-  }, [draft, resizeComposer]);
+  }, [draft, pendingAttachments.length, resizeComposer]);
+
+  useEffect(() => {
+    return () => {
+      revokeAttachmentPreviews(pendingAttachmentsRef.current);
+    };
+  }, []);
 
   const agentsHint = useMemo(() => {
     if (!bootstrap?.agents.length) return '';
@@ -246,15 +265,18 @@ export function App() {
   );
 
   const handleSend = async () => {
-    if (!canSendMessage(token, room, draft, sending)) return;
+    if (!canSendMessage(token, room, draft, sending, pendingAttachments.length)) return;
     setSending(true);
     setError(null);
     const text = draft.trim();
+    const attachments = toSendAttachments(pendingAttachments);
     const hadNoMessages = messages.length === 0;
     const activeRoom = room;
     const activeThread = threadId;
     const activeThreads = threadsFromState(threadsByRoom, activeRoom.platformId);
     setDraft('');
+    revokeAttachmentPreviews(pendingAttachments);
+    setPendingAttachments([]);
     const optimistic: WebChatMessage = {
       id: `local-${Date.now()}`,
       direction: 'inbound',
@@ -262,10 +284,17 @@ export function App() {
       timestamp: Date.now(),
       platformId: activeRoom.platformId,
       threadId: activeThread,
+      ...(attachments.length > 0 ? { attachments } : {}),
     };
     setMessages((prev) => [...prev, optimistic]);
     try {
-      await sendMessage(token, activeRoom.platformId, activeThread, text);
+      await sendMessage(
+        token,
+        activeRoom.platformId,
+        activeThread,
+        text,
+        attachments.length > 0 ? attachments : undefined,
+      );
       if (hadNoMessages && activeThread !== 'main') {
         const thread = activeThreads.find((t) => t.id === activeThread);
         if (thread && isAutoThreadTitle(thread.title)) {
@@ -280,6 +309,37 @@ export function App() {
     } finally {
       setSending(false);
     }
+  };
+
+  const addPendingFiles = async (files: FileList | File[] | null) => {
+    if (!files || files.length === 0) return;
+    try {
+      const next = await readAttachmentFiles(files, pendingAttachments.length);
+      if (next.length === 0) return;
+      setPendingAttachments((prev) => [...prev, ...next]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'attachment failed');
+    }
+  };
+
+  const handleRemovePendingAttachment = (index: number) => {
+    setPendingAttachments((prev) => removePendingAtIndex(prev, index));
+  };
+
+  const handleComposerDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setComposerDragOver(true);
+  };
+
+  const handleComposerDragLeave = (e: React.DragEvent) => {
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+    setComposerDragOver(false);
+  };
+
+  const handleComposerDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setComposerDragOver(false);
+    void addPendingFiles(e.dataTransfer.files);
   };
 
   const handleSelectRoomMain = (targetRoom: WebChatRoom) => {
@@ -430,7 +490,10 @@ export function App() {
                   {sender}
                 </span>
                 <div className="msg-text">
-                  <FormattedMessage text={m.text} />
+                  {m.attachments && m.attachments.length > 0 && (
+                    <MessageAttachments attachments={m.attachments} />
+                  )}
+                  {m.text.trim() ? <FormattedMessage text={m.text} /> : null}
                 </div>
               </div>
             );
@@ -439,8 +502,58 @@ export function App() {
         </div>
 
         <div className="composer">
-          <div className="composer-box">
+          <div
+            className={`composer-box${composerDragOver ? ' is-dragover' : ''}`}
+            onDragOver={handleComposerDragOver}
+            onDragLeave={handleComposerDragLeave}
+            onDrop={handleComposerDrop}
+          >
+            {pendingAttachments.length > 0 && (
+              <div className="composer-previews">
+                {pendingAttachments.map((att, index) => (
+                  <div
+                    key={`${att.name}-${index}`}
+                    className={`composer-preview${att.type === 'file' ? ' composer-preview-file' : ''}`}
+                  >
+                    {att.type === 'image' ? (
+                      <img src={att.previewUrl} alt={att.name} />
+                    ) : (
+                      <span className="composer-preview-name" title={att.name}>
+                        {att.name}
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      className="composer-preview-remove"
+                      aria-label={`Remove ${att.name}`}
+                      onClick={() => handleRemovePendingAttachment(index)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
             <div className="composer-input-row">
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                hidden
+                onChange={(e) => {
+                  void addPendingFiles(e.target.files);
+                  e.target.value = '';
+                }}
+              />
+              <button
+                type="button"
+                className="composer-attach"
+                aria-label="Attach file"
+                disabled={sending || pendingAttachments.length >= 4}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <PlusIcon />
+              </button>
               <textarea
                 ref={composerRef}
                 rows={1}
@@ -462,7 +575,7 @@ export function App() {
                 type="button"
                 className="composer-send"
                 aria-label="Send message"
-                disabled={sending || !draft.trim()}
+                disabled={sending || !canSendMessage(token, room, draft, sending, pendingAttachments.length)}
                 onClick={() => void handleSend()}
               >
                 <SendArrowIcon />

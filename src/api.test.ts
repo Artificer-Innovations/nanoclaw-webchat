@@ -161,6 +161,29 @@ describe('api', () => {
       });
     });
 
+    it('includes attachments in the POST body when provided', async () => {
+      vi.mocked(fetch).mockResolvedValue({ ok: true } as Response);
+      const attachments = [
+        {
+          name: 'photo.png',
+          mimeType: 'image/png',
+          type: 'image' as const,
+          data: 'abc',
+        },
+      ];
+
+      await sendMessage('secret', 'lobby-1', 'main', '', attachments);
+
+      expect(fetch).toHaveBeenCalledWith('/api/rooms/lobby-1/threads/main/messages', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer secret',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ text: '', attachments }),
+      });
+    });
+
     it('throws when send request fails', async () => {
       vi.mocked(fetch).mockResolvedValue({ ok: false, status: 403 } as Response);
 
