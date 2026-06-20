@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { ThreadMeta } from './api';
+import type { ThreadMeta } from './types';
 import { formatUnreadCount, formatUnreadAriaLabel, getUnreadCount } from './app-helpers';
 import {
   BotIcon,

@@ -1,7 +1,10 @@
-import type { ThreadMeta } from './api';
+import type { ThreadMeta } from './types';
 import type { BootstrapPayload, WebChatMessage, WebChatRoom } from './types';
+import { createThread, loadLegacyThreads, removeLegacyThread } from './api';
 
 export const SEEN_MESSAGE_IDS_MAX = 1000;
+
+export const DEFAULT_ROOM_THREADS: ThreadMeta[] = [{ id: 'main', title: 'Main' }];
 
 export function resolveActiveThreadTitle(
   threads: ThreadMeta[] | undefined,
@@ -17,6 +20,10 @@ export function threadsFromState(
   platformId: string,
 ): ThreadMeta[] {
   return threadsByRoom[platformId] ?? [];
+}
+
+export function defaultRoomThreads(_platformId: string): ThreadMeta[] {
+  return DEFAULT_ROOM_THREADS;
 }
 
 export function threadsForRoom(
@@ -49,6 +56,69 @@ export function shouldAppendMessage(
 ): boolean {
   if (messages.some((m) => m.id === message.id)) return false;
   return isActiveConversation(message, room, threadId);
+}
+
+export function dedupeMessagesById(messages: WebChatMessage[]): WebChatMessage[] {
+  const seen = new Set<string>();
+  return messages.filter((m) => {
+    if (seen.has(m.id)) return false;
+    seen.add(m.id);
+    return true;
+  });
+}
+
+export function takePendingOptimisticId(queue: string[] | undefined): {
+  optimisticId: string | null;
+  remaining: string[];
+} {
+  if (!queue?.length) return { optimisticId: null, remaining: [] };
+  const [optimisticId, ...remaining] = queue;
+  return { optimisticId, remaining };
+}
+
+export function dropPendingOptimisticId(
+  pendingByThread: Record<string, string[]>,
+  platformId: string,
+  threadId: string,
+  optimisticId: string,
+): void {
+  const key = unreadKey(platformId, threadId);
+  const queue = pendingByThread[key];
+  if (!queue) return;
+  const next = queue.filter((id) => id !== optimisticId);
+  if (next.length) pendingByThread[key] = next;
+  else delete pendingByThread[key];
+}
+
+export function applyLiveMessage(
+  prev: WebChatMessage[],
+  message: WebChatMessage,
+  room: WebChatRoom | null,
+  threadId: string,
+  pendingOptimisticId: string | null,
+): WebChatMessage[] {
+  if (!isActiveConversation(message, room, threadId)) return prev;
+  const withoutOptimistic = pendingOptimisticId
+    ? prev.filter((m) => m.id !== pendingOptimisticId)
+    : prev;
+  if (withoutOptimistic.some((m) => m.id === message.id)) {
+    return withoutOptimistic;
+  }
+  return [...withoutOptimistic, message];
+}
+
+export function reconcileOptimisticMessage(
+  prev: WebChatMessage[],
+  optimisticId: string,
+  sent: { messageId: string; timestamp: number },
+): WebChatMessage[] {
+  if (prev.some((m) => m.id === sent.messageId)) {
+    return dedupeMessagesById(prev.filter((m) => m.id !== optimisticId));
+  }
+  const next = prev.map((m) =>
+    m.id === optimisticId ? { ...m, id: sent.messageId, timestamp: sent.timestamp } : m,
+  );
+  return dedupeMessagesById(next);
 }
 
 /** Separator avoids collisions when platformId contains ":" (e.g. dm:rahul). */
@@ -246,4 +316,48 @@ export async function syncInactiveUnread(
   }
 
   return { counts: nextCounts, syncCursor: nextCursor };
+}
+
+export function appendThreadToRoomMap(
+  prev: Record<string, ThreadMeta[]>,
+  platformId: string,
+  thread: ThreadMeta,
+): Record<string, ThreadMeta[]> {
+  const base = prev[platformId] ?? DEFAULT_ROOM_THREADS;
+  return {
+    ...prev,
+    [platformId]: [...base, thread],
+  };
+}
+
+export async function migrateLegacyThreads(
+  token: string,
+  rooms: WebChatRoom[],
+  baseMap: Record<string, ThreadMeta[]>,
+): Promise<Record<string, ThreadMeta[]>> {
+  const map = { ...baseMap };
+  for (const room of rooms) {
+    try {
+      const legacy = loadLegacyThreads(room.platformId);
+      if (legacy.length === 0) continue;
+
+      const server = map[room.platformId] ?? DEFAULT_ROOM_THREADS;
+      const next = [...server];
+      const results = await Promise.allSettled(
+        legacy.map((thread) => createThread(token, room.platformId, thread.title)),
+      );
+
+      results.forEach((result, index) => {
+        if (result.status === 'fulfilled') {
+          next.push(result.value);
+          removeLegacyThread(room.platformId, legacy[index]!.id);
+        }
+      });
+
+      map[room.platformId] = next;
+    } catch {
+      // best-effort per room — bootstrap should not fail on migration
+    }
+  }
+  return map;
 }

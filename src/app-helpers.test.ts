@@ -1,10 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
+import * as api from './api';
 import {
   activeUnreadKey,
+  appendThreadToRoomMap,
+  applyLiveMessage,
+  dedupeMessagesById,
   applyUnreadFromMessages,
   canCreateThread,
   canSendMessage,
   clearUnread,
+  DEFAULT_ROOM_THREADS,
   formatUnreadCount,
   formatUnreadAriaLabel,
   getUnreadCount,
@@ -12,6 +17,10 @@ import {
   isActiveConversation,
   markMessagesSeen,
   mergeUnreadDeltas,
+  migrateLegacyThreads,
+  reconcileOptimisticMessage,
+  dropPendingOptimisticId,
+  defaultRoomThreads,
   resolveActiveThreadTitle,
   seedSyncCursors,
   shouldAppendMessage,
@@ -379,6 +388,167 @@ describe('app-helpers', () => {
         ),
       ).resolves.toEqual({ counts: {}, syncCursor: { 'dm-sarah|main': 0 } });
       expect(fetchMessagesFn).toHaveBeenCalledWith('token', 'dm-sarah', 'main', 0);
+    });
+  });
+
+  describe('defaultRoomThreads', () => {
+    it('returns the default main thread list', () => {
+      expect(defaultRoomThreads('lobby-1')).toEqual(DEFAULT_ROOM_THREADS);
+    });
+  });
+
+  describe('appendThreadToRoomMap', () => {
+    it('appends to default threads when the room is missing from the map', () => {
+      expect(
+        appendThreadToRoomMap({}, 'lobby-1', { id: 'thread_1', title: 'Thread 1' }),
+      ).toEqual({
+        'lobby-1': [...DEFAULT_ROOM_THREADS, { id: 'thread_1', title: 'Thread 1' }],
+      });
+    });
+  });
+
+  describe('applyLiveMessage', () => {
+    it('ignores messages for other conversations', () => {
+      expect(applyLiveMessage([], message, null, 'main', null)).toEqual([]);
+    });
+
+    it('appends when there is no pending optimistic message', () => {
+      expect(applyLiveMessage([], message, room, 'main', null)).toEqual([message]);
+    });
+
+    it('replaces a pending optimistic message instead of duplicating the websocket echo', () => {
+      const optimistic = { ...message, id: 'local-1', direction: 'inbound' as const, text: 'hello' };
+      const persisted = { ...message, id: 'web-1', direction: 'inbound' as const, text: 'hello' };
+      expect(
+        applyLiveMessage([optimistic], persisted, room, 'main', 'local-1'),
+      ).toEqual([persisted]);
+    });
+
+    it('dedupes when the persisted message is already present', () => {
+      const persisted = { ...message, id: 'web-1', direction: 'inbound' as const, text: 'hello' };
+      expect(applyLiveMessage([persisted], persisted, room, 'main', 'local-1')).toEqual([persisted]);
+    });
+  });
+
+  describe('dedupeMessagesById', () => {
+    it('removes later messages that share an id', () => {
+      const first = { ...message, id: 'web-1' };
+      const second = { ...message, id: 'web-1', text: 'duplicate' };
+      expect(dedupeMessagesById([first, second])).toEqual([first]);
+    });
+  });
+
+  describe('dropPendingOptimisticId', () => {
+    it('no-ops when the thread queue is missing', () => {
+      const pending: Record<string, string[]> = {};
+      dropPendingOptimisticId(pending, 'lobby-1', 'main', 'local-1');
+      expect(pending).toEqual({});
+    });
+
+    it('removes the queue entry when the last pending id is dropped', () => {
+      const pending: Record<string, string[]> = { 'lobby-1|main': ['local-1'] };
+      dropPendingOptimisticId(pending, 'lobby-1', 'main', 'local-1');
+      expect(pending).toEqual({});
+    });
+
+    it('keeps remaining pending ids when dropping one of several', () => {
+      const pending: Record<string, string[]> = { 'lobby-1|main': ['local-1', 'local-2'] };
+      dropPendingOptimisticId(pending, 'lobby-1', 'main', 'local-1');
+      expect(pending).toEqual({ 'lobby-1|main': ['local-2'] });
+    });
+  });
+
+  describe('reconcileOptimisticMessage', () => {
+    it('updates the optimistic row when the server message is not already present', () => {
+      const optimistic = { ...message, id: 'local-1', direction: 'inbound' as const, text: 'hello' };
+      expect(
+        reconcileOptimisticMessage([optimistic], 'local-1', { messageId: 'web-1', timestamp: 2 }),
+      ).toEqual([{ ...optimistic, id: 'web-1', timestamp: 2 }]);
+    });
+
+    it('dedupes when websocket echo arrived before the POST response', () => {
+      const optimistic = { ...message, id: 'local-1', direction: 'inbound' as const, text: 'hello' };
+      const echoed = { ...message, id: 'web-1', direction: 'inbound' as const, text: 'hello' };
+      expect(
+        reconcileOptimisticMessage([optimistic, echoed], 'local-1', {
+          messageId: 'web-1',
+          timestamp: 2,
+        }),
+      ).toEqual([echoed]);
+    });
+  });
+
+  describe('migrateLegacyThreads', () => {
+    it('uses default threads when the base map omits a room', async () => {
+      localStorage.setItem(
+        'webchat_threads:lobby-1',
+        JSON.stringify([{ id: 'thread_legacy', title: 'Legacy topic' }]),
+      );
+      vi.spyOn(api, 'createThread').mockResolvedValue({ id: 'thread_new', title: 'Legacy topic' });
+
+      const result = await migrateLegacyThreads('token', [room], {});
+
+      expect(result['lobby-1']).toEqual([
+        ...DEFAULT_ROOM_THREADS,
+        { id: 'thread_new', title: 'Legacy topic' },
+      ]);
+      expect(localStorage.getItem('webchat_threads:lobby-1')).toBeNull();
+    });
+
+    it('removes only successfully migrated threads from localStorage', async () => {
+      localStorage.setItem(
+        'webchat_threads:lobby-1',
+        JSON.stringify([
+          { id: 'thread_a', title: 'A' },
+          { id: 'thread_b', title: 'B' },
+        ]),
+      );
+      vi.spyOn(api, 'createThread').mockImplementation(async (_token, _room, title) => {
+        if (title === 'B') throw new Error('server error');
+        return { id: `thread_${title}`, title };
+      });
+
+      const result = await migrateLegacyThreads('token', [room], {});
+
+      expect(result['lobby-1']).toEqual([
+        ...DEFAULT_ROOM_THREADS,
+        { id: 'thread_A', title: 'A' },
+      ]);
+      expect(JSON.parse(localStorage.getItem('webchat_threads:lobby-1')!)).toEqual([
+        { id: 'thread_b', title: 'B' },
+      ]);
+    });
+
+    it('retries remaining legacy threads even when the server already has child threads', async () => {
+      localStorage.setItem(
+        'webchat_threads:lobby-1',
+        JSON.stringify([{ id: 'thread_b', title: 'B' }]),
+      );
+      const serverThreads = [
+        ...DEFAULT_ROOM_THREADS,
+        { id: 'thread_A', title: 'A' },
+      ];
+      vi.spyOn(api, 'createThread').mockResolvedValue({ id: 'thread_B', title: 'B' });
+
+      const result = await migrateLegacyThreads('token', [room], { 'lobby-1': serverThreads });
+
+      expect(result['lobby-1']).toEqual([
+        ...serverThreads,
+        { id: 'thread_B', title: 'B' },
+      ]);
+      expect(localStorage.getItem('webchat_threads:lobby-1')).toBeNull();
+    });
+
+    it('does not throw when migration fails', async () => {
+      localStorage.setItem(
+        'webchat_threads:lobby-1',
+        JSON.stringify([{ id: 'thread_a', title: 'A' }]),
+      );
+      vi.spyOn(api, 'createThread').mockRejectedValue(new Error('network'));
+
+      const base = { 'lobby-1': DEFAULT_ROOM_THREADS };
+      await expect(migrateLegacyThreads('token', [room], base)).resolves.toEqual(base);
+      expect(localStorage.getItem('webchat_threads:lobby-1')).not.toBeNull();
     });
   });
 });

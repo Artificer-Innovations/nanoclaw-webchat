@@ -8,6 +8,7 @@ export interface WebChatRoom {
   name: string;
   kind: 'lobby' | 'dm';
   folder?: string;
+  threads?: ThreadMeta[];
 }
 
 export interface WebChatAgent {
@@ -20,6 +21,16 @@ export interface BootstrapPayload {
   user: WebChatUser;
   rooms: WebChatRoom[];
   agents: WebChatAgent[];
+}
+
+export interface ThreadMeta {
+  id: string;
+  title: string;
+}
+
+export interface SendMessageResult {
+  messageId: string;
+  timestamp: number;
 }
 
 export interface WebChatAttachment {

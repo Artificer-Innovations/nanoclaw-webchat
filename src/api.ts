@@ -1,4 +1,4 @@
-import type { BootstrapPayload, WebChatAttachment, WebChatMessage, WsEvent } from './types';
+import type { BootstrapPayload, SendMessageResult, ThreadMeta, WebChatAttachment, WebChatMessage, WsEvent } from './types';
 
 const DEFAULT_WEBCHAT_API_TARGET = 'http://127.0.0.1:3200';
 
@@ -51,7 +51,7 @@ export async function sendMessage(
   threadId: string,
   text: string,
   attachments?: WebChatAttachment[],
-): Promise<void> {
+): Promise<SendMessageResult> {
   const path = `/api/rooms/${encodeURIComponent(platformId)}/threads/${encodeURIComponent(threadId)}/messages`;
   const body: { text: string; attachments?: WebChatAttachment[] } = { text };
   if (attachments?.length) body.attachments = attachments;
@@ -61,6 +61,51 @@ export async function sendMessage(
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`send failed: ${res.status}`);
+  return res.json() as Promise<SendMessageResult>;
+}
+
+export async function createThread(
+  token: string,
+  platformId: string,
+  title: string,
+): Promise<ThreadMeta> {
+  const path = `/api/rooms/${encodeURIComponent(platformId)}/threads`;
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: { ...authHeaders(token), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title }),
+  });
+  if (!res.ok) throw new Error(`create thread failed: ${res.status}`);
+  return res.json() as Promise<ThreadMeta>;
+}
+
+export async function renameThread(
+  token: string,
+  platformId: string,
+  threadId: string,
+  title: string,
+): Promise<ThreadMeta> {
+  const path = `/api/rooms/${encodeURIComponent(platformId)}/threads/${encodeURIComponent(threadId)}`;
+  const res = await fetch(path, {
+    method: 'PATCH',
+    headers: { ...authHeaders(token), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title }),
+  });
+  if (!res.ok) throw new Error(`rename thread failed: ${res.status}`);
+  return res.json() as Promise<ThreadMeta>;
+}
+
+export async function deleteThread(
+  token: string,
+  platformId: string,
+  threadId: string,
+): Promise<void> {
+  const path = `/api/rooms/${encodeURIComponent(platformId)}/threads/${encodeURIComponent(threadId)}`;
+  const res = await fetch(path, {
+    method: 'DELETE',
+    headers: authHeaders(token),
+  });
+  if (!res.ok) throw new Error(`delete thread failed: ${res.status}`);
 }
 
 export interface WebSocketConnection {
@@ -138,26 +183,36 @@ export function storeToken(token: string): void {
   sessionStorage.setItem('webchat_token', token);
 }
 
-export function newThreadId(): string {
-  return `thread_${crypto.randomUUID()}`;
-}
-
-export interface ThreadMeta {
-  id: string;
-  title: string;
-}
-
-export function loadThreads(roomKey: string): ThreadMeta[] {
+/** One-time migration: read legacy browser thread list. */
+export function loadLegacyThreads(roomKey: string): ThreadMeta[] {
   try {
     const raw = localStorage.getItem(`webchat_threads:${roomKey}`);
-    if (!raw) return [{ id: 'main', title: 'Main' }];
+    if (!raw) return [];
     const parsed = JSON.parse(raw) as ThreadMeta[];
-    return parsed.length > 0 ? parsed : [{ id: 'main', title: 'Main' }];
+    return parsed.filter((t) => t.id !== 'main');
   } catch {
-    return [{ id: 'main', title: 'Main' }];
+    return [];
   }
 }
 
-export function saveThreads(roomKey: string, threads: ThreadMeta[]): void {
-  localStorage.setItem(`webchat_threads:${roomKey}`, JSON.stringify(threads));
+export function clearLegacyThreads(roomKey: string): void {
+  localStorage.removeItem(`webchat_threads:${roomKey}`);
+}
+
+/** Remove one migrated thread from legacy storage so partial migration can retry the rest. */
+export function removeLegacyThread(roomKey: string, threadId: string): void {
+  try {
+    const raw = localStorage.getItem(`webchat_threads:${roomKey}`);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as ThreadMeta[];
+    const next = parsed.filter((t) => t.id !== threadId);
+    const withoutMain = next.filter((t) => t.id !== 'main');
+    if (withoutMain.length === 0) {
+      localStorage.removeItem(`webchat_threads:${roomKey}`);
+    } else {
+      localStorage.setItem(`webchat_threads:${roomKey}`, JSON.stringify(next));
+    }
+  } catch {
+    // ignore corrupt storage
+  }
 }

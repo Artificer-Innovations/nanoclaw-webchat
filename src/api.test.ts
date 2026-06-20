@@ -1,13 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  clearLegacyThreads,
   connectWebSocket,
+  createThread,
+  deleteThread,
   fetchBootstrap,
   fetchMessages,
   getStoredToken,
-  loadThreads,
-  newThreadId,
+  loadLegacyThreads,
+  removeLegacyThread,
+  renameThread,
   resolveWebSocketUrl,
-  saveThreads,
   sendMessage,
   storeToken,
 } from './api';
@@ -16,8 +19,8 @@ import type { BootstrapPayload, WebChatMessage, WsEvent } from './types';
 const bootstrapFixture: BootstrapPayload = {
   user: { id: 'u1', displayName: 'Test User' },
   rooms: [
-    { platformId: 'lobby-1', name: 'Lobby', kind: 'lobby' },
-    { platformId: 'dm-sarah', name: 'Sarah', kind: 'dm', folder: 'sarah' },
+    { platformId: 'lobby-1', name: 'Lobby', kind: 'lobby', threads: [{ id: 'main', title: 'Main' }] },
+    { platformId: 'dm-sarah', name: 'Sarah', kind: 'dm', folder: 'sarah', threads: [{ id: 'main', title: 'Main' }] },
   ],
   agents: [{ folder: 'sarah', name: 'Sarah', mention: '@sarah' }],
 };
@@ -147,9 +150,14 @@ describe('api', () => {
 
   describe('sendMessage', () => {
     it('posts message payload with JSON content type', async () => {
-      vi.mocked(fetch).mockResolvedValue({ ok: true } as Response);
+      vi.mocked(fetch).mockResolvedValue({
+        ok: true,
+        json: async () => ({ messageId: 'web-123', timestamp: 1_700_000_000_000 }),
+      } as Response);
 
-      await sendMessage('secret', 'lobby-1', 'main', 'hello');
+      const result = await sendMessage('secret', 'lobby-1', 'main', 'hello');
+
+      expect(result).toEqual({ messageId: 'web-123', timestamp: 1_700_000_000_000 });
 
       expect(fetch).toHaveBeenCalledWith('/api/rooms/lobby-1/threads/main/messages', {
         method: 'POST',
@@ -162,7 +170,10 @@ describe('api', () => {
     });
 
     it('includes attachments in the POST body when provided', async () => {
-      vi.mocked(fetch).mockResolvedValue({ ok: true } as Response);
+      vi.mocked(fetch).mockResolvedValue({
+        ok: true,
+        json: async () => ({ messageId: 'web-123', timestamp: 1_700_000_000_000 }),
+      } as Response);
       const attachments = [
         {
           name: 'photo.png',
@@ -537,19 +548,12 @@ describe('api', () => {
     });
   });
 
-  describe('newThreadId', () => {
-    it('returns a thread id prefixed with thread_', () => {
-      vi.stubGlobal('crypto', { randomUUID: () => 'abc-123' });
-      expect(newThreadId()).toBe('thread_abc-123');
-    });
-  });
-
-  describe('loadThreads', () => {
-    it('returns default main thread when storage is empty', () => {
-      expect(loadThreads('lobby-1')).toEqual([{ id: 'main', title: 'Main' }]);
+  describe('loadLegacyThreads', () => {
+    it('returns empty list when storage is empty', () => {
+      expect(loadLegacyThreads('lobby-1')).toEqual([]);
     });
 
-    it('returns stored threads when valid data exists', () => {
+    it('returns non-main threads from storage', () => {
       localStorage.setItem(
         'webchat_threads:lobby-1',
         JSON.stringify([
@@ -558,31 +562,135 @@ describe('api', () => {
         ]),
       );
 
-      expect(loadThreads('lobby-1')).toEqual([
-        { id: 'main', title: 'Main' },
-        { id: 'thread_1', title: 'Thread 1' },
-      ]);
+      expect(loadLegacyThreads('lobby-1')).toEqual([{ id: 'thread_1', title: 'Thread 1' }]);
     });
 
-    it('returns default main thread when stored list is empty', () => {
-      localStorage.setItem('webchat_threads:lobby-1', JSON.stringify([]));
-      expect(loadThreads('lobby-1')).toEqual([{ id: 'main', title: 'Main' }]);
-    });
-
-    it('returns default main thread when stored JSON is invalid', () => {
+    it('returns empty list when stored JSON is invalid', () => {
       localStorage.setItem('webchat_threads:lobby-1', '{bad json');
-      expect(loadThreads('lobby-1')).toEqual([{ id: 'main', title: 'Main' }]);
+      expect(loadLegacyThreads('lobby-1')).toEqual([]);
     });
   });
 
-  describe('saveThreads', () => {
-    it('persists threads for a room key', () => {
-      const threads = [
-        { id: 'main', title: 'Main' },
-        { id: 'thread_2', title: 'Thread 2' },
-      ];
-      saveThreads('lobby-1', threads);
-      expect(localStorage.getItem('webchat_threads:lobby-1')).toBe(JSON.stringify(threads));
+  describe('clearLegacyThreads', () => {
+    it('removes legacy storage key', () => {
+      localStorage.setItem('webchat_threads:lobby-1', '[]');
+      clearLegacyThreads('lobby-1');
+      expect(localStorage.getItem('webchat_threads:lobby-1')).toBeNull();
+    });
+  });
+
+  describe('removeLegacyThread', () => {
+    it('removes one thread and clears storage when only main remains', () => {
+      localStorage.setItem(
+        'webchat_threads:lobby-1',
+        JSON.stringify([
+          { id: 'main', title: 'Main' },
+          { id: 'thread_1', title: 'One' },
+        ]),
+      );
+      removeLegacyThread('lobby-1', 'thread_1');
+      expect(localStorage.getItem('webchat_threads:lobby-1')).toBeNull();
+    });
+
+    it('keeps remaining threads in storage', () => {
+      localStorage.setItem(
+        'webchat_threads:lobby-1',
+        JSON.stringify([
+          { id: 'thread_1', title: 'One' },
+          { id: 'thread_2', title: 'Two' },
+        ]),
+      );
+      removeLegacyThread('lobby-1', 'thread_1');
+      expect(JSON.parse(localStorage.getItem('webchat_threads:lobby-1')!)).toEqual([
+        { id: 'thread_2', title: 'Two' },
+      ]);
+    });
+
+    it('ignores corrupt legacy storage', () => {
+      localStorage.setItem('webchat_threads:lobby-1', '{bad json');
+      removeLegacyThread('lobby-1', 'thread_1');
+      expect(localStorage.getItem('webchat_threads:lobby-1')).toBe('{bad json');
+    });
+
+    it('is a no-op when legacy storage is missing', () => {
+      removeLegacyThread('lobby-1', 'thread_1');
+      expect(localStorage.getItem('webchat_threads:lobby-1')).toBeNull();
+    });
+  });
+
+  describe('createThread', () => {
+    it('POSTs thread title to the server', async () => {
+      const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
+        expect(input).toBe('/api/rooms/lobby-1/threads');
+        expect(init?.method).toBe('POST');
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ id: 'thread_abc', title: 'Topic' }),
+        } as Response;
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      const thread = await createThread('token', 'lobby-1', 'Topic');
+      expect(thread).toEqual({ id: 'thread_abc', title: 'Topic' });
+    });
+
+    it('throws when the server rejects the request', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => ({ ok: false, status: 500, json: async () => null }) as Response),
+      );
+      await expect(createThread('token', 'lobby-1', 'Topic')).rejects.toThrow('create thread failed: 500');
+    });
+  });
+
+  describe('renameThread', () => {
+    it('PATCHes thread title to the server', async () => {
+      const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
+        expect(input).toBe('/api/rooms/lobby-1/threads/thread_b');
+        expect(init?.method).toBe('PATCH');
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ id: 'thread_b', title: 'Renamed' }),
+        } as Response;
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      const thread = await renameThread('token', 'lobby-1', 'thread_b', 'Renamed');
+      expect(thread).toEqual({ id: 'thread_b', title: 'Renamed' });
+    });
+
+    it('throws when the server rejects the request', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => ({ ok: false, status: 403, json: async () => null }) as Response),
+      );
+      await expect(renameThread('token', 'lobby-1', 'thread_b', 'Renamed')).rejects.toThrow(
+        'rename thread failed: 403',
+      );
+    });
+  });
+
+  describe('deleteThread', () => {
+    it('DELETEs thread on the server', async () => {
+      const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
+        expect(input).toBe('/api/rooms/lobby-1/threads/thread_b');
+        expect(init?.method).toBe('DELETE');
+        return { ok: true, status: 204, json: async () => null } as Response;
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      await deleteThread('token', 'lobby-1', 'thread_b');
+      expect(fetchMock).toHaveBeenCalledOnce();
+    });
+
+    it('throws when the server rejects the request', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => ({ ok: false, status: 404, json: async () => null }) as Response),
+      );
+      await expect(deleteThread('token', 'lobby-1', 'thread_b')).rejects.toThrow('delete thread failed: 404');
     });
   });
 });

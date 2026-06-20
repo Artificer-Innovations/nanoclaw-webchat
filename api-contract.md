@@ -10,14 +10,25 @@ Local-only HTTP + WebSocket interface between the browser UI and a NanoClaw `web
 
 ### `GET /api/bootstrap`
 
-Returns rooms and agents for the sidebar.
+Returns rooms (with thread lists), agents, and user identity for the sidebar.
 
 ```json
 {
   "user": { "id": "web:local", "displayName": "Local" },
   "rooms": [
-    { "platformId": "lobby", "name": "Lobby", "kind": "lobby" },
-    { "platformId": "dm:sarah", "name": "Sarah", "kind": "dm", "folder": "sarah" }
+    {
+      "platformId": "lobby",
+      "name": "Lobby",
+      "kind": "lobby",
+      "threads": [{ "id": "main", "title": "Main" }, { "id": "thread_abc", "title": "Topic" }]
+    },
+    {
+      "platformId": "dm:sarah",
+      "name": "Sarah",
+      "kind": "dm",
+      "folder": "sarah",
+      "threads": [{ "id": "main", "title": "Main" }]
+    }
   ],
   "agents": [
     { "folder": "sarah", "name": "Sarah", "mention": "@sarah" }
@@ -25,9 +36,29 @@ Returns rooms and agents for the sidebar.
 }
 ```
 
+### `POST /api/rooms/:platformId/threads`
+
+Create a new thread. Body: `{ "title": "Thread 1" }` (title optional, defaults server-side).
+
+Response: `{ "id": "thread_<uuid>", "title": "Thread 1" }`
+
+### `PATCH /api/rooms/:platformId/threads/:threadId`
+
+Rename a thread. Body: `{ "title": "New title" }`
+
+Response: `{ "id": "thread_abc", "title": "New title" }`
+
+### `DELETE /api/rooms/:platformId/threads/:threadId`
+
+Delete a thread and its persisted messages. The `main` thread cannot be deleted (HTTP 400).
+
+Response: `{ "ok": true }`
+
+Also removes matching agent sessions for that thread when containers are not running.
+
 ### `GET /api/rooms/:platformId/threads/:threadId/messages?since=<ms>`
 
-Returns in-memory history for a thread (ring buffer, newest last).
+Returns persisted history for a thread from `data/webchat.db` (newest last).
 
 ```json
 {
@@ -46,7 +77,7 @@ Returns in-memory history for a thread (ring buffer, newest last).
           "mimeType": "image/png",
           "type": "image",
           "size": 12345,
-          "data": "<base64>"
+          "url": "/api/attachments/web-out-123/0-screenshot.png"
         }
       ]
     }
@@ -78,15 +109,13 @@ Body:
 
 Response: `{ "messageId": "web-123", "timestamp": 1710000000000 }`
 
+### `GET /api/attachments/:messageId/:filename`
+
+Returns stored attachment bytes for messages persisted in `webchat.db`. Auth required via `Authorization: Bearer` or `?token=<secret>` query parameter (same as WebSocket). The UI appends `?token=` when rendering `<img src>` and download links because those requests cannot send headers.
+
 ### Attachment payloads in history and WebSocket
 
-Today, `data` (base64) is included on attachments in `GET .../messages` and WS push events so the UI can render without extra round trips. This is acceptable for low-volume personal webchat but does not scale: a full history fetch can return very large JSON when many attachments are buffered in memory.
-
-Planned escape hatch (not required for v1):
-
-- Adapters may expose `GET /api/attachments/:id` (or similar) and populate `url` on history/WS attachments instead of repeating `data`.
-- Client sends still use inline `data`; the server stores the blob once and returns `url` on reads.
-- Adapters may omit `data` from history/WS responses above a size threshold once `url` is available.
+Client sends still use inline `data` (base64). The server stores files once and returns `url` on history and WebSocket reads. WS pushes may still include `data` for immediate outbound display when not yet re-read from storage.
 
 ## WebSocket
 
@@ -111,7 +140,7 @@ Push events (server → client):
         "mimeType": "application/pdf",
         "type": "file",
         "size": 54321,
-        "data": "<base64>"
+        "url": "/api/attachments/web-out-123/0-report.pdf"
       }
     ]
   }
@@ -127,7 +156,7 @@ Optional typing events:
 ## Thread IDs
 
 - Lobby main channel: `main`
-- New threads: client-generated `thread_<uuid>`
+- New threads: server-generated `thread_<uuid>` via `POST .../threads`
 - DM rooms: same convention
 
 ## Platform IDs
@@ -138,3 +167,7 @@ Optional typing events:
 | `dm:<folder>` | 1:1 room with one agent |
 
 Channel type is always `web` on the NanoClaw host side.
+
+## Persistence
+
+Thread metadata and message history are stored in `data/webchat.db` on the host. Survives browser refresh and host restart. Attachment files live under `data/webchat/files/`.

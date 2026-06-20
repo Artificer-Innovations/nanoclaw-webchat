@@ -1,3 +1,4 @@
+import { getStoredToken } from './api';
 import type { WebChatAttachment } from './types';
 
 export const MAX_ATTACHMENTS = 4;
@@ -149,9 +150,29 @@ export function mergePendingAttachments(
   return { attachments: [...prev, ...accepted], dropped };
 }
 
-export function attachmentDataUrl(att: WebChatAttachment): string | null {
-  if (!att.data) return null;
-  return `data:${att.mimeType};base64,${att.data}`;
+export function isSafeAttachmentUrl(url: string): boolean {
+  if (!url.startsWith('/api/attachments/')) return false;
+  if (url.includes('://') || url.startsWith('//')) return false;
+  const lowered = url.toLowerCase();
+  if (lowered.includes('javascript:') || lowered.includes('data:')) return false;
+  return true;
+}
+
+function attachmentUrlWithAuth(path: string, token: string): string {
+  if (!token) return path;
+  const sep = path.includes('?') ? '&' : '?';
+  return `${path}${sep}token=${encodeURIComponent(token)}`;
+}
+
+export function attachmentDataUrl(att: WebChatAttachment, token?: string): string | null {
+  if (att.data) {
+    return `data:${att.mimeType};base64,${att.data}`;
+  }
+  if (att.url && isSafeAttachmentUrl(att.url)) {
+    const authToken = token ?? getStoredToken();
+    return attachmentUrlWithAuth(att.url, authToken);
+  }
+  return null;
 }
 
 export function attachmentToBlob(att: WebChatAttachment): Blob | null {
@@ -166,7 +187,13 @@ export function attachmentToBlob(att: WebChatAttachment): Blob | null {
 }
 
 /** Open attachment content in a new tab (blob URL — data: URIs are blocked in new tabs). */
-export function openAttachmentInNewTab(att: WebChatAttachment): boolean {
+export function openAttachmentInNewTab(att: WebChatAttachment, token?: string): boolean {
+  if (att.url && isSafeAttachmentUrl(att.url)) {
+    const authToken = token ?? getStoredToken();
+    const url = attachmentUrlWithAuth(att.url, authToken);
+    const tab = window.open(url, '_blank', 'noopener,noreferrer');
+    return tab !== null;
+  }
   const blob = attachmentToBlob(att);
   if (!blob) return false;
   const url = URL.createObjectURL(blob);

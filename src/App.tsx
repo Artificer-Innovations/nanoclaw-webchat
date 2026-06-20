@@ -1,21 +1,28 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   activeUnreadKey,
+  applyLiveMessage,
   canSendMessage,
   clearUnread,
+  DEFAULT_ROOM_THREADS,
   incrementUnread,
   isActiveConversation,
   markMessagesSeen,
   mergeUnreadDeltas,
+  migrateLegacyThreads,
+  reconcileOptimisticMessage,
   resolveActiveThreadTitle,
   seedSyncCursors,
-  shouldAppendMessage,
   syncInactiveUnread,
+  takePendingOptimisticId,
+  dropPendingOptimisticId,
   threadsForRoom,
   threadsFromState,
   trackSeenMessageId,
   unreadKey,
   updateSyncCursor,
+  appendThreadToRoomMap,
+  defaultRoomThreads,
 } from './app-helpers';
 import {
   formatAttachmentRejections,
@@ -36,24 +43,23 @@ import { senderColor } from './sender-color';
 import { SidebarSection } from './SidebarRoom';
 import { ThemeToggle } from './ThemeToggle';
 import { defaultThreadTitle, isAutoThreadTitle, titleFromMessage } from './thread-names';
-import type { BootstrapPayload, WebChatMessage, WebChatRoom } from './types';
+import type { BootstrapPayload, ThreadMeta, WebChatMessage, WebChatRoom } from './types';
 import {
   connectWebSocket,
+  createThread,
+  deleteThread,
   fetchBootstrap,
   fetchMessages,
   getStoredToken,
-  loadThreads,
-  newThreadId,
-  saveThreads,
+  renameThread,
   sendMessage,
   storeToken,
-  type ThreadMeta,
 } from './api';
 
-function buildThreadsMap(rooms: WebChatRoom[]): Record<string, ThreadMeta[]> {
+function threadsMapFromRooms(rooms: WebChatRoom[]): Record<string, ThreadMeta[]> {
   const map: Record<string, ThreadMeta[]> = {};
   for (const room of rooms) {
-    map[room.platformId] = loadThreads(room.platformId);
+    map[room.platformId] = room.threads?.length ? room.threads : [...DEFAULT_ROOM_THREADS];
   }
   return map;
 }
@@ -85,13 +91,20 @@ export function App() {
   const syncCursorRef = useRef<Record<string, number>>({});
   const syncInFlightRef = useRef(false);
   const skipNextIntervalSyncRef = useRef(false);
+  const pendingOptimisticByThreadRef = useRef<Record<string, string[]>>({});
   roomRef.current = room;
   threadIdRef.current = threadId;
   threadsByRoomRef.current = threadsByRoom;
 
   const loadBootstrap = useCallback(async (authToken: string) => {
     const data = await fetchBootstrap(authToken);
-    const threadsMap = buildThreadsMap(data.rooms);
+    const baseThreads = threadsMapFromRooms(data.rooms);
+    let threadsMap = baseThreads;
+    try {
+      threadsMap = await migrateLegacyThreads(authToken, data.rooms, baseThreads);
+    } catch {
+      // migration is best-effort; bootstrap already succeeded
+    }
     setBootstrap(data);
     setThreadsByRoom(threadsMap);
     setUnreadCounts({});
@@ -180,10 +193,28 @@ export function App() {
           msg.timestamp,
         );
         if (isActiveConversation(msg, roomRef.current, threadIdRef.current)) {
+          let pendingId: string | null = null;
+          if (msg.direction === 'inbound') {
+            const key = unreadKey(msg.platformId, msg.threadId);
+            const queues = pendingOptimisticByThreadRef.current;
+            const { optimisticId, remaining } = takePendingOptimisticId(queues[key]);
+            pendingId = optimisticId;
+            if (optimisticId) {
+              if (remaining.length) queues[key] = remaining;
+              else delete queues[key];
+            }
+          }
           setMessages((prev) => {
-            if (!shouldAppendMessage(prev, msg, roomRef.current, threadIdRef.current)) return prev;
+            const next = applyLiveMessage(
+              prev,
+              msg,
+              roomRef.current,
+              threadIdRef.current,
+              pendingId,
+            );
+            if (next === prev) return prev;
             trackSeenMessageId(seenIds, msg.id);
-            return [...prev, msg];
+            return next;
           });
           setUnreadCounts((counts) =>
             clearUnread(counts, msg.platformId, msg.threadId),
@@ -258,9 +289,8 @@ export function App() {
   const updateThreadsForRoom = useCallback(
     (platformId: string, updater: (threads: ThreadMeta[]) => ThreadMeta[]) => {
       setThreadsByRoom((prev) => {
-        const current = threadsForRoom(prev, platformId, loadThreads);
+        const current = threadsForRoom(prev, platformId, defaultRoomThreads);
         const next = updater(current);
-        saveThreads(platformId, next);
         return { ...prev, [platformId]: next };
       });
     },
@@ -280,8 +310,9 @@ export function App() {
     setDraft('');
     revokeAttachmentPreviews(pendingAttachments);
     setPendingAttachments([]);
+    const optimisticId = `local-${Date.now()}`;
     const optimistic: WebChatMessage = {
-      id: `local-${Date.now()}`,
+      id: optimisticId,
       direction: 'inbound',
       text,
       timestamp: Date.now(),
@@ -290,24 +321,54 @@ export function App() {
       ...(attachments.length > 0 ? { attachments } : {}),
     };
     setMessages((prev) => [...prev, optimistic]);
+    const threadKey = unreadKey(activeRoom.platformId, activeThread);
+    pendingOptimisticByThreadRef.current[threadKey] = [
+      ...(pendingOptimisticByThreadRef.current[threadKey] ?? []),
+      optimisticId,
+    ];
     try {
-      await sendMessage(
+      const sent = await sendMessage(
         token,
         activeRoom.platformId,
         activeThread,
         text,
         attachments.length > 0 ? attachments : undefined,
       );
+      dropPendingOptimisticId(
+        pendingOptimisticByThreadRef.current,
+        activeRoom.platformId,
+        activeThread,
+        optimisticId,
+      );
+      trackSeenMessageId(seenMessageIdsRef.current, sent.messageId);
+      setMessages((prev) => reconcileOptimisticMessage(prev, optimisticId, sent));
+      syncCursorRef.current = updateSyncCursor(
+        syncCursorRef.current,
+        activeRoom.platformId,
+        activeThread,
+        sent.timestamp,
+      );
       if (hadNoMessages && activeThread !== 'main') {
         const thread = activeThreads.find((t) => t.id === activeThread);
         if (thread && isAutoThreadTitle(thread.title)) {
           const autoTitle = titleFromMessage(text);
-          updateThreadsForRoom(activeRoom.platformId, (list) =>
-            list.map((t) => (t.id === activeThread ? { ...t, title: autoTitle } : t)),
-          );
+          try {
+            await renameThread(token, activeRoom.platformId, activeThread, autoTitle);
+            updateThreadsForRoom(activeRoom.platformId, (list) =>
+              list.map((t) => (t.id === activeThread ? { ...t, title: autoTitle } : t)),
+            );
+          } catch {
+            // title sync is best-effort
+          }
         }
       }
     } catch (err) {
+      dropPendingOptimisticId(
+        pendingOptimisticByThreadRef.current,
+        activeRoom.platformId,
+        activeThread,
+        optimisticId,
+      );
       setError(err instanceof Error ? err.message : 'send failed');
     } finally {
       setSending(false);
@@ -387,41 +448,54 @@ export function App() {
     });
   };
 
-  const handleNewThread = (targetRoom: WebChatRoom) => {
-    const current = threadsForRoom(threadsByRoom, targetRoom.platformId, loadThreads);
-    const id = newThreadId();
+  const handleNewThread = async (targetRoom: WebChatRoom) => {
+    const current = threadsForRoom(threadsByRoom, targetRoom.platformId, defaultRoomThreads);
     const childCount = current.filter((t) => t.id !== 'main').length;
-    const next = [...current, { id, title: defaultThreadTitle(childCount) }];
-    saveThreads(targetRoom.platformId, next);
-    setThreadsByRoom((prev) => ({ ...prev, [targetRoom.platformId]: next }));
-    setExpandedRooms((prev) => new Set(prev).add(targetRoom.platformId));
-    syncCursorRef.current = updateSyncCursor(
-      syncCursorRef.current,
-      targetRoom.platformId,
-      id,
-      Date.now(),
-    );
-    roomRef.current = targetRoom;
-    threadIdRef.current = id;
-    setRoom(targetRoom);
-    setThreadId(id);
-    setMessages([]);
-  };
-
-  const handleRenameThread = (targetRoom: WebChatRoom, thread: ThreadMeta, title: string) => {
-    const trimmed = title.trim();
-    updateThreadsForRoom(targetRoom.platformId, (list) =>
-      list.map((t) => (t.id === thread.id ? { ...t, title: trimmed } : t)),
-    );
-  };
-
-  const handleDeleteThread = (targetRoom: WebChatRoom, thread: ThreadMeta) => {
-    updateThreadsForRoom(targetRoom.platformId, (list) => list.filter((t) => t.id !== thread.id));
-    setUnreadCounts((counts) => clearUnread(counts, targetRoom.platformId, thread.id));
-    if (room && room.platformId === targetRoom.platformId && threadId === thread.id) {
-      threadIdRef.current = 'main';
-      setThreadId('main');
+    const title = defaultThreadTitle(childCount);
+    try {
+      const created = await createThread(token, targetRoom.platformId, title);
+      setThreadsByRoom((prev) => appendThreadToRoomMap(prev, targetRoom.platformId, created));
+      setExpandedRooms((prev) => new Set(prev).add(targetRoom.platformId));
+      syncCursorRef.current = updateSyncCursor(
+        syncCursorRef.current,
+        targetRoom.platformId,
+        created.id,
+        Date.now(),
+      );
+      roomRef.current = targetRoom;
+      threadIdRef.current = created.id;
+      setRoom(targetRoom);
+      setThreadId(created.id);
       setMessages([]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'create thread failed');
+    }
+  };
+
+  const handleRenameThread = async (targetRoom: WebChatRoom, thread: ThreadMeta, title: string) => {
+    const trimmed = title.trim();
+    try {
+      await renameThread(token, targetRoom.platformId, thread.id, trimmed);
+      updateThreadsForRoom(targetRoom.platformId, (list) =>
+        list.map((t) => (t.id === thread.id ? { ...t, title: trimmed } : t)),
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'rename thread failed');
+    }
+  };
+
+  const handleDeleteThread = async (targetRoom: WebChatRoom, thread: ThreadMeta) => {
+    try {
+      await deleteThread(token, targetRoom.platformId, thread.id);
+      updateThreadsForRoom(targetRoom.platformId, (list) => list.filter((t) => t.id !== thread.id));
+      setUnreadCounts((counts) => clearUnread(counts, targetRoom.platformId, thread.id));
+      if (room && room.platformId === targetRoom.platformId && threadId === thread.id) {
+        threadIdRef.current = 'main';
+        setThreadId('main');
+        setMessages([]);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'delete thread failed');
     }
   };
 
