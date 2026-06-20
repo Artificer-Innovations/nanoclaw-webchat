@@ -184,6 +184,22 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1;
+}
+
+.nav-unread-badge {
+  flex-shrink: 0;
+  margin-left: auto;
+  min-width: 18px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--bg);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
 }
 
 .nav-item:hover {
@@ -290,7 +306,9 @@ body {
 .nav-thread-item {
   flex: 1;
   min-width: 0;
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   text-align: left;
   border: none;
   border-right: 2px solid transparent;
@@ -300,12 +318,17 @@ body {
   font-size: 13px;
   cursor: pointer;
   font: inherit;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   transition:
     background 0.15s,
     color 0.15s;
+}
+
+.nav-thread-item-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1;
 }
 
 .nav-thread-item:hover {
@@ -793,6 +816,21 @@ body {
     justify-content: center;
     padding: 10px 0;
     gap: 0;
+  }
+
+  .nav-room-item {
+    position: relative;
+  }
+
+  .nav-unread-badge {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    margin-left: 0;
+    min-width: 14px;
+    padding: 0 4px;
+    font-size: 9px;
+    line-height: 14px;
   }
 
   .sidebar-footer {

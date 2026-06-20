@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import * as api from './api';
 import { App } from './App';
@@ -106,10 +106,21 @@ function createFetchMock(handlers: {
 
 function createWebSocketMock(onOpen?: (ws: MockWebSocket) => void) {
   class MockWebSocketImpl {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    static CLOSING = 2;
+    static CLOSED = 3;
     static instances: MockWebSocketImpl[] = [];
     url: string;
+    readyState = MockWebSocketImpl.OPEN;
     onmessage: ((ev: MessageEvent) => void) | null = null;
-    close = vi.fn();
+    onopen: (() => void) | null = null;
+    onclose: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    close = vi.fn(() => {
+      this.readyState = MockWebSocketImpl.CLOSED;
+      this.onclose?.();
+    });
 
     constructor(url: string) {
       this.url = url;
@@ -127,6 +138,15 @@ function latestWebSocket<T extends { instances: MockWebSocket[] }>(MockWebSocket
   const ws = MockWebSocket.instances.at(-1);
   if (!ws) throw new Error('expected websocket instance');
   return ws;
+}
+
+async function waitForWebSocket<T extends { instances: MockWebSocket[] }>(
+  MockWebSocket: T,
+): Promise<MockWebSocket> {
+  await waitFor(() => {
+    expect(MockWebSocket.instances.length).toBeGreaterThan(0);
+  });
+  return latestWebSocket(MockWebSocket);
 }
 
 function messageText(text: string): HTMLElement {
@@ -156,6 +176,7 @@ describe('App', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     cleanup();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
@@ -479,7 +500,7 @@ describe('App', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'Lobby' });
 
-    const ws = latestWebSocket(MockWebSocket);
+    const ws = await waitForWebSocket(MockWebSocket);
     ws.onmessage?.({
       data: JSON.stringify({ type: 'message', message: messageFixture }),
     } as MessageEvent);
@@ -497,38 +518,333 @@ describe('App', () => {
     render(<App />);
     await screen.findByText('Agent reply');
 
-    const ws = latestWebSocket(MockWebSocket);
-    ws.onmessage?.({
-      data: JSON.stringify({ type: 'message', message: messageFixture }),
-    } as MessageEvent);
+    const ws = await waitForWebSocket(MockWebSocket);
+    await act(async () => {
+      ws.onmessage?.({
+        data: JSON.stringify({ type: 'message', message: messageFixture }),
+      } as MessageEvent);
+    });
 
     expect(screen.getAllByText('Agent reply')).toHaveLength(1);
   });
 
-  it('ignores websocket messages for other rooms or threads', async () => {
+  it('ignores duplicate websocket messages received live on the active conversation', async () => {
     sessionStorage.setItem('webchat_token', 'secret');
     const MockWebSocket = createWebSocketMock();
     render(<App />);
     await screen.findByRole('heading', { name: 'Lobby' });
 
-    const ws = latestWebSocket(MockWebSocket);
+    const ws = await waitForWebSocket(MockWebSocket);
+    ws.onmessage?.({
+      data: JSON.stringify({ type: 'message', message: messageFixture }),
+    } as MessageEvent);
+    expect(await screen.findByText('Agent reply')).toBeInTheDocument();
+
+    ws.onmessage?.({
+      data: JSON.stringify({ type: 'message', message: messageFixture }),
+    } as MessageEvent);
+    expect(screen.getAllByText('Agent reply')).toHaveLength(1);
+  });
+
+  it('tracks unread counts for other rooms and threads via websocket', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    localStorage.setItem(
+      'webchat_threads:lobby-1',
+      JSON.stringify([
+        { id: 'main', title: 'Main' },
+        { id: 'thread_b', title: 'Thread B' },
+      ]),
+    );
+    const MockWebSocket = createWebSocketMock();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const ws = await waitForWebSocket(MockWebSocket);
     ws.onmessage?.({
       data: JSON.stringify({
         type: 'message',
-        message: { ...messageFixture, platformId: 'other-room' },
+        message: { ...messageFixture, id: 'msg-dm', platformId: 'dm-sarah' },
       }),
     } as MessageEvent);
     ws.onmessage?.({
       data: JSON.stringify({
         type: 'message',
-        message: { ...messageFixture, threadId: 'other-thread' },
+        message: { ...messageFixture, id: 'msg-thread', threadId: 'thread_b' },
       }),
     } as MessageEvent);
     ws.onmessage?.({
       data: JSON.stringify({ type: 'typing', platformId: 'lobby-1', threadId: 'main' }),
     } as MessageEvent);
 
+    expect(await screen.findByRole('button', { name: 'Sarah, 1 unread message' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Thread B, 1 unread message' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Sarah, 1 unread message' })).toHaveTextContent('1');
+    expect(screen.getByRole('button', { name: 'Thread B, 1 unread message' })).toHaveTextContent('1');
     expect(screen.queryByText('Agent reply')).not.toBeInTheDocument();
+  });
+
+  it('clears unread when selecting a room or thread', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    localStorage.setItem(
+      'webchat_threads:lobby-1',
+      JSON.stringify([
+        { id: 'main', title: 'Main' },
+        { id: 'thread_b', title: 'Thread B' },
+      ]),
+    );
+    const MockWebSocket = createWebSocketMock();
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const ws = await waitForWebSocket(MockWebSocket);
+    ws.onmessage?.({
+      data: JSON.stringify({
+        type: 'message',
+        message: { ...messageFixture, id: 'msg-thread', threadId: 'thread_b' },
+      }),
+    } as MessageEvent);
+
+    expect(await screen.findByRole('button', { name: 'Thread B, 1 unread message' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Thread B, 1 unread message' }));
+
+    expect(screen.queryByRole('button', { name: /unread message/ })).not.toBeInTheDocument();
+  });
+
+  it('increments unread on the previous room after switching channels', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    const MockWebSocket = createWebSocketMock();
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    await user.click(screen.getByRole('button', { name: 'Sarah' }));
+    expect(await screen.findByRole('heading', { name: 'Sarah' })).toBeInTheDocument();
+
+    const ws = await waitForWebSocket(MockWebSocket);
+    ws.onmessage?.({
+      data: JSON.stringify({ type: 'message', message: messageFixture }),
+    } as MessageEvent);
+
+    expect(await screen.findByRole('button', { name: 'Lobby, 1 unread message' })).toBeInTheDocument();
+    expect(screen.queryByText('Agent reply')).not.toBeInTheDocument();
+  });
+
+  it('syncs unread for inactive rooms when the socket opens and on interval', async () => {
+    const fetchMessagesSpy = vi.spyOn(api, 'fetchMessages');
+    fetchMessagesSpy.mockImplementation(async (_token, platformId, threadId, since = 0) => {
+      if (platformId === 'lobby-1' && threadId === 'main' && since === 0) return [];
+      if (platformId === 'dm-sarah' && threadId === 'main') {
+        return [
+          {
+            ...messageFixture,
+            id: 'sync-msg',
+            platformId: 'dm-sarah',
+            timestamp: since + 1000,
+          },
+        ];
+      }
+      if (platformId === 'lobby-2' && threadId === 'main') {
+        return [
+          {
+            ...messageFixture,
+            id: 'sync-lobby-2',
+            platformId: 'lobby-2',
+            timestamp: since + 1000,
+          },
+        ];
+      }
+      return [];
+    });
+
+    sessionStorage.setItem('webchat_token', 'secret');
+    const MockWebSocket = createWebSocketMock();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const ws = await waitForWebSocket(MockWebSocket);
+    await act(async () => {
+      ws.onopen?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(await screen.findByRole('button', { name: 'Sarah, 1 unread message' })).toBeInTheDocument();
+
+    fetchMessagesSpy.mockRestore();
+  });
+
+  it('polls inactive rooms on an interval', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const fetchMessagesSpy = vi.spyOn(api, 'fetchMessages');
+    fetchMessagesSpy.mockImplementation(async (_token, platformId, threadId, since = 0) => {
+      if (platformId === 'lobby-1' && threadId === 'main' && since === 0) return [];
+      return [];
+    });
+
+    sessionStorage.setItem('webchat_token', 'secret');
+    createWebSocketMock();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const callsBefore = fetchMessagesSpy.mock.calls.length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5100);
+    });
+
+    expect(fetchMessagesSpy.mock.calls.length).toBeGreaterThan(callsBefore);
+    fetchMessagesSpy.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it('skips the interval tick immediately after websocket open sync', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const fetchMessagesSpy = vi.spyOn(api, 'fetchMessages');
+    fetchMessagesSpy.mockImplementation(async (_token, platformId, threadId, since = 0) => {
+      if (platformId === 'lobby-1' && threadId === 'main' && since === 0) return [];
+      return [];
+    });
+
+    sessionStorage.setItem('webchat_token', 'secret');
+    const MockWebSocket = createWebSocketMock();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const ws = await waitForWebSocket(MockWebSocket);
+    const callsBeforeOpen = fetchMessagesSpy.mock.calls.length;
+    await act(async () => {
+      ws.onopen?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const callsAfterOpen = fetchMessagesSpy.mock.calls.length;
+    expect(callsAfterOpen).toBeGreaterThan(callsBeforeOpen);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5100);
+    });
+    expect(fetchMessagesSpy.mock.calls.length).toBe(callsAfterOpen);
+
+    fetchMessagesSpy.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it('ignores overlapping sync runs while a fetch is in flight', async () => {
+    let releaseFetch: () => void = () => undefined;
+    const fetchGate = new Promise<void>((resolve) => {
+      releaseFetch = resolve;
+    });
+    const fetchMessagesSpy = vi.spyOn(api, 'fetchMessages');
+    fetchMessagesSpy.mockImplementation(async (_token, platformId, threadId, since = 0) => {
+      if (platformId === 'lobby-1' && threadId === 'main' && since === 0) return [];
+      await fetchGate;
+      return [];
+    });
+
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    sessionStorage.setItem('webchat_token', 'secret');
+    const MockWebSocket = createWebSocketMock();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const ws = await waitForWebSocket(MockWebSocket);
+    await act(async () => {
+      ws.onopen?.();
+      await Promise.resolve();
+    });
+    const callsAfterOpen = fetchMessagesSpy.mock.calls.length;
+    expect(callsAfterOpen).toBeGreaterThan(0);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5100);
+      await vi.advanceTimersByTimeAsync(5100);
+    });
+    expect(fetchMessagesSpy.mock.calls.length).toBe(callsAfterOpen);
+
+    releaseFetch();
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    fetchMessagesSpy.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it('ignores duplicate websocket unread events for inactive conversations', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    const MockWebSocket = createWebSocketMock();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const ws = await waitForWebSocket(MockWebSocket);
+    const inactiveMessage = { ...messageFixture, id: 'msg-dm', platformId: 'dm-sarah' };
+    ws.onmessage?.({
+      data: JSON.stringify({ type: 'message', message: inactiveMessage }),
+    } as MessageEvent);
+    expect(await screen.findByRole('button', { name: 'Sarah, 1 unread message' })).toBeInTheDocument();
+
+    ws.onmessage?.({
+      data: JSON.stringify({ type: 'message', message: inactiveMessage }),
+    } as MessageEvent);
+    expect(screen.getByRole('button', { name: 'Sarah, 1 unread message' })).toHaveTextContent('1');
+  });
+
+  it('ignores background sync errors for inactive rooms', async () => {
+    const fetchMessagesSpy = vi.spyOn(api, 'fetchMessages');
+    fetchMessagesSpy.mockImplementation(async (_token, platformId, threadId, since = 0) => {
+      if (platformId === 'lobby-1' && threadId === 'main' && since === 0) return [];
+      if (platformId === 'dm-sarah') throw new Error('network');
+      return [];
+    });
+
+    sessionStorage.setItem('webchat_token', 'secret');
+    const MockWebSocket = createWebSocketMock();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const ws = await waitForWebSocket(MockWebSocket);
+    await act(async () => {
+      ws.onopen?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByRole('button', { name: /unread message/ })).not.toBeInTheDocument();
+    fetchMessagesSpy.mockRestore();
+  });
+
+  it('clears unread when messages are loaded for the active conversation', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(createFetchMock({ messages: [messageFixture] })),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+    localStorage.setItem(
+      'webchat_threads:lobby-1',
+      JSON.stringify([
+        { id: 'main', title: 'Main' },
+        { id: 'thread_b', title: 'Thread B' },
+      ]),
+    );
+    const MockWebSocket = createWebSocketMock();
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const ws = await waitForWebSocket(MockWebSocket);
+    ws.onmessage?.({
+      data: JSON.stringify({
+        type: 'message',
+        message: { ...messageFixture, id: 'msg-thread', threadId: 'thread_b' },
+      }),
+    } as MessageEvent);
+    expect(await screen.findByRole('button', { name: 'Thread B, 1 unread message' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Thread B, 1 unread message' }));
+    expect(await screen.findByText('Agent reply')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /unread message/ })).not.toBeInTheDocument();
   });
 
   it('shows message fetch errors', async () => {
@@ -604,7 +920,7 @@ describe('App', () => {
     const { unmount } = render(<App />);
     await screen.findByRole('heading', { name: 'Lobby' });
 
-    const ws = latestWebSocket(MockWebSocket);
+    const ws = await waitForWebSocket(MockWebSocket);
     unmount();
 
     expect(ws.close).toHaveBeenCalled();
@@ -686,7 +1002,7 @@ describe('App', () => {
     expect(screen.getByRole('heading', { name: 'Other Lobby' })).toBeInTheDocument();
   });
 
-  it('ignores websocket messages before the active room is known', async () => {
+  it('connects websocket after bootstrap loads', async () => {
     let resolveBootstrap: (value: Response) => void = () => undefined;
     const bootstrapPromise = new Promise<Response>((resolve) => {
       resolveBootstrap = resolve;
@@ -705,14 +1021,13 @@ describe('App', () => {
     const MockWebSocket = createWebSocketMock();
     render(<App />);
 
-    const ws = latestWebSocket(MockWebSocket);
-    ws.onmessage?.({
-      data: JSON.stringify({ type: 'message', message: messageFixture }),
-    } as MessageEvent);
+    expect(MockWebSocket.instances).toHaveLength(0);
 
     resolveBootstrap(jsonResponse(bootstrapFixture));
     await screen.findByRole('heading', { name: 'Lobby' });
-    expect(screen.queryByText('Agent reply')).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(MockWebSocket.instances.length).toBeGreaterThan(0);
+    });
   });
 
   it('omits the extra @team suffix when @team is not configured', async () => {

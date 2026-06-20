@@ -1,0 +1,20 @@
+---
+description: Require typecheck, unit tests, and coverage to pass before pushing
+alwaysApply: true
+---
+
+# Pre-push verification
+
+Before committing or pushing changes, run these commands locally and confirm they all pass:
+
+```bash
+pnpm run typecheck
+pnpm run test:unit
+pnpm run test:coverage
+```
+
+Do not push if any command fails. Fix failures first, then re-run the full sequence.
+
+`test:coverage` enforces 100% thresholds (statements, branches, functions, lines) — treat any coverage regression as a blocker.
+
+When tests involve WebSocket mocks or fake timers, prefer waiting for async side effects (e.g. `waitFor`) rather than assuming synchronous setup after render.

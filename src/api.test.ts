@@ -6,6 +6,7 @@ import {
   getStoredToken,
   loadThreads,
   newThreadId,
+  resolveWebSocketUrl,
   saveThreads,
   sendMessage,
   storeToken,
@@ -169,62 +170,347 @@ describe('api', () => {
     });
   });
 
+  describe('resolveWebSocketUrl', () => {
+    it('uses the dev backend host instead of the Vite dev-server proxy', () => {
+      vi.stubEnv('VITE_WEBCHAT_API_TARGET', 'http://127.0.0.1:3200');
+      expect(resolveWebSocketUrl('tok/en')).toBe('ws://127.0.0.1:3200/api/ws?token=tok%2Fen');
+    });
+
+    it('uses wss for https dev backend targets', () => {
+      vi.stubEnv('VITE_WEBCHAT_API_TARGET', 'https://127.0.0.1:3200');
+      expect(resolveWebSocketUrl('token')).toBe('wss://127.0.0.1:3200/api/ws?token=token');
+    });
+
+    it('uses the page host when built for production', () => {
+      vi.stubGlobal('location', {
+        protocol: 'https:',
+        host: 'chat.example.com',
+        search: '',
+      });
+      expect(resolveWebSocketUrl('token', { DEV: false, VITE_WEBCHAT_API_TARGET: undefined })).toBe(
+        'wss://chat.example.com/api/ws?token=token',
+      );
+    });
+
+    it('uses ws for plain http production pages', () => {
+      vi.stubGlobal('location', {
+        protocol: 'http:',
+        host: 'chat.example.com',
+        search: '',
+      });
+      expect(resolveWebSocketUrl('token', { DEV: false, VITE_WEBCHAT_API_TARGET: undefined })).toBe(
+        'ws://chat.example.com/api/ws?token=token',
+      );
+    });
+  });
+
   describe('connectWebSocket', () => {
     it('connects over ws and forwards parsed events', () => {
-      const WebSocketMock = vi.fn(function WebSocket(this: {
+      type MockSocket = {
         url: string;
+        onopen: (() => void) | null;
         onmessage: ((ev: MessageEvent) => void) | null;
         close: ReturnType<typeof vi.fn>;
-      }, url: string) {
+        readyState: number;
+      };
+      const instances: MockSocket[] = [];
+      const WebSocketMock = vi.fn(function WebSocket(this: MockSocket, url: string) {
         this.url = url;
+        this.onopen = null;
         this.onmessage = null;
+        this.readyState = 1;
         this.close = vi.fn();
+        instances.push(this);
       });
+      WebSocketMock.CONNECTING = 0;
+      WebSocketMock.OPEN = 1;
       vi.stubGlobal('WebSocket', WebSocketMock);
+      vi.stubEnv('VITE_WEBCHAT_API_TARGET', 'http://127.0.0.1:3200');
       const onEvent = vi.fn<(event: WsEvent) => void>();
 
-      const ws = connectWebSocket('tok/en', onEvent);
+      connectWebSocket('tok/en', onEvent);
 
-      expect(WebSocketMock).toHaveBeenCalledWith('ws://localhost:3200/api/ws?token=tok%2Fen');
-      ws.onmessage?.({ data: JSON.stringify({ type: 'typing', platformId: 'p', threadId: 't' }) } as MessageEvent);
+      expect(WebSocketMock).toHaveBeenCalledWith('ws://127.0.0.1:3200/api/ws?token=tok%2Fen');
+      instances[0]?.onopen?.();
+      instances[0]?.onmessage?.({
+        data: JSON.stringify({ type: 'typing', platformId: 'p', threadId: 't' }),
+      } as MessageEvent);
       expect(onEvent).toHaveBeenCalledWith({ type: 'typing', platformId: 'p', threadId: 't' });
     });
 
-    it('uses wss when page is served over https', () => {
-      vi.stubGlobal('location', {
-        protocol: 'https:',
-        host: 'example.com',
-        search: '',
-      });
-      const WebSocketMock = vi.fn(function WebSocket(this: {
-        onmessage: null;
+    it('calls onOpen when the socket connects', () => {
+      type MockSocket = {
+        onopen: (() => void) | null;
+        readyState: number;
         close: ReturnType<typeof vi.fn>;
-      }) {
-        this.onmessage = null;
+      };
+      const instances: MockSocket[] = [];
+      const WebSocketMock = vi.fn(function WebSocket(this: MockSocket) {
+        this.onopen = null;
+        this.readyState = 1;
         this.close = vi.fn();
+        instances.push(this);
       });
+      WebSocketMock.CONNECTING = 0;
+      WebSocketMock.OPEN = 1;
       vi.stubGlobal('WebSocket', WebSocketMock);
+      const onOpen = vi.fn();
 
-      connectWebSocket('token', vi.fn());
+      connectWebSocket('token', vi.fn(), onOpen);
+      instances[0]?.onopen?.();
 
-      expect(WebSocketMock).toHaveBeenCalledWith('wss://example.com/api/ws?token=token');
+      expect(onOpen).toHaveBeenCalledTimes(1);
     });
 
     it('ignores malformed websocket frames', () => {
-      const WebSocketMock = vi.fn(function WebSocket(this: {
+      type MockSocket = {
         onmessage: ((ev: MessageEvent) => void) | null;
         close: ReturnType<typeof vi.fn>;
-      }) {
+        readyState: number;
+      };
+      const instances: MockSocket[] = [];
+      const WebSocketMock = vi.fn(function WebSocket(this: MockSocket) {
         this.onmessage = null;
+        this.readyState = 1;
         this.close = vi.fn();
+        instances.push(this);
       });
+      WebSocketMock.CONNECTING = 0;
+      WebSocketMock.OPEN = 1;
       vi.stubGlobal('WebSocket', WebSocketMock);
       const onEvent = vi.fn();
 
-      const ws = connectWebSocket('token', onEvent);
-      ws.onmessage?.({ data: 'not-json' } as MessageEvent);
+      connectWebSocket('token', onEvent);
+      instances[0]?.onmessage?.({ data: 'not-json' } as MessageEvent);
 
       expect(onEvent).not.toHaveBeenCalled();
+    });
+
+    it('reconnects after an unexpected close', () => {
+      vi.useFakeTimers();
+      vi.spyOn(Math, 'random').mockReturnValue(1);
+      type MockSocket = {
+        onopen: (() => void) | null;
+        onclose: (() => void) | null;
+        close: ReturnType<typeof vi.fn>;
+        readyState: number;
+      };
+      const instances: MockSocket[] = [];
+      const WebSocketMock = vi.fn(function WebSocket(this: MockSocket) {
+        this.onopen = null;
+        this.onclose = null;
+        this.readyState = 1;
+        this.close = vi.fn();
+        instances.push(this);
+      });
+      WebSocketMock.CONNECTING = 0;
+      WebSocketMock.OPEN = 1;
+      vi.stubGlobal('WebSocket', WebSocketMock);
+
+      connectWebSocket('token', vi.fn());
+      instances[0]?.onclose?.();
+      vi.advanceTimersByTime(1000);
+
+      expect(WebSocketMock).toHaveBeenCalledTimes(2);
+      vi.mocked(Math.random).mockRestore();
+      vi.useRealTimers();
+    });
+
+    it('applies full-jitter to reconnect backoff', () => {
+      vi.useFakeTimers();
+      vi.spyOn(Math, 'random').mockReturnValue(0);
+      type MockSocket = {
+        onopen: (() => void) | null;
+        onclose: (() => void) | null;
+        close: ReturnType<typeof vi.fn>;
+        readyState: number;
+      };
+      const instances: MockSocket[] = [];
+      const WebSocketMock = vi.fn(function WebSocket(this: MockSocket) {
+        this.onopen = null;
+        this.onclose = null;
+        this.readyState = 1;
+        this.close = vi.fn();
+        instances.push(this);
+      });
+      WebSocketMock.CONNECTING = 0;
+      WebSocketMock.OPEN = 1;
+      vi.stubGlobal('WebSocket', WebSocketMock);
+
+      connectWebSocket('token', vi.fn());
+      instances[0]?.onclose?.();
+      vi.advanceTimersByTime(500);
+
+      expect(WebSocketMock).toHaveBeenCalledTimes(2);
+      vi.mocked(Math.random).mockRestore();
+      vi.useRealTimers();
+    });
+
+    it('resets reconnect backoff after the socket opens', () => {
+      vi.useFakeTimers();
+      vi.spyOn(Math, 'random').mockReturnValue(1);
+      type MockSocket = {
+        onopen: (() => void) | null;
+        onclose: (() => void) | null;
+        close: ReturnType<typeof vi.fn>;
+        readyState: number;
+      };
+      const instances: MockSocket[] = [];
+      const WebSocketMock = vi.fn(function WebSocket(this: MockSocket) {
+        this.onopen = null;
+        this.onclose = null;
+        this.readyState = 1;
+        this.close = vi.fn();
+        instances.push(this);
+      });
+      WebSocketMock.CONNECTING = 0;
+      WebSocketMock.OPEN = 1;
+      vi.stubGlobal('WebSocket', WebSocketMock);
+
+      connectWebSocket('token', vi.fn());
+      instances[0]?.onopen?.();
+      instances[0]?.onclose?.();
+      vi.advanceTimersByTime(1000);
+
+      expect(WebSocketMock).toHaveBeenCalledTimes(2);
+      vi.mocked(Math.random).mockRestore();
+      vi.useRealTimers();
+    });
+
+    it('defers close until connect completes when shutting down early', () => {
+      let openHandler: (() => void) | undefined;
+      type MockSocket = {
+        readyState: number;
+        addEventListener: ReturnType<typeof vi.fn>;
+        close: ReturnType<typeof vi.fn>;
+      };
+      const instances: MockSocket[] = [];
+      const WebSocketMock = vi.fn(function WebSocket(this: MockSocket) {
+        this.readyState = 0;
+        this.addEventListener = vi.fn((_event, handler) => {
+          openHandler = handler as () => void;
+        });
+        this.close = vi.fn();
+        instances.push(this);
+      });
+      WebSocketMock.CONNECTING = 0;
+      WebSocketMock.OPEN = 1;
+      vi.stubGlobal('WebSocket', WebSocketMock);
+
+      const connection = connectWebSocket('token', vi.fn());
+      connection.close();
+      openHandler?.();
+
+      expect(instances[0]?.addEventListener).toHaveBeenCalledWith('open', expect.any(Function), {
+        once: true,
+      });
+      expect(instances[0]?.close).toHaveBeenCalled();
+    });
+
+    it('closes open sockets on error', () => {
+      type MockSocket = {
+        onerror: (() => void) | null;
+        close: ReturnType<typeof vi.fn>;
+        readyState: number;
+      };
+      const instances: MockSocket[] = [];
+      const WebSocketMock = vi.fn(function WebSocket(this: MockSocket) {
+        this.onerror = null;
+        this.readyState = 1;
+        this.close = vi.fn();
+        instances.push(this);
+      });
+      WebSocketMock.CONNECTING = 0;
+      WebSocketMock.OPEN = 1;
+      vi.stubGlobal('WebSocket', WebSocketMock);
+
+      connectWebSocket('token', vi.fn());
+      instances[0]?.onerror?.();
+
+      expect(instances[0]?.close).toHaveBeenCalled();
+    });
+
+    it('stops reconnecting after close is called', () => {
+      vi.useFakeTimers();
+      type MockSocket = {
+        onclose: (() => void) | null;
+        close: ReturnType<typeof vi.fn>;
+        readyState: number;
+      };
+      const instances: MockSocket[] = [];
+      const WebSocketMock = vi.fn(function WebSocket(this: MockSocket) {
+        this.onclose = null;
+        this.readyState = 1;
+        this.close = vi.fn();
+        instances.push(this);
+      });
+      WebSocketMock.CONNECTING = 0;
+      WebSocketMock.OPEN = 1;
+      vi.stubGlobal('WebSocket', WebSocketMock);
+
+      const connection = connectWebSocket('token', vi.fn());
+      connection.close();
+      instances[0]?.onclose?.();
+      vi.advanceTimersByTime(30_000);
+
+      expect(WebSocketMock).toHaveBeenCalledTimes(1);
+      vi.useRealTimers();
+    });
+
+    it('cancels a pending reconnect when close is called', () => {
+      vi.useFakeTimers();
+      type MockSocket = {
+        onclose: (() => void) | null;
+        close: ReturnType<typeof vi.fn>;
+        readyState: number;
+      };
+      const instances: MockSocket[] = [];
+      const WebSocketMock = vi.fn(function WebSocket(this: MockSocket) {
+        this.onclose = null;
+        this.readyState = 1;
+        this.close = vi.fn();
+        instances.push(this);
+      });
+      WebSocketMock.CONNECTING = 0;
+      WebSocketMock.OPEN = 1;
+      vi.stubGlobal('WebSocket', WebSocketMock);
+
+      const connection = connectWebSocket('token', vi.fn());
+      instances[0]?.onclose?.();
+      connection.close();
+      vi.advanceTimersByTime(30_000);
+
+      expect(WebSocketMock).toHaveBeenCalledTimes(1);
+      vi.useRealTimers();
+    });
+
+    it('ignores reconnect timers after the connection has been closed', () => {
+      vi.useFakeTimers();
+      type MockSocket = {
+        onclose: (() => void) | null;
+        close: ReturnType<typeof vi.fn>;
+        readyState: number;
+      };
+      const instances: MockSocket[] = [];
+      const WebSocketMock = vi.fn(function WebSocket(this: MockSocket) {
+        this.onclose = null;
+        this.readyState = 1;
+        this.close = vi.fn();
+        instances.push(this);
+      });
+      WebSocketMock.CONNECTING = 0;
+      WebSocketMock.OPEN = 1;
+      vi.stubGlobal('WebSocket', WebSocketMock);
+
+      const connection = connectWebSocket('token', vi.fn());
+      instances[0]?.onclose?.();
+      vi.advanceTimersByTime(1000);
+      connection.close();
+      instances[1]?.onclose?.();
+      vi.advanceTimersByTime(30_000);
+
+      expect(WebSocketMock).toHaveBeenCalledTimes(2);
+      vi.useRealTimers();
     });
   });
 

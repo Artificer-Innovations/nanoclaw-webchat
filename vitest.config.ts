@@ -6,6 +6,8 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
+    // Global WebSocket stubs in App/api tests must not run concurrently.
+    fileParallelism: false,
     coverage: {
       provider: 'v8',
       include: ['src/**/*.{ts,tsx}'],
