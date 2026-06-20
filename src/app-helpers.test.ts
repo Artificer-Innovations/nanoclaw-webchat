@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { canCreateThread, canSendMessage, shouldAppendMessage } from './app-helpers';
+import { canCreateThread, canSendMessage, resolveActiveThreadTitle, shouldAppendMessage } from './app-helpers';
 import type { WebChatMessage, WebChatRoom } from './types';
 
 const room: WebChatRoom = {
@@ -70,6 +70,26 @@ describe('app-helpers', () => {
 
     it('returns true for a new message in the active room and thread', () => {
       expect(shouldAppendMessage([], message, room, 'main')).toBe(true);
+    });
+  });
+
+  describe('resolveActiveThreadTitle', () => {
+    it('returns null for the main thread or unknown thread ids', () => {
+      expect(resolveActiveThreadTitle([{ id: 'main', title: 'Main' }], 'main')).toBeNull();
+      expect(resolveActiveThreadTitle([{ id: 'main', title: 'Main' }], 'missing')).toBeNull();
+      expect(resolveActiveThreadTitle(undefined, 'thread_b')).toBeNull();
+    });
+
+    it('returns the title for a known child thread', () => {
+      expect(
+        resolveActiveThreadTitle(
+          [
+            { id: 'main', title: 'Main' },
+            { id: 'thread_b', title: 'Thread B' },
+          ],
+          'thread_b',
+        ),
+      ).toBe('Thread B');
     });
   });
 });
