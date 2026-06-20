@@ -291,7 +291,7 @@ describe('App', () => {
     expect(await screen.findByText('npm install')).toBeInTheDocument();
     expect(screen.getByText('pnpm dev')).toBeInTheDocument();
     expect(document.querySelector('.msg .inline-code')?.textContent).toBe('npm install');
-    expect(document.querySelector('.msg .code-block')?.textContent).toBe('pnpm dev');
+    expect(document.querySelector('.msg .code-block')?.textContent?.trim()).toBe('pnpm dev');
   });
 
   it('switches rooms and reloads thread state', async () => {

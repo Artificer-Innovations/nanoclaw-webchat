@@ -1,4 +1,5 @@
 import type { WebChatAgent, WebChatMessage, WebChatRoom } from './types';
+import { MENTION_HANDLE_PATTERN } from './mention-pattern';
 
 export function mentionFromText(text: string, agents: WebChatAgent[]): string | null {
   const ordered = mentionsInOrder(text, agents);
@@ -8,7 +9,7 @@ export function mentionFromText(text: string, agents: WebChatAgent[]): string | 
 export function mentionsInOrder(text: string, agents: WebChatAgent[]): string[] {
   const names: string[] = [];
   const seen = new Set<string>();
-  const pattern = /@(\w+)/gi;
+  const pattern = new RegExp(MENTION_HANDLE_PATTERN.source, MENTION_HANDLE_PATTERN.flags);
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(text)) !== null) {
     const folder = match[1]!.toLowerCase();
