@@ -19,6 +19,7 @@ import {
 } from './app-helpers';
 import {
   formatAttachmentRejections,
+  MAX_ATTACHMENTS,
   readAttachmentFiles,
   removePendingAtIndex,
   revokeAttachmentPreviews,
@@ -555,7 +556,7 @@ export function App() {
                 type="button"
                 className="composer-attach"
                 aria-label="Attach file"
-                disabled={sending || pendingAttachments.length >= 4}
+                disabled={sending || pendingAttachments.length >= MAX_ATTACHMENTS}
                 onClick={() => fileInputRef.current?.click()}
               >
                 <PlusIcon />
