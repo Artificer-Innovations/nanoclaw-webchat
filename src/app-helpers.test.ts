@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   applyUnreadFromMessages,
-  applyUnreadFromMessages,
   canCreateThread,
   canSendMessage,
   clearUnread,
   formatUnreadCount,
+  formatUnreadAriaLabel,
   getUnreadCount,
   incrementUnread,
   isActiveConversation,
@@ -188,6 +188,13 @@ describe('app-helpers', () => {
     it('formats unread counts with a cap', () => {
       expect(formatUnreadCount(5)).toBe('5');
       expect(formatUnreadCount(100)).toBe('99+');
+    });
+
+    it('formats unread aria labels with singular and plural forms', () => {
+      expect(formatUnreadAriaLabel('Sarah', 0)).toBe('Sarah');
+      expect(formatUnreadAriaLabel('Sarah', 1)).toBe('Sarah, 1 unread message');
+      expect(formatUnreadAriaLabel('Sarah', 2)).toBe('Sarah, 2 unread messages');
+      expect(formatUnreadAriaLabel('Sarah', 100)).toBe('Sarah, 99+ unread messages');
     });
 
     it('applies unread from fetched messages', () => {

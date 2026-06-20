@@ -100,6 +100,13 @@ export function formatUnreadCount(count: number): string {
   return String(count);
 }
 
+export function formatUnreadAriaLabel(name: string, count: number): string {
+  if (count <= 0) return name;
+  const unread =
+    count === 1 ? '1 unread message' : `${formatUnreadCount(count)} unread messages`;
+  return `${name}, ${unread}`;
+}
+
 export function applyUnreadFromMessages(
   counts: Record<string, number>,
   messages: WebChatMessage[],

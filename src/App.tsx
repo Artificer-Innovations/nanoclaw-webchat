@@ -62,13 +62,11 @@ export function App() {
   const roomRef = useRef(room);
   const threadIdRef = useRef(threadId);
   const threadsByRoomRef = useRef(threadsByRoom);
-  const bootstrapRef = useRef(bootstrap);
   const seenMessageIdsRef = useRef(new Set<string>());
   const syncCursorRef = useRef<Record<string, number>>({});
   roomRef.current = room;
   threadIdRef.current = threadId;
   threadsByRoomRef.current = threadsByRoom;
-  bootstrapRef.current = bootstrap;
 
   const loadBootstrap = useCallback(async (authToken: string) => {
     const data = await fetchBootstrap(authToken);
@@ -91,7 +89,7 @@ export function App() {
   const syncInactiveRooms = useCallback(async () => {
     const result = await syncInactiveUnread(
       token,
-      bootstrapRef.current,
+      bootstrap!,
       threadsByRoomRef.current,
       roomRef.current,
       threadIdRef.current,
@@ -108,7 +106,7 @@ export function App() {
       }
       return next;
     });
-  }, [token]);
+  }, [token, bootstrap]);
 
   useEffect(() => {
     if (!token) return;

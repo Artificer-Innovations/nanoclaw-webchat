@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { ThreadMeta } from './api';
-import { formatUnreadCount, getUnreadCount } from './app-helpers';
+import { formatUnreadCount, formatUnreadAriaLabel, getUnreadCount } from './app-helpers';
 import {
   BotIcon,
   CaretDownIcon,
@@ -65,8 +65,7 @@ function ThreadRow({
     setEditing(false);
   };
 
-  const threadAriaLabel =
-    unreadCount > 0 ? `${thread.title}, ${unreadCount} unread messages` : thread.title;
+  const threadAriaLabel = formatUnreadAriaLabel(thread.title, unreadCount);
 
   return (
     <li className="nav-thread-row">
@@ -147,8 +146,7 @@ export function SidebarRoom({
   const hasChildThreads = childThreads.length > 0;
   const roomActive = isActiveRoom && activeThreadId === 'main';
   const mainUnread = getUnreadCount(unreadCounts, room.platformId, 'main');
-  const roomAriaLabel =
-    mainUnread > 0 ? `${room.name}, ${mainUnread} unread messages` : room.name;
+  const roomAriaLabel = formatUnreadAriaLabel(room.name, mainUnread);
 
   return (
     <div className="nav-room">

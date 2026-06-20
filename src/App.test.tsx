@@ -566,10 +566,10 @@ describe('App', () => {
       data: JSON.stringify({ type: 'typing', platformId: 'lobby-1', threadId: 'main' }),
     } as MessageEvent);
 
-    expect(await screen.findByRole('button', { name: 'Sarah, 1 unread messages' })).toBeInTheDocument();
-    expect(await screen.findByRole('button', { name: 'Thread B, 1 unread messages' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Sarah, 1 unread messages' })).toHaveTextContent('1');
-    expect(screen.getByRole('button', { name: 'Thread B, 1 unread messages' })).toHaveTextContent('1');
+    expect(await screen.findByRole('button', { name: 'Sarah, 1 unread message' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Thread B, 1 unread message' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Sarah, 1 unread message' })).toHaveTextContent('1');
+    expect(screen.getByRole('button', { name: 'Thread B, 1 unread message' })).toHaveTextContent('1');
     expect(screen.queryByText('Agent reply')).not.toBeInTheDocument();
   });
 
@@ -595,11 +595,11 @@ describe('App', () => {
       }),
     } as MessageEvent);
 
-    expect(await screen.findByRole('button', { name: 'Thread B, 1 unread messages' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Thread B, 1 unread message' })).toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: 'Thread B, 1 unread messages' }));
+    await user.click(screen.getByRole('button', { name: 'Thread B, 1 unread message' }));
 
-    expect(screen.queryByRole('button', { name: /unread messages/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /unread message/ })).not.toBeInTheDocument();
   });
 
   it('increments unread on the previous room after switching channels', async () => {
@@ -617,7 +617,7 @@ describe('App', () => {
       data: JSON.stringify({ type: 'message', message: messageFixture }),
     } as MessageEvent);
 
-    expect(await screen.findByRole('button', { name: 'Lobby, 1 unread messages' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Lobby, 1 unread message' })).toBeInTheDocument();
     expect(screen.queryByText('Agent reply')).not.toBeInTheDocument();
   });
 
@@ -660,7 +660,7 @@ describe('App', () => {
       await Promise.resolve();
     });
 
-    expect(await screen.findByRole('button', { name: 'Sarah, 1 unread messages' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Sarah, 1 unread message' })).toBeInTheDocument();
 
     fetchMessagesSpy.mockRestore();
   });
@@ -708,7 +708,7 @@ describe('App', () => {
       await Promise.resolve();
     });
 
-    expect(screen.queryByRole('button', { name: /unread messages/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /unread message/ })).not.toBeInTheDocument();
     fetchMessagesSpy.mockRestore();
   });
 
@@ -737,11 +737,11 @@ describe('App', () => {
         message: { ...messageFixture, id: 'msg-thread', threadId: 'thread_b' },
       }),
     } as MessageEvent);
-    expect(await screen.findByRole('button', { name: 'Thread B, 1 unread messages' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Thread B, 1 unread message' })).toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: 'Thread B, 1 unread messages' }));
+    await user.click(screen.getByRole('button', { name: 'Thread B, 1 unread message' }));
     expect(await screen.findByText('Agent reply')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /unread messages/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /unread message/ })).not.toBeInTheDocument();
   });
 
   it('shows message fetch errors', async () => {
