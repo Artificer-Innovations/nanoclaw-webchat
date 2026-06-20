@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  activeUnreadKey,
   applyUnreadFromMessages,
   canCreateThread,
   canSendMessage,
@@ -10,14 +11,17 @@ import {
   incrementUnread,
   isActiveConversation,
   markMessagesSeen,
+  mergeUnreadDeltas,
   resolveActiveThreadTitle,
   seedSyncCursors,
   shouldAppendMessage,
   syncInactiveUnread,
   threadsForRoom,
   threadsFromState,
+  trackSeenMessageId,
   unreadKey,
   updateSyncCursor,
+  SEEN_MESSAGE_IDS_MAX,
 } from './app-helpers';
 import type { BootstrapPayload, WebChatMessage, WebChatRoom } from './types';
 
@@ -143,7 +147,8 @@ describe('app-helpers', () => {
 
   describe('unread helpers', () => {
     it('builds stable unread keys', () => {
-      expect(unreadKey('lobby-1', 'main')).toBe('lobby-1:main');
+      expect(unreadKey('lobby-1', 'main')).toBe('lobby-1|main');
+      expect(unreadKey('dm:rahul', 'main')).toBe('dm:rahul|main');
     });
 
     it('detects active conversations', () => {
@@ -154,34 +159,61 @@ describe('app-helpers', () => {
     });
 
     it('increments unread for non-active conversations', () => {
-      const seenIds = new Set<string>();
-      const next = incrementUnread({}, message, seenIds);
-      expect(next).toEqual({ 'lobby-1:main': 1 });
-      expect(seenIds.has('msg-1')).toBe(true);
+      const next = incrementUnread({}, message);
+      expect(next).toEqual({ 'lobby-1|main': 1 });
     });
 
-    it('does not double increment duplicate message ids', () => {
+    it('tracks seen message ids with a bounded set size', () => {
+      const seenIds = new Set<string>();
+      trackSeenMessageId(seenIds, 'msg-1');
+      trackSeenMessageId(seenIds, 'msg-1');
+      expect(seenIds.size).toBe(1);
+      for (let i = 0; i < SEEN_MESSAGE_IDS_MAX + 5; i += 1) {
+        trackSeenMessageId(seenIds, `msg-${i}`);
+      }
+      expect(seenIds.size).toBe(SEEN_MESSAGE_IDS_MAX);
+      expect(seenIds.has('msg-0')).toBe(false);
+      expect(seenIds.has(`msg-${SEEN_MESSAGE_IDS_MAX + 4}`)).toBe(true);
+    });
+
+    it('merges unread deltas while excluding the active conversation', () => {
+      expect(
+        mergeUnreadDeltas({ 'lobby-1|main': 1 }, { 'lobby-1|main': 2, 'dm-sarah|main': 1 }, 'lobby-1|main'),
+      ).toEqual({ 'lobby-1|main': 1, 'dm-sarah|main': 1 });
+    });
+
+    it('returns null active unread keys without a room', () => {
+      expect(activeUnreadKey(null, 'main')).toBeNull();
+      expect(activeUnreadKey(room, 'main')).toBe('lobby-1|main');
+    });
+
+    it('does not double increment duplicate message ids during apply', () => {
       const seenIds = new Set(['msg-1']);
-      expect(incrementUnread({ 'lobby-1:main': 1 }, message, seenIds)).toEqual({ 'lobby-1:main': 1 });
+      expect(applyUnreadFromMessages({ 'lobby-1|main': 1 }, [message], seenIds)).toEqual({
+        counts: { 'lobby-1|main': 1 },
+        maxTimestamp: message.timestamp,
+      });
     });
 
     it('keeps main and child thread counts independent', () => {
       const seenIds = new Set<string>();
       const childMessage = { ...message, id: 'msg-2', threadId: 'thread_b' };
-      const counts = incrementUnread({}, message, seenIds);
-      const next = incrementUnread(counts, childMessage, seenIds);
-      expect(next).toEqual({ 'lobby-1:main': 1, 'lobby-1:thread_b': 1 });
+      let counts = incrementUnread({}, message);
+      trackSeenMessageId(seenIds, message.id);
+      trackSeenMessageId(seenIds, childMessage.id);
+      counts = incrementUnread(counts, childMessage);
+      expect(counts).toEqual({ 'lobby-1|main': 1, 'lobby-1|thread_b': 1 });
     });
 
     it('clears unread for a specific thread', () => {
-      expect(clearUnread({ 'lobby-1:main': 2, 'lobby-1:thread_b': 1 }, 'lobby-1', 'main')).toEqual({
-        'lobby-1:thread_b': 1,
+      expect(clearUnread({ 'lobby-1|main': 2, 'lobby-1|thread_b': 1 }, 'lobby-1', 'main')).toEqual({
+        'lobby-1|thread_b': 1,
       });
       expect(clearUnread({}, 'lobby-1', 'main')).toEqual({});
     });
 
     it('returns unread counts with zero fallback', () => {
-      expect(getUnreadCount({ 'lobby-1:main': 3 }, 'lobby-1', 'main')).toBe(3);
+      expect(getUnreadCount({ 'lobby-1|main': 3 }, 'lobby-1', 'main')).toBe(3);
       expect(getUnreadCount({}, 'lobby-1', 'main')).toBe(0);
     });
 
@@ -201,7 +233,7 @@ describe('app-helpers', () => {
       const seenIds = new Set<string>();
       const childMessage = { ...message, id: 'msg-2', threadId: 'thread_b', timestamp: 42 };
       const result = applyUnreadFromMessages({}, [message, childMessage], seenIds);
-      expect(result.counts).toEqual({ 'lobby-1:main': 1, 'lobby-1:thread_b': 1 });
+      expect(result.counts).toEqual({ 'lobby-1|main': 1, 'lobby-1|thread_b': 1 });
       expect(result.maxTimestamp).toBe(42);
       expect(seenIds.size).toBe(2);
     });
@@ -223,9 +255,9 @@ describe('app-helpers', () => {
         baseline,
       );
       expect(cursors).toEqual({
-        'lobby-1:main': baseline,
-        'lobby-1:thread_b': baseline,
-        'dm-sarah:main': baseline,
+        'lobby-1|main': baseline,
+        'lobby-1|thread_b': baseline,
+        'dm-sarah|main': baseline,
       });
     });
 
@@ -237,9 +269,9 @@ describe('app-helpers', () => {
 
     it('updates sync cursors from fetched messages', () => {
       expect(updateSyncCursor({}, 'lobby-1', 'main', 0)).toEqual({});
-      expect(updateSyncCursor({}, 'lobby-1', 'main', 42)).toEqual({ 'lobby-1:main': 42 });
-      expect(updateSyncCursor({ 'lobby-1:main': 10 }, 'lobby-1', 'main', 5)).toEqual({
-        'lobby-1:main': 10,
+      expect(updateSyncCursor({}, 'lobby-1', 'main', 42)).toEqual({ 'lobby-1|main': 42 });
+      expect(updateSyncCursor({ 'lobby-1|main': 10 }, 'lobby-1', 'main', 5)).toEqual({
+        'lobby-1|main': 10,
       });
     });
 
@@ -266,13 +298,13 @@ describe('app-helpers', () => {
         { 'lobby-1': [{ id: 'main', title: 'Main' }] },
         room,
         'main',
-        { 'lobby-1:main': 50, 'dm-sarah:main': 0 },
+        { 'lobby-1|main': 50, 'dm-sarah|main': 0 },
         seenIds,
         fetchMessagesFn,
       );
 
-      expect(result.counts).toEqual({ 'dm-sarah:main': 1 });
-      expect(result.syncCursor).toEqual({ 'lobby-1:main': 50, 'dm-sarah:main': 100 });
+      expect(result.counts).toEqual({ 'dm-sarah|main': 1 });
+      expect(result.syncCursor).toEqual({ 'lobby-1|main': 50, 'dm-sarah|main': 100 });
       expect(fetchMessagesFn).toHaveBeenCalledWith('token', 'dm-sarah', 'main', 0);
     });
 
@@ -299,7 +331,7 @@ describe('app-helpers', () => {
         },
         meiRoom,
         'main',
-        { 'dm-mei:main': 1000 },
+        { 'dm-mei|main': 1000 },
         new Set(),
         fetchMessagesFn,
         5000,
@@ -336,11 +368,11 @@ describe('app-helpers', () => {
           {},
           room,
           'main',
-          { 'dm-sarah:main': 0 },
+          { 'dm-sarah|main': 0 },
           new Set(),
           fetchMessagesFn,
         ),
-      ).resolves.toEqual({ counts: {}, syncCursor: { 'dm-sarah:main': 0 } });
+      ).resolves.toEqual({ counts: {}, syncCursor: { 'dm-sarah|main': 0 } });
       expect(fetchMessagesFn).toHaveBeenCalledWith('token', 'dm-sarah', 'main', 0);
     });
   });

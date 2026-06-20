@@ -1,16 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  activeUnreadKey,
   canSendMessage,
   clearUnread,
   incrementUnread,
   isActiveConversation,
   markMessagesSeen,
+  mergeUnreadDeltas,
   resolveActiveThreadTitle,
   seedSyncCursors,
   shouldAppendMessage,
   syncInactiveUnread,
   threadsForRoom,
   threadsFromState,
+  trackSeenMessageId,
   unreadKey,
   updateSyncCursor,
 } from './app-helpers';
@@ -64,6 +67,8 @@ export function App() {
   const threadsByRoomRef = useRef(threadsByRoom);
   const seenMessageIdsRef = useRef(new Set<string>());
   const syncCursorRef = useRef<Record<string, number>>({});
+  const syncInFlightRef = useRef(false);
+  const skipNextIntervalSyncRef = useRef(false);
   roomRef.current = room;
   threadIdRef.current = threadId;
   threadsByRoomRef.current = threadsByRoom;
@@ -87,25 +92,27 @@ export function App() {
   }, []);
 
   const syncInactiveRooms = useCallback(async () => {
-    const result = await syncInactiveUnread(
-      token,
-      bootstrap!,
-      threadsByRoomRef.current,
-      roomRef.current,
-      threadIdRef.current,
-      syncCursorRef.current,
-      seenMessageIdsRef.current,
-      fetchMessages,
-    );
-    syncCursorRef.current = { ...syncCursorRef.current, ...result.syncCursor };
-    if (Object.keys(result.counts).length === 0) return;
-    setUnreadCounts((prev) => {
-      const next = { ...prev };
-      for (const [key, count] of Object.entries(result.counts)) {
-        next[key] = (prev[key] ?? 0) + count;
-      }
-      return next;
-    });
+    if (syncInFlightRef.current) return;
+    syncInFlightRef.current = true;
+    try {
+      const result = await syncInactiveUnread(
+        token,
+        bootstrap!,
+        threadsByRoomRef.current,
+        roomRef.current,
+        threadIdRef.current,
+        syncCursorRef.current,
+        seenMessageIdsRef.current,
+        fetchMessages,
+      );
+      syncCursorRef.current = { ...syncCursorRef.current, ...result.syncCursor };
+      if (Object.keys(result.counts).length === 0) return;
+      setUnreadCounts((prev) =>
+        mergeUnreadDeltas(prev, result.counts, activeUnreadKey(roomRef.current, threadIdRef.current)),
+      );
+    } finally {
+      syncInFlightRef.current = false;
+    }
   }, [token, bootstrap]);
 
   useEffect(() => {
@@ -159,17 +166,19 @@ export function App() {
         if (isActiveConversation(msg, roomRef.current, threadIdRef.current)) {
           setMessages((prev) => {
             if (!shouldAppendMessage(prev, msg, roomRef.current, threadIdRef.current)) return prev;
-            seenIds.add(msg.id);
+            trackSeenMessageId(seenIds, msg.id);
             return [...prev, msg];
           });
           setUnreadCounts((counts) =>
             clearUnread(counts, msg.platformId, msg.threadId),
           );
-        } else {
-          setUnreadCounts((counts) => incrementUnread(counts, msg, seenIds));
+        } else if (!seenIds.has(msg.id)) {
+          trackSeenMessageId(seenIds, msg.id);
+          setUnreadCounts((counts) => incrementUnread(counts, msg));
         }
       },
       () => {
+        skipNextIntervalSyncRef.current = true;
         void syncInactiveRooms();
       },
     );
@@ -180,6 +189,10 @@ export function App() {
     if (!token || !bootstrap) return;
     void syncInactiveRooms();
     const id = setInterval(() => {
+      if (skipNextIntervalSyncRef.current) {
+        skipNextIntervalSyncRef.current = false;
+        return;
+      }
       void syncInactiveRooms();
     }, 5000);
     return () => clearInterval(id);
@@ -303,7 +316,12 @@ export function App() {
     saveThreads(targetRoom.platformId, next);
     setThreadsByRoom((prev) => ({ ...prev, [targetRoom.platformId]: next }));
     setExpandedRooms((prev) => new Set(prev).add(targetRoom.platformId));
-    syncCursorRef.current[unreadKey(targetRoom.platformId, id)] = Date.now();
+    syncCursorRef.current = updateSyncCursor(
+      syncCursorRef.current,
+      targetRoom.platformId,
+      id,
+      Date.now(),
+    );
     roomRef.current = targetRoom;
     threadIdRef.current = id;
     setRoom(targetRoom);

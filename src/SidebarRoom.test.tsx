@@ -157,7 +157,7 @@ describe('SidebarRoom', () => {
         isActiveRoom
         activeThreadId="main"
         expanded
-        unreadCounts={{ 'lobby-1:main': 2, 'lobby-1:thread_b': 5 }}
+        unreadCounts={{ 'lobby-1|main': 2, 'lobby-1|thread_b': 5 }}
         onToggleExpand={vi.fn()}
         onSelectMain={vi.fn()}
         onSelectThread={vi.fn()}

@@ -87,7 +87,8 @@ export function connectWebSocket(
 
   const scheduleReconnect = () => {
     if (closed) return;
-    const delay = Math.min(1000 * 2 ** reconnectAttempt, 30_000);
+    const base = Math.min(1000 * 2 ** reconnectAttempt, 30_000);
+    const delay = base * (0.5 + Math.random() * 0.5);
     reconnectAttempt += 1;
     reconnectTimer = setTimeout(connect, delay);
   };

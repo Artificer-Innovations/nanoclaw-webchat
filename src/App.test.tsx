@@ -688,6 +688,99 @@ describe('App', () => {
     vi.useRealTimers();
   });
 
+  it('skips the interval tick immediately after websocket open sync', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const fetchMessagesSpy = vi.spyOn(api, 'fetchMessages');
+    fetchMessagesSpy.mockImplementation(async (_token, platformId, threadId, since = 0) => {
+      if (platformId === 'lobby-1' && threadId === 'main' && since === 0) return [];
+      return [];
+    });
+
+    sessionStorage.setItem('webchat_token', 'secret');
+    const MockWebSocket = createWebSocketMock();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const ws = latestWebSocket(MockWebSocket);
+    const callsBeforeOpen = fetchMessagesSpy.mock.calls.length;
+    await act(async () => {
+      ws.onopen?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const callsAfterOpen = fetchMessagesSpy.mock.calls.length;
+    expect(callsAfterOpen).toBeGreaterThan(callsBeforeOpen);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5100);
+    });
+    expect(fetchMessagesSpy.mock.calls.length).toBe(callsAfterOpen);
+
+    fetchMessagesSpy.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it('ignores overlapping sync runs while a fetch is in flight', async () => {
+    let releaseFetch: () => void = () => undefined;
+    const fetchGate = new Promise<void>((resolve) => {
+      releaseFetch = resolve;
+    });
+    const fetchMessagesSpy = vi.spyOn(api, 'fetchMessages');
+    fetchMessagesSpy.mockImplementation(async (_token, platformId, threadId, since = 0) => {
+      if (platformId === 'lobby-1' && threadId === 'main' && since === 0) return [];
+      await fetchGate;
+      return [];
+    });
+
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    sessionStorage.setItem('webchat_token', 'secret');
+    const MockWebSocket = createWebSocketMock();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const ws = latestWebSocket(MockWebSocket);
+    await act(async () => {
+      ws.onopen?.();
+      await Promise.resolve();
+    });
+    const callsAfterOpen = fetchMessagesSpy.mock.calls.length;
+    expect(callsAfterOpen).toBeGreaterThan(0);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5100);
+      await vi.advanceTimersByTimeAsync(5100);
+    });
+    expect(fetchMessagesSpy.mock.calls.length).toBe(callsAfterOpen);
+
+    releaseFetch();
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    fetchMessagesSpy.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it('ignores duplicate websocket unread events for inactive conversations', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    const MockWebSocket = createWebSocketMock();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const ws = latestWebSocket(MockWebSocket);
+    const inactiveMessage = { ...messageFixture, id: 'msg-dm', platformId: 'dm-sarah' };
+    ws.onmessage?.({
+      data: JSON.stringify({ type: 'message', message: inactiveMessage }),
+    } as MessageEvent);
+    expect(await screen.findByRole('button', { name: 'Sarah, 1 unread message' })).toBeInTheDocument();
+
+    ws.onmessage?.({
+      data: JSON.stringify({ type: 'message', message: inactiveMessage }),
+    } as MessageEvent);
+    expect(screen.getByRole('button', { name: 'Sarah, 1 unread message' })).toHaveTextContent('1');
+  });
+
   it('ignores background sync errors for inactive rooms', async () => {
     const fetchMessagesSpy = vi.spyOn(api, 'fetchMessages');
     fetchMessagesSpy.mockImplementation(async (_token, platformId, threadId, since = 0) => {

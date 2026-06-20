@@ -288,6 +288,7 @@ describe('api', () => {
 
     it('reconnects after an unexpected close', () => {
       vi.useFakeTimers();
+      vi.spyOn(Math, 'random').mockReturnValue(1);
       type MockSocket = {
         onopen: (() => void) | null;
         onclose: (() => void) | null;
@@ -311,11 +312,43 @@ describe('api', () => {
       vi.advanceTimersByTime(1000);
 
       expect(WebSocketMock).toHaveBeenCalledTimes(2);
+      vi.mocked(Math.random).mockRestore();
+      vi.useRealTimers();
+    });
+
+    it('applies full-jitter to reconnect backoff', () => {
+      vi.useFakeTimers();
+      vi.spyOn(Math, 'random').mockReturnValue(0);
+      type MockSocket = {
+        onopen: (() => void) | null;
+        onclose: (() => void) | null;
+        close: ReturnType<typeof vi.fn>;
+        readyState: number;
+      };
+      const instances: MockSocket[] = [];
+      const WebSocketMock = vi.fn(function WebSocket(this: MockSocket) {
+        this.onopen = null;
+        this.onclose = null;
+        this.readyState = 1;
+        this.close = vi.fn();
+        instances.push(this);
+      });
+      WebSocketMock.CONNECTING = 0;
+      WebSocketMock.OPEN = 1;
+      vi.stubGlobal('WebSocket', WebSocketMock);
+
+      connectWebSocket('token', vi.fn());
+      instances[0]?.onclose?.();
+      vi.advanceTimersByTime(500);
+
+      expect(WebSocketMock).toHaveBeenCalledTimes(2);
+      vi.mocked(Math.random).mockRestore();
       vi.useRealTimers();
     });
 
     it('resets reconnect backoff after the socket opens', () => {
       vi.useFakeTimers();
+      vi.spyOn(Math, 'random').mockReturnValue(1);
       type MockSocket = {
         onopen: (() => void) | null;
         onclose: (() => void) | null;
@@ -340,6 +373,7 @@ describe('api', () => {
       vi.advanceTimersByTime(1000);
 
       expect(WebSocketMock).toHaveBeenCalledTimes(2);
+      vi.mocked(Math.random).mockRestore();
       vi.useRealTimers();
     });
 

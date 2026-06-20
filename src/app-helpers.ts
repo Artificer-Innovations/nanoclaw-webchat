@@ -1,6 +1,8 @@
 import type { ThreadMeta } from './api';
 import type { BootstrapPayload, WebChatMessage, WebChatRoom } from './types';
 
+export const SEEN_MESSAGE_IDS_MAX = 1000;
+
 export function resolveActiveThreadTitle(
   threads: ThreadMeta[] | undefined,
   threadId: string,
@@ -48,8 +50,9 @@ export function shouldAppendMessage(
   return isActiveConversation(message, room, threadId);
 }
 
+/** Separator avoids collisions when platformId contains ":" (e.g. dm:rahul). */
 export function unreadKey(platformId: string, threadId: string): string {
-  return `${platformId}:${threadId}`;
+  return `${platformId}|${threadId}`;
 }
 
 export function isActiveConversation(
@@ -64,15 +67,38 @@ export function isActiveConversation(
   );
 }
 
+export function trackSeenMessageId(seenIds: Set<string>, messageId: string): void {
+  if (seenIds.has(messageId)) return;
+  seenIds.add(messageId);
+  while (seenIds.size > SEEN_MESSAGE_IDS_MAX) {
+    const oldest = seenIds.values().next().value as string;
+    seenIds.delete(oldest);
+  }
+}
+
+export function activeUnreadKey(room: WebChatRoom | null, threadId: string): string | null {
+  return room ? unreadKey(room.platformId, threadId) : null;
+}
+
 export function incrementUnread(
   counts: Record<string, number>,
   message: WebChatMessage,
-  seenIds: Set<string>,
 ): Record<string, number> {
-  if (seenIds.has(message.id)) return counts;
-  seenIds.add(message.id);
   const key = unreadKey(message.platformId, message.threadId);
   return { ...counts, [key]: (counts[key] ?? 0) + 1 };
+}
+
+export function mergeUnreadDeltas(
+  prev: Record<string, number>,
+  deltas: Record<string, number>,
+  activeKey: string | null,
+): Record<string, number> {
+  const next = { ...prev };
+  for (const [key, count] of Object.entries(deltas)) {
+    if (key === activeKey) continue;
+    next[key] = (prev[key] ?? 0) + count;
+  }
+  return next;
 }
 
 export function clearUnread(
@@ -116,7 +142,9 @@ export function applyUnreadFromMessages(
   let maxTimestamp = 0;
   for (const msg of messages) {
     maxTimestamp = Math.max(maxTimestamp, msg.timestamp);
-    next = incrementUnread(next, msg, seenIds);
+    if (seenIds.has(msg.id)) continue;
+    trackSeenMessageId(seenIds, msg.id);
+    next = incrementUnread(next, msg);
   }
   return { counts: next, maxTimestamp };
 }
@@ -140,7 +168,7 @@ export function seedSyncCursors(
 export function markMessagesSeen(messages: WebChatMessage[], seenIds: Set<string>): number {
   let maxTimestamp = 0;
   for (const msg of messages) {
-    seenIds.add(msg.id);
+    trackSeenMessageId(seenIds, msg.id);
     maxTimestamp = Math.max(maxTimestamp, msg.timestamp);
   }
   return maxTimestamp;
@@ -176,25 +204,44 @@ export async function syncInactiveUnread(
   let nextCounts: Record<string, number> = {};
   let nextCursor = syncCursor;
 
+  const workItems: Array<{
+    platformId: string;
+    threadId: string;
+    key: string;
+    since: number;
+  }> = [];
+
   for (const targetRoom of bootstrap.rooms) {
     const threads = threadsByRoom[targetRoom.platformId] ?? [{ id: 'main', title: 'Main' }];
     for (const thread of threads) {
       if (activeRoom?.platformId === targetRoom.platformId && activeThreadId === thread.id) {
         continue;
       }
-
       const key = unreadKey(targetRoom.platformId, thread.id);
       const since = nextCursor[key] ?? missingCursorBaseline;
-      try {
-        const msgs = await fetchMessagesFn(token, targetRoom.platformId, thread.id, since);
-        if (msgs.length === 0) continue;
-        const result = applyUnreadFromMessages(nextCounts, msgs, seenIds);
-        nextCounts = result.counts;
-        nextCursor = { ...nextCursor, [key]: Math.max(since, result.maxTimestamp) };
-      } catch {
-        // ignore transient sync errors
-      }
+      workItems.push({
+        platformId: targetRoom.platformId,
+        threadId: thread.id,
+        key,
+        since,
+      });
     }
+  }
+
+  const fetches = await Promise.allSettled(
+    workItems.map(async ({ platformId, threadId, key, since }) => {
+      const msgs = await fetchMessagesFn(token, platformId, threadId, since);
+      return { key, since, msgs };
+    }),
+  );
+
+  for (const result of fetches) {
+    if (result.status !== 'fulfilled') continue;
+    const { key, since, msgs } = result.value;
+    if (msgs.length === 0) continue;
+    const applied = applyUnreadFromMessages(nextCounts, msgs, seenIds);
+    nextCounts = applied.counts;
+    nextCursor = { ...nextCursor, [key]: Math.max(since, applied.maxTimestamp) };
   }
 
   return { counts: nextCounts, syncCursor: nextCursor };
