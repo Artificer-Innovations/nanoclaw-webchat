@@ -1363,9 +1363,10 @@ describe('App', () => {
       } as Response;
     });
 
-    render(<App />);
-    await screen.findByRole('img', { name: 'chart.png' });
-    expect(screen.getByRole('img', { name: 'chart.png' })).toHaveAttribute(
+    const { container } = render(<App />);
+    const link = await screen.findByRole('link', { name: 'Open chart.png in new tab' });
+    expect(link).toHaveAttribute('href', 'data:image/png;base64,aGVsbG8=');
+    expect(container.querySelector('.msg-attachment-image img')).toHaveAttribute(
       'src',
       'data:image/png;base64,aGVsbG8=',
     );

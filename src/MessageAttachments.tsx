@@ -20,11 +20,12 @@ export function MessageAttachments({ attachments }: { attachments: WebChatAttach
               href={dataUrl}
               aria-label={`Open ${att.name} in new tab`}
               onClick={(event) => {
-                event.preventDefault();
-                openAttachmentInNewTab(att);
+                if (openAttachmentInNewTab(att)) {
+                  event.preventDefault();
+                }
               }}
             >
-              <img src={dataUrl} alt={att.name} loading="lazy" />
+              <img src={dataUrl} alt="" loading="lazy" />
             </a>
           );
         }

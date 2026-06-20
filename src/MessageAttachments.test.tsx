@@ -19,7 +19,7 @@ describe('MessageAttachments', () => {
   });
 
   it('renders image attachments', () => {
-    render(
+    const { container } = render(
       <MessageAttachments
         attachments={[
           {
@@ -31,10 +31,11 @@ describe('MessageAttachments', () => {
         ]}
       />,
     );
-    expect(screen.getByRole('img', { name: 'photo.png' })).toHaveAttribute(
+    expect(container.querySelector('.msg-attachment-image img')).toHaveAttribute(
       'src',
       'data:image/png;base64,aGVsbG8=',
     );
+    expect(container.querySelector('.msg-attachment-image img')).toHaveAttribute('alt', '');
     const link = screen.getByRole('link', { name: 'Open photo.png in new tab' });
     expect(link).toHaveAttribute('href', 'data:image/png;base64,aGVsbG8=');
     expect(link).not.toHaveAttribute('target');
@@ -42,6 +43,7 @@ describe('MessageAttachments', () => {
 
   it('opens image attachments via blob URL on click', () => {
     const openSpy = vi.spyOn(attachments, 'openAttachmentInNewTab').mockReturnValue(true);
+    const preventDefaultSpy = vi.spyOn(Event.prototype, 'preventDefault');
     const { container } = render(
       <MessageAttachments
         attachments={[
@@ -58,7 +60,30 @@ describe('MessageAttachments', () => {
     expect(openSpy).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'photo.png', mimeType: 'image/png', data: 'aGVsbG8=' }),
     );
+    expect(preventDefaultSpy).toHaveBeenCalled();
     openSpy.mockRestore();
+    preventDefaultSpy.mockRestore();
+  });
+
+  it('falls back to the href when opening in a new tab fails', () => {
+    const openSpy = vi.spyOn(attachments, 'openAttachmentInNewTab').mockReturnValue(false);
+    const preventDefaultSpy = vi.spyOn(Event.prototype, 'preventDefault');
+    const { container } = render(
+      <MessageAttachments
+        attachments={[
+          {
+            name: 'photo.png',
+            mimeType: 'image/png',
+            type: 'image',
+            data: 'aGVsbG8=',
+          },
+        ]}
+      />,
+    );
+    fireEvent.click(container.querySelector('.msg-attachment-image')!);
+    expect(preventDefaultSpy).not.toHaveBeenCalled();
+    openSpy.mockRestore();
+    preventDefaultSpy.mockRestore();
   });
 
   it('renders file attachments as download links', () => {
