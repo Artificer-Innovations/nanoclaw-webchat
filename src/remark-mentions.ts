@@ -49,10 +49,14 @@ function splitTextWithMentions(value: string): PhrasingNode[] {
   return nodes;
 }
 
+function isMentionParent(parent: { type: string }): parent is MentionNode {
+  return parent.type === 'mention';
+}
+
 export function remarkMentions() {
   return (tree: Root) => {
     visit(tree, 'text', (node, index, parent) => {
-      if (index === undefined || !parent || parent.type === 'mention') return;
+      if (index === undefined || !parent || isMentionParent(parent)) return;
       if (!hasMention(node.value)) return;
 
       const nodes = splitTextWithMentions(node.value);
