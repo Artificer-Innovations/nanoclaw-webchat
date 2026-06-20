@@ -1,27 +1,42 @@
-import type { MessagePart } from './message-content';
-import { parseMessageContent } from './message-content';
+import type { Components } from 'react-markdown';
+import ReactMarkdown from 'react-markdown';
+import remarkBreaks from 'remark-breaks';
+import remarkGfm from 'remark-gfm';
+import { remarkMentions } from './remark-mentions';
 
-function renderParts(parts: MessagePart[]) {
-  return parts.map((part, index) => {
-    if (part.type === 'text') {
-      return <span key={index}>{part.value}</span>;
-    }
-    if (part.type === 'code') {
+const markdownComponents: Components = {
+  a: ({ href, children }) => (
+    <a href={href} target="_blank" rel="noopener noreferrer">
+      {children}
+    </a>
+  ),
+  pre: ({ children }) => <pre className="code-block">{children}</pre>,
+  code: ({ children, className, ...props }) => {
+    if (className) {
       return (
-        <code key={index} className="inline-code">
-          {part.value}
+        <code className={className} {...props}>
+          {children}
         </code>
       );
     }
+    const text = String(children);
+    if (text.includes('\n')) {
+      return <code {...props}>{children}</code>;
+    }
     return (
-      <pre key={index} className="code-block">
-        <code>{part.value}</code>
-      </pre>
+      <code className="inline-code" {...props}>
+        {children}
+      </code>
     );
-  });
-}
+  },
+};
 
 export function FormattedMessage({ text, className }: { text: string; className?: string }) {
-  const parts = parseMessageContent(text);
-  return <span className={className ?? 'formatted-message'}>{renderParts(parts)}</span>;
+  return (
+    <div className={className ?? 'formatted-message'}>
+      <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks, remarkMentions]} components={markdownComponents}>
+        {text}
+      </ReactMarkdown>
+    </div>
+  );
 }
