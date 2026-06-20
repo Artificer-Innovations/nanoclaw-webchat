@@ -505,8 +505,15 @@ describe('App', () => {
     expect(screen.getAllByText('Agent reply')).toHaveLength(1);
   });
 
-  it('ignores websocket messages for other rooms or threads', async () => {
+  it('tracks unread counts for other rooms and threads via websocket', async () => {
     sessionStorage.setItem('webchat_token', 'secret');
+    localStorage.setItem(
+      'webchat_threads:lobby-1',
+      JSON.stringify([
+        { id: 'main', title: 'Main' },
+        { id: 'thread_b', title: 'Thread B' },
+      ]),
+    );
     const MockWebSocket = createWebSocketMock();
     render(<App />);
     await screen.findByRole('heading', { name: 'Lobby' });
@@ -515,20 +522,53 @@ describe('App', () => {
     ws.onmessage?.({
       data: JSON.stringify({
         type: 'message',
-        message: { ...messageFixture, platformId: 'other-room' },
+        message: { ...messageFixture, id: 'msg-dm', platformId: 'dm-sarah' },
       }),
     } as MessageEvent);
     ws.onmessage?.({
       data: JSON.stringify({
         type: 'message',
-        message: { ...messageFixture, threadId: 'other-thread' },
+        message: { ...messageFixture, id: 'msg-thread', threadId: 'thread_b' },
       }),
     } as MessageEvent);
     ws.onmessage?.({
       data: JSON.stringify({ type: 'typing', platformId: 'lobby-1', threadId: 'main' }),
     } as MessageEvent);
 
+    expect(await screen.findByRole('button', { name: 'Sarah, 1 unread messages' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Thread B, 1 unread messages' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Sarah, 1 unread messages' })).toHaveTextContent('1');
+    expect(screen.getByRole('button', { name: 'Thread B, 1 unread messages' })).toHaveTextContent('1');
     expect(screen.queryByText('Agent reply')).not.toBeInTheDocument();
+  });
+
+  it('clears unread when selecting a room or thread', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    localStorage.setItem(
+      'webchat_threads:lobby-1',
+      JSON.stringify([
+        { id: 'main', title: 'Main' },
+        { id: 'thread_b', title: 'Thread B' },
+      ]),
+    );
+    const MockWebSocket = createWebSocketMock();
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const ws = latestWebSocket(MockWebSocket);
+    ws.onmessage?.({
+      data: JSON.stringify({
+        type: 'message',
+        message: { ...messageFixture, id: 'msg-thread', threadId: 'thread_b' },
+      }),
+    } as MessageEvent);
+
+    expect(await screen.findByRole('button', { name: 'Thread B, 1 unread messages' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Thread B, 1 unread messages' }));
+
+    expect(screen.queryByRole('button', { name: /unread messages/ })).not.toBeInTheDocument();
   });
 
   it('shows message fetch errors', async () => {

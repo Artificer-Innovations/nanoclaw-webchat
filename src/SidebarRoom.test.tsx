@@ -20,6 +20,7 @@ describe('SidebarRoom', () => {
         isActiveRoom
         activeThreadId="main"
         expanded={false}
+        unreadCounts={{}}
         onToggleExpand={vi.fn()}
         onSelectMain={vi.fn()}
         onSelectThread={vi.fn()}
@@ -47,6 +48,7 @@ describe('SidebarRoom', () => {
         isActiveRoom
         activeThreadId="main"
         expanded={false}
+        unreadCounts={{}}
         onToggleExpand={onToggleExpand}
         onSelectMain={vi.fn()}
         onSelectThread={vi.fn()}
@@ -69,6 +71,7 @@ describe('SidebarRoom', () => {
         isActiveRoom
         activeThreadId="main"
         expanded
+        unreadCounts={{}}
         onToggleExpand={onToggleExpand}
         onSelectMain={vi.fn()}
         onSelectThread={vi.fn()}
@@ -96,6 +99,7 @@ describe('SidebarRoom', () => {
         isActiveRoom
         activeThreadId="main"
         expanded
+        unreadCounts={{}}
         onToggleExpand={vi.fn()}
         onSelectMain={vi.fn()}
         onSelectThread={vi.fn()}
@@ -129,6 +133,7 @@ describe('SidebarRoom', () => {
         isActiveRoom
         activeThreadId="main"
         expanded={false}
+        unreadCounts={{}}
         onToggleExpand={vi.fn()}
         onSelectMain={vi.fn()}
         onSelectThread={vi.fn()}
@@ -140,6 +145,30 @@ describe('SidebarRoom', () => {
 
     expect(screen.getByRole('button', { name: 'Sarah' })).toBeInTheDocument();
     expect(container.querySelectorAll('svg').length).toBeGreaterThan(0);
+  });
+  it('shows unread badges on room main and child threads', () => {
+    render(
+      <SidebarRoom
+        room={lobby}
+        threads={[
+          { id: 'main', title: 'Main' },
+          { id: 'thread_b', title: 'Thread B' },
+        ]}
+        isActiveRoom
+        activeThreadId="main"
+        expanded
+        unreadCounts={{ 'lobby-1:main': 2, 'lobby-1:thread_b': 5 }}
+        onToggleExpand={vi.fn()}
+        onSelectMain={vi.fn()}
+        onSelectThread={vi.fn()}
+        onNewThread={vi.fn()}
+        onRenameThread={vi.fn()}
+        onDeleteThread={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: 'Lobby, 2 unread messages' })).toHaveTextContent('2');
+    expect(screen.getByRole('button', { name: 'Thread B, 5 unread messages' })).toHaveTextContent('5');
   });
 });
 
@@ -153,6 +182,7 @@ describe('SidebarSection', () => {
         activeThreadId="main"
         threadsByRoom={{}}
         expandedRooms={new Set()}
+        unreadCounts={{}}
         onToggleExpand={vi.fn()}
         onSelectRoomMain={vi.fn()}
         onSelectThread={vi.fn()}
@@ -174,6 +204,7 @@ describe('SidebarSection', () => {
         activeThreadId="main"
         threadsByRoom={{}}
         expandedRooms={new Set()}
+        unreadCounts={{}}
         onToggleExpand={vi.fn()}
         onSelectRoomMain={vi.fn()}
         onSelectThread={vi.fn()}
@@ -205,6 +236,7 @@ describe('SidebarSection', () => {
           ],
         }}
         expandedRooms={new Set(['lobby-1'])}
+        unreadCounts={{}}
         onToggleExpand={onToggleExpand}
         onSelectRoomMain={onSelectRoomMain}
         onSelectThread={vi.fn()}

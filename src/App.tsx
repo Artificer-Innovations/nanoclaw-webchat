@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   canSendMessage,
+  clearUnread,
+  incrementUnread,
   resolveActiveThreadTitle,
   shouldAppendMessage,
   threadsForRoom,
@@ -46,12 +48,14 @@ export function App() {
   const [expandedRooms, setExpandedRooms] = useState<Set<string>>(() => new Set());
   const [threadId, setThreadId] = useState('main');
   const [messages, setMessages] = useState<WebChatMessage[]>([]);
+  const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const roomRef = useRef(room);
   const threadIdRef = useRef(threadId);
+  const seenMessageIdsRef = useRef(new Set<string>());
   roomRef.current = room;
   threadIdRef.current = threadId;
 
@@ -59,6 +63,8 @@ export function App() {
     const data = await fetchBootstrap(authToken);
     setBootstrap(data);
     setThreadsByRoom(buildThreadsMap(data.rooms));
+    setUnreadCounts({});
+    seenMessageIdsRef.current = new Set();
     const lobby = data.rooms.find((r) => r.kind === 'lobby') ?? data.rooms[0] ?? null;
     setRoom(lobby);
     setThreadId('main');
@@ -96,10 +102,15 @@ export function App() {
     const ws = connectWebSocket(token, (event) => {
       if (event.type !== 'message') return;
       const msg = event.message;
+      const seenIds = seenMessageIdsRef.current;
       setMessages((prev) => {
         if (!shouldAppendMessage(prev, msg, roomRef.current, threadIdRef.current)) return prev;
+        seenIds.add(msg.id);
         return [...prev, msg];
       });
+      if (!shouldAppendMessage([], msg, roomRef.current, threadIdRef.current)) {
+        setUnreadCounts((counts) => incrementUnread(counts, msg, seenIds));
+      }
     });
     return () => ws.close();
   }, [token]);
@@ -189,11 +200,13 @@ export function App() {
   };
 
   const handleSelectRoomMain = (targetRoom: WebChatRoom) => {
+    setUnreadCounts((counts) => clearUnread(counts, targetRoom.platformId, 'main'));
     setRoom(targetRoom);
     setThreadId('main');
   };
 
   const handleSelectThread = (targetRoom: WebChatRoom, nextThreadId: string) => {
+    setUnreadCounts((counts) => clearUnread(counts, targetRoom.platformId, nextThreadId));
     setRoom(targetRoom);
     setThreadId(nextThreadId);
     setExpandedRooms((prev) => new Set(prev).add(targetRoom.platformId));
@@ -230,6 +243,7 @@ export function App() {
 
   const handleDeleteThread = (targetRoom: WebChatRoom, thread: ThreadMeta) => {
     updateThreadsForRoom(targetRoom.platformId, (list) => list.filter((t) => t.id !== thread.id));
+    setUnreadCounts((counts) => clearUnread(counts, targetRoom.platformId, thread.id));
     if (room && room.platformId === targetRoom.platformId && threadId === thread.id) {
       setThreadId('main');
       setMessages([]);
@@ -239,6 +253,7 @@ export function App() {
   const sidebarSectionProps = {
     activeRoomId: room?.platformId,
     activeThreadId: threadId,
+    unreadCounts,
     threadsByRoom,
     expandedRooms,
     onToggleExpand: handleToggleExpand,

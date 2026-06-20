@@ -1,5 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
-import { canCreateThread, canSendMessage, resolveActiveThreadTitle, shouldAppendMessage, threadsForRoom, threadsFromState } from './app-helpers';
+import {
+  canCreateThread,
+  canSendMessage,
+  clearUnread,
+  formatUnreadCount,
+  getUnreadCount,
+  incrementUnread,
+  isActiveConversation,
+  resolveActiveThreadTitle,
+  shouldAppendMessage,
+  threadsForRoom,
+  threadsFromState,
+  unreadKey,
+} from './app-helpers';
 import type { WebChatMessage, WebChatRoom } from './types';
 
 const room: WebChatRoom = {
@@ -119,6 +132,56 @@ describe('app-helpers', () => {
 
       expect(threadsForRoom({ 'lobby-1': inMemory }, 'lobby-1', loadRoomThreads)).toBe(inMemory);
       expect(loadRoomThreads).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('unread helpers', () => {
+    it('builds stable unread keys', () => {
+      expect(unreadKey('lobby-1', 'main')).toBe('lobby-1:main');
+    });
+
+    it('detects active conversations', () => {
+      expect(isActiveConversation(message, room, 'main')).toBe(true);
+      expect(isActiveConversation({ ...message, platformId: 'other' }, room, 'main')).toBe(false);
+      expect(isActiveConversation({ ...message, threadId: 'other' }, room, 'main')).toBe(false);
+      expect(isActiveConversation(message, null, 'main')).toBe(false);
+    });
+
+    it('increments unread for non-active conversations', () => {
+      const seenIds = new Set<string>();
+      const next = incrementUnread({}, message, seenIds);
+      expect(next).toEqual({ 'lobby-1:main': 1 });
+      expect(seenIds.has('msg-1')).toBe(true);
+    });
+
+    it('does not double increment duplicate message ids', () => {
+      const seenIds = new Set(['msg-1']);
+      expect(incrementUnread({ 'lobby-1:main': 1 }, message, seenIds)).toEqual({ 'lobby-1:main': 1 });
+    });
+
+    it('keeps main and child thread counts independent', () => {
+      const seenIds = new Set<string>();
+      const childMessage = { ...message, id: 'msg-2', threadId: 'thread_b' };
+      const counts = incrementUnread({}, message, seenIds);
+      const next = incrementUnread(counts, childMessage, seenIds);
+      expect(next).toEqual({ 'lobby-1:main': 1, 'lobby-1:thread_b': 1 });
+    });
+
+    it('clears unread for a specific thread', () => {
+      expect(clearUnread({ 'lobby-1:main': 2, 'lobby-1:thread_b': 1 }, 'lobby-1', 'main')).toEqual({
+        'lobby-1:thread_b': 1,
+      });
+      expect(clearUnread({}, 'lobby-1', 'main')).toEqual({});
+    });
+
+    it('returns unread counts with zero fallback', () => {
+      expect(getUnreadCount({ 'lobby-1:main': 3 }, 'lobby-1', 'main')).toBe(3);
+      expect(getUnreadCount({}, 'lobby-1', 'main')).toBe(0);
+    });
+
+    it('formats unread counts with a cap', () => {
+      expect(formatUnreadCount(5)).toBe('5');
+      expect(formatUnreadCount(100)).toBe('99+');
     });
   });
 });

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { ThreadMeta } from './api';
+import { formatUnreadCount, getUnreadCount } from './app-helpers';
 import {
   BotIcon,
   CaretDownIcon,
@@ -11,9 +12,19 @@ import {
 } from './nav-icons';
 import type { WebChatRoom } from './types';
 
+function UnreadBadge({ count }: { count: number }) {
+  if (count <= 0) return null;
+  return (
+    <span className="nav-unread-badge" aria-hidden="true">
+      {formatUnreadCount(count)}
+    </span>
+  );
+}
+
 interface SidebarRoomProps {
   room: WebChatRoom;
   threads: ThreadMeta[];
+  unreadCounts: Record<string, number>;
   isActiveRoom: boolean;
   activeThreadId: string;
   expanded: boolean;
@@ -32,12 +43,14 @@ function RoomIcon({ kind }: { kind: WebChatRoom['kind'] }) {
 function ThreadRow({
   thread,
   active,
+  unreadCount,
   onSelect,
   onRename,
   onDelete,
 }: {
   thread: ThreadMeta;
   active: boolean;
+  unreadCount: number;
   onSelect: () => void;
   onRename: (title: string) => void;
   onDelete: () => void;
@@ -51,6 +64,9 @@ function ThreadRow({
     else setDraft(thread.title);
     setEditing(false);
   };
+
+  const threadAriaLabel =
+    unreadCount > 0 ? `${thread.title}, ${unreadCount} unread messages` : thread.title;
 
   return (
     <li className="nav-thread-row">
@@ -76,10 +92,12 @@ function ThreadRow({
       ) : (
         <button
           type="button"
+          aria-label={threadAriaLabel}
           className={`nav-thread-item${active ? ' active' : ''}`}
           onClick={onSelect}
         >
-          {thread.title}
+          <span className="nav-thread-item-label">{thread.title}</span>
+          <UnreadBadge count={unreadCount} />
         </button>
       )}
       {!editing && (
@@ -114,6 +132,7 @@ function ThreadRow({
 export function SidebarRoom({
   room,
   threads,
+  unreadCounts,
   isActiveRoom,
   activeThreadId,
   expanded,
@@ -127,6 +146,9 @@ export function SidebarRoom({
   const childThreads = threads.filter((t) => t.id !== 'main');
   const hasChildThreads = childThreads.length > 0;
   const roomActive = isActiveRoom && activeThreadId === 'main';
+  const mainUnread = getUnreadCount(unreadCounts, room.platformId, 'main');
+  const roomAriaLabel =
+    mainUnread > 0 ? `${room.name}, ${mainUnread} unread messages` : room.name;
 
   return (
     <div className="nav-room">
@@ -146,7 +168,7 @@ export function SidebarRoom({
         )}
         <button
           type="button"
-          aria-label={room.name}
+          aria-label={roomAriaLabel}
           className={`nav-item nav-room-item${roomActive ? ' active' : ''}`}
           onClick={onSelectMain}
         >
@@ -154,6 +176,7 @@ export function SidebarRoom({
             <RoomIcon kind={room.kind} />
           </span>
           <span className="nav-item-label">{room.name}</span>
+          <UnreadBadge count={mainUnread} />
         </button>
         <button
           type="button"
@@ -174,6 +197,7 @@ export function SidebarRoom({
               key={thread.id}
               thread={thread}
               active={isActiveRoom && activeThreadId === thread.id}
+              unreadCount={getUnreadCount(unreadCounts, room.platformId, thread.id)}
               onSelect={() => onSelectThread(thread.id)}
               onRename={(title) => onRenameThread(thread, title)}
               onDelete={() => onDeleteThread(thread)}
@@ -190,6 +214,7 @@ interface SidebarSectionProps {
   rooms: WebChatRoom[];
   activeRoomId: string | undefined;
   activeThreadId: string;
+  unreadCounts: Record<string, number>;
   threadsByRoom: Record<string, ThreadMeta[]>;
   expandedRooms: Set<string>;
   onToggleExpand: (platformId: string) => void;
@@ -205,6 +230,7 @@ export function SidebarSection({
   rooms,
   activeRoomId,
   activeThreadId,
+  unreadCounts,
   threadsByRoom,
   expandedRooms,
   onToggleExpand,
@@ -223,6 +249,7 @@ export function SidebarSection({
         <SidebarRoom
           key={room.platformId}
           room={room}
+          unreadCounts={unreadCounts}
           threads={threadsByRoom[room.platformId] ?? [{ id: 'main', title: 'Main' }]}
           isActiveRoom={activeRoomId === room.platformId}
           activeThreadId={activeThreadId}
