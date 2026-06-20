@@ -29,6 +29,8 @@ export interface WebChatMessage {
   timestamp: number;
   platformId: string;
   threadId: string;
+  /** Agent display name when provided by the host adapter. */
+  senderName?: string;
 }
 
 export interface WsMessageEvent {

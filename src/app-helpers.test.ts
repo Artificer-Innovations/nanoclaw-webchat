@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { canCreateThread, canSendMessage, shouldAppendMessage } from './app-helpers';
+import { describe, expect, it, vi } from 'vitest';
+import { canCreateThread, canSendMessage, resolveActiveThreadTitle, shouldAppendMessage, threadsForRoom, threadsFromState } from './app-helpers';
 import type { WebChatMessage, WebChatRoom } from './types';
 
 const room: WebChatRoom = {
@@ -70,6 +70,55 @@ describe('app-helpers', () => {
 
     it('returns true for a new message in the active room and thread', () => {
       expect(shouldAppendMessage([], message, room, 'main')).toBe(true);
+    });
+  });
+
+  describe('resolveActiveThreadTitle', () => {
+    it('returns null for the main thread or unknown thread ids', () => {
+      expect(resolveActiveThreadTitle([{ id: 'main', title: 'Main' }], 'main')).toBeNull();
+      expect(resolveActiveThreadTitle([{ id: 'main', title: 'Main' }], 'missing')).toBeNull();
+      expect(resolveActiveThreadTitle(undefined, 'thread_b')).toBeNull();
+    });
+
+    it('returns the title for a known child thread', () => {
+      expect(
+        resolveActiveThreadTitle(
+          [
+            { id: 'main', title: 'Main' },
+            { id: 'thread_b', title: 'Thread B' },
+          ],
+          'thread_b',
+        ),
+      ).toBe('Thread B');
+    });
+  });
+
+  describe('threadsFromState', () => {
+    it('returns an empty list when a room is missing from state', () => {
+      expect(threadsFromState({}, 'lobby-1')).toEqual([]);
+    });
+
+    it('returns stored threads when present', () => {
+      const threads = [{ id: 'main', title: 'Main' }];
+      expect(threadsFromState({ 'lobby-1': threads }, 'lobby-1')).toBe(threads);
+    });
+  });
+
+  describe('threadsForRoom', () => {
+    it('loads threads when a room is missing from state', () => {
+      const loaded = [{ id: 'main', title: 'Main' }];
+      const loadRoomThreads = vi.fn(() => loaded);
+
+      expect(threadsForRoom({}, 'lobby-2', loadRoomThreads)).toBe(loaded);
+      expect(loadRoomThreads).toHaveBeenCalledWith('lobby-2');
+    });
+
+    it('prefers in-memory threads over loading from storage', () => {
+      const inMemory = [{ id: 'thread_a', title: 'Thread A' }];
+      const loadRoomThreads = vi.fn(() => [{ id: 'main', title: 'Main' }]);
+
+      expect(threadsForRoom({ 'lobby-1': inMemory }, 'lobby-1', loadRoomThreads)).toBe(inMemory);
+      expect(loadRoomThreads).not.toHaveBeenCalled();
     });
   });
 });

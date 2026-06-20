@@ -38,7 +38,8 @@ Returns in-memory history for a thread (ring buffer, newest last).
       "text": "Hello!",
       "timestamp": 1710000000000,
       "platformId": "lobby",
-      "threadId": "thread_abc"
+      "threadId": "thread_abc",
+      "senderName": "Sarah"
     }
   ]
 }
@@ -65,7 +66,8 @@ Push events (server → client):
     "text": "Reply text",
     "timestamp": 1710000000000,
     "platformId": "lobby",
-    "threadId": "thread_abc"
+    "threadId": "thread_abc",
+    "senderName": "Sarah"
   }
 }
 ```

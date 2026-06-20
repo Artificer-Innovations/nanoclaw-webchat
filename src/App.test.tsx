@@ -176,7 +176,7 @@ describe('App', () => {
     await user.type(screen.getByLabelText('Bearer token'), 'secret-token');
     await user.click(screen.getByRole('button', { name: 'Connect' }));
 
-    expect(await screen.findByRole('heading', { name: 'NanoClaw Chat' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'NanoClaw' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Lobby' })).toBeInTheDocument();
     expect(sessionStorage.getItem('webchat_token')).toBe('secret-token');
     expect(screen.getByText(/Lobby mentions: @sarah, @team, @team/)).toBeInTheDocument();
@@ -215,20 +215,95 @@ describe('App', () => {
     expect(screen.getByText('Agent')).toBeInTheDocument();
   });
 
-  it('switches rooms and reloads thread state', async () => {
-    localStorage.setItem(
-      'webchat_threads:dm-sarah',
-      JSON.stringify([{ id: 'main', title: 'DM Main' }]),
+  it('shows the agent name for outbound messages in a DM room', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          bootstrap: {
+            ...bootstrapFixture,
+            rooms: [{ platformId: 'dm-sarah', name: 'Sarah', kind: 'dm', folder: 'sarah' }],
+            agents: [{ folder: 'sarah', name: 'Sarah', mention: '@sarah' }],
+          },
+          messages: [{ ...messageFixture, platformId: 'dm-sarah' }],
+        }),
+      ),
     );
+    sessionStorage.setItem('webchat_token', 'secret');
+
+    render(<App />);
+
+    expect(await screen.findByText('Agent reply')).toBeInTheDocument();
+    const replyRow = screen.getByText('Agent reply').closest('.msg');
+    expect(replyRow?.querySelector('.msg-sender')?.textContent).toBe('Sarah');
+  });
+
+  it('shows the mentioned agent name for lobby replies', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          messages: [
+            {
+              id: 'in-1',
+              direction: 'inbound',
+              text: '@sarah hello',
+              timestamp: 1,
+              platformId: 'lobby-1',
+              threadId: 'main',
+            },
+            messageFixture,
+          ],
+        }),
+      ),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+
+    render(<App />);
+
+    expect(await screen.findByText('Agent reply')).toBeInTheDocument();
+    const replyRow = screen.getByText('Agent reply').closest('.msg');
+    expect(replyRow?.querySelector('.msg-sender')?.textContent).toBe('Sarah');
+  });
+
+  it('renders inline code and fenced blocks in chat messages', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          messages: [
+            {
+              id: 'code-1',
+              direction: 'outbound',
+              text: 'Try `npm install` then:\n```\npnpm dev\n```',
+              timestamp: 1,
+              platformId: 'lobby-1',
+              threadId: 'main',
+            },
+          ],
+        }),
+      ),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+
+    render(<App />);
+
+    expect(await screen.findByText('npm install')).toBeInTheDocument();
+    expect(screen.getByText('pnpm dev')).toBeInTheDocument();
+    expect(document.querySelector('.msg .inline-code')?.textContent).toBe('npm install');
+    expect(document.querySelector('.msg .code-block')?.textContent).toBe('pnpm dev');
+  });
+
+  it('switches rooms and reloads thread state', async () => {
     sessionStorage.setItem('webchat_token', 'secret');
 
     const user = userEvent.setup();
     render(<App />);
-    await screen.findByRole('heading', { name: 'NanoClaw Chat' });
+    await screen.findByRole('heading', { name: 'NanoClaw' });
 
     await user.click(screen.getByRole('button', { name: 'Sarah' }));
 
-    expect(await screen.findByRole('button', { name: 'DM Main' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Sarah' })).toBeInTheDocument();
     expect(screen.getByPlaceholderText('Message…')).toBeInTheDocument();
   });
 
@@ -248,6 +323,7 @@ describe('App', () => {
 
     await user.click(screen.getByRole('button', { name: 'Thread B' }));
 
+    expect(screen.getByRole('heading', { name: 'Lobby — Thread B' })).toBeInTheDocument();
     await waitFor(() => {
       expect(screen.getByRole('button', { name: 'Thread B' })).toHaveClass('active');
     });
@@ -261,7 +337,7 @@ describe('App', () => {
 
     const textarea = screen.getByPlaceholderText(/Message… use @folder/);
     await user.type(textarea, 'hello world');
-    await user.click(screen.getByRole('button', { name: 'Send' }));
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
 
     expect(screen.getByText('hello world')).toBeInTheDocument();
     expect(screen.getByText('You')).toBeInTheDocument();
@@ -304,7 +380,7 @@ describe('App', () => {
     await screen.findByRole('heading', { name: 'Lobby' });
 
     await user.type(screen.getByPlaceholderText(/Message… use @folder/), 'fail me');
-    await user.click(screen.getByRole('button', { name: 'Send' }));
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
 
     expect(await screen.findByText('send failed: 500')).toBeInTheDocument();
     expect(screen.getByText('fail me')).toBeInTheDocument();
@@ -327,7 +403,7 @@ describe('App', () => {
     await screen.findByRole('heading', { name: 'Lobby' });
 
     await user.type(screen.getByPlaceholderText(/Message… use @folder/), 'x');
-    await user.click(screen.getByRole('button', { name: 'Send' }));
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
 
     expect(await screen.findByText('send failed')).toBeInTheDocument();
   });
@@ -347,13 +423,54 @@ describe('App', () => {
     render(<App />);
     await screen.findByText('Agent reply');
 
-    await user.click(screen.getByRole('button', { name: 'New thread' }));
+    await user.click(screen.getByRole('button', { name: 'New thread in Lobby' }));
 
     expect(await screen.findByRole('button', { name: 'Thread 1' })).toBeInTheDocument();
     await waitFor(() => {
       expect(screen.queryByText('Agent reply')).not.toBeInTheDocument();
     });
     expect(localStorage.getItem('webchat_threads:lobby-1')).toContain('thread_new-thread-uuid');
+  });
+
+  it('auto-names a thread from the first message', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    vi.mocked(api.loadThreads).mockClear();
+
+    await user.click(screen.getByRole('button', { name: 'New thread in Lobby' }));
+    await screen.findByRole('button', { name: 'Thread 1' });
+
+    await user.type(screen.getByPlaceholderText(/Message… use @folder/), 'Review the auth flow');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+
+    expect(await screen.findByRole('button', { name: 'Review the auth flow' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Thread 1' })).not.toBeInTheDocument();
+    expect(vi.mocked(api.loadThreads)).not.toHaveBeenCalled();
+  });
+
+  it('renames a thread from the sidebar', async () => {
+    localStorage.setItem(
+      'webchat_threads:lobby-1',
+      JSON.stringify([
+        { id: 'main', title: 'Main' },
+        { id: 'thread_b', title: 'Thread B' },
+      ]),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('button', { name: 'Thread B' });
+
+    await user.click(screen.getByRole('button', { name: 'Rename Thread B' }));
+    const renameInput = screen.getByLabelText('Thread name');
+    await user.clear(renameInput);
+    await user.type(renameInput, 'Renamed topic{Enter}');
+
+    expect(await screen.findByRole('button', { name: 'Renamed topic' })).toBeInTheDocument();
+    expect(localStorage.getItem('webchat_threads:lobby-1')).toContain('Renamed topic');
   });
 
   it('appends websocket messages for the active room and thread', async () => {
@@ -465,7 +582,7 @@ describe('App', () => {
     render(<App />);
 
     expect(await screen.findByText('Connecting…')).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'NanoClaw Chat' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'NanoClaw' })).not.toBeInTheDocument();
   });
 
   it('does not send when draft is blank or already sending', async () => {
@@ -474,7 +591,7 @@ describe('App', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'Lobby' });
 
-    const sendButton = screen.getByRole('button', { name: 'Send' });
+    const sendButton = screen.getByRole('button', { name: 'Send message' });
     expect(sendButton).toBeDisabled();
 
     await user.type(screen.getByPlaceholderText(/Message… use @folder/), '   ');
@@ -545,9 +662,9 @@ describe('App', () => {
   it('highlights active room buttons in each section', async () => {
     sessionStorage.setItem('webchat_token', 'secret');
     render(<App />);
-    await screen.findByRole('heading', { name: 'NanoClaw Chat' });
+    await screen.findByRole('heading', { name: 'NanoClaw' });
 
-    const roomsSection = screen.getByRole('heading', { name: 'Rooms' }).closest('section');
+    const roomsSection = screen.getByText('Rooms').closest('.nav-section');
     expect(roomsSection).not.toBeNull();
     const lobbyButton = within(roomsSection as HTMLElement).getByRole('button', { name: 'Lobby' });
     expect(lobbyButton).toHaveClass('active');
@@ -559,7 +676,7 @@ describe('App', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'Lobby' });
 
-    const roomsSection = screen.getByRole('heading', { name: 'Rooms' }).closest('section');
+    const roomsSection = screen.getByText('Rooms').closest('.nav-section');
     const otherLobby = within(roomsSection as HTMLElement).getByRole('button', { name: 'Other Lobby' });
     expect(otherLobby).not.toHaveClass('active');
 
@@ -631,14 +748,14 @@ describe('App', () => {
     render(<App />);
     await screen.findByRole('button', { name: 'Thread B' });
 
-    const mainButton = screen.getByRole('button', { name: 'Main' });
+    const lobbyButton = screen.getByRole('button', { name: 'Lobby' });
     const threadBButton = screen.getByRole('button', { name: 'Thread B' });
-    expect(mainButton).toHaveClass('active');
+    expect(lobbyButton).toHaveClass('active');
     expect(threadBButton).not.toHaveClass('active');
 
     await user.click(threadBButton);
 
-    expect(mainButton).not.toHaveClass('active');
+    expect(lobbyButton).not.toHaveClass('active');
     expect(threadBButton).toHaveClass('active');
   });
 
@@ -694,11 +811,214 @@ describe('App', () => {
 
     const textarea = screen.getByPlaceholderText(/Message… use @folder/);
     fireEvent.change(textarea, { target: { value: 'first' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
     fireEvent.change(textarea, { target: { value: 'second' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
 
     expect(api.sendMessage).toHaveBeenCalledTimes(1);
     expect(api.sendMessage).toHaveBeenCalledWith('secret', 'lobby-1', 'main', 'first');
+  });
+
+  it('deletes a thread from the sidebar and returns to main', async () => {
+    localStorage.setItem(
+      'webchat_threads:lobby-1',
+      JSON.stringify([
+        { id: 'main', title: 'Main' },
+        { id: 'thread_b', title: 'Thread B' },
+      ]),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('button', { name: 'Thread B' });
+
+    await user.click(screen.getByRole('button', { name: 'Thread B' }));
+    await user.click(screen.getByRole('button', { name: 'Delete Thread B' }));
+
+    expect(screen.queryByRole('button', { name: 'Thread B' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Lobby' })).toHaveClass('active');
+    expect(localStorage.getItem('webchat_threads:lobby-1')).not.toContain('thread_b');
+  });
+
+  it('renders theme toggle in authenticated view', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    render(<App />);
+    await screen.findByRole('heading', { name: 'NanoClaw' });
+
+    expect(screen.getByRole('radiogroup', { name: 'Theme' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Light' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Dark' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'System' })).toBeInTheDocument();
+  });
+
+  it('persists dark theme preference when selected', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'NanoClaw' });
+
+    await user.click(screen.getByRole('radio', { name: 'Dark' }));
+
+    expect(document.documentElement.dataset.theme).toBe('dark');
+    expect(localStorage.getItem('webchat_theme')).toBe('dark');
+    expect(screen.getByRole('radio', { name: 'Dark' })).toHaveAttribute('aria-checked', 'true');
+  });
+
+  it('moves theme selection with arrow keys', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    localStorage.setItem('webchat_theme', 'light');
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'NanoClaw' });
+
+    const lightRadio = screen.getByRole('radio', { name: 'Light' });
+    lightRadio.focus();
+    await user.keyboard('{ArrowRight}');
+
+    expect(screen.getByRole('radio', { name: 'System' })).toHaveAttribute('aria-checked', 'true');
+    expect(localStorage.getItem('webchat_theme')).toBe('system');
+  });
+
+  it('collapses expanded threads from the sidebar caret', async () => {
+    localStorage.setItem(
+      'webchat_threads:lobby-1',
+      JSON.stringify([
+        { id: 'main', title: 'Main' },
+        { id: 'thread_b', title: 'Thread B' },
+      ]),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('button', { name: 'Thread B' });
+
+    await user.click(screen.getByRole('button', { name: 'Collapse threads in Lobby' }));
+
+    expect(screen.queryByRole('button', { name: 'Thread B' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Expand threads in Lobby' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Expand threads in Lobby' }));
+    expect(screen.getByRole('button', { name: 'Thread B' })).toBeInTheDocument();
+  });
+
+  it('skips thread rename when the title is unchanged or blank', async () => {
+    localStorage.setItem(
+      'webchat_threads:lobby-1',
+      JSON.stringify([
+        { id: 'main', title: 'Main' },
+        { id: 'thread_b', title: 'Thread B' },
+      ]),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('button', { name: 'Thread B' });
+
+    await user.click(screen.getByRole('button', { name: 'Rename Thread B' }));
+    const renameInput = screen.getByLabelText('Thread name');
+    await user.clear(renameInput);
+    await user.type(renameInput, 'Thread B{Enter}');
+
+    expect(screen.getByRole('button', { name: 'Thread B' })).toBeInTheDocument();
+    expect(localStorage.getItem('webchat_threads:lobby-1')).toContain('"title":"Thread B"');
+    expect(localStorage.getItem('webchat_threads:lobby-1')).not.toContain('Renamed');
+
+    await user.click(screen.getByRole('button', { name: 'Rename Thread B' }));
+    await user.clear(screen.getByLabelText('Thread name'));
+    await user.type(screen.getByLabelText('Thread name'), '   {Enter}');
+
+    expect(screen.getByRole('button', { name: 'Thread B' })).toBeInTheDocument();
+  });
+
+  it('deletes a child thread while viewing the room main thread', async () => {
+    localStorage.setItem(
+      'webchat_threads:lobby-1',
+      JSON.stringify([
+        { id: 'main', title: 'Main' },
+        { id: 'thread_b', title: 'Thread B' },
+      ]),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('button', { name: 'Thread B' });
+
+    await user.click(screen.getByRole('button', { name: 'Delete Thread B' }));
+
+    expect(screen.queryByRole('button', { name: 'Thread B' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Lobby' })).toHaveClass('active');
+    expect(screen.getByRole('heading', { name: 'Lobby' })).toBeInTheDocument();
+  });
+
+  it('deletes a thread in another room without changing the active view', async () => {
+    localStorage.setItem(
+      'webchat_threads:lobby-1',
+      JSON.stringify([
+        { id: 'main', title: 'Main' },
+        { id: 'thread_b', title: 'Thread B' },
+      ]),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('button', { name: 'Thread B' });
+
+    await user.click(screen.getByRole('button', { name: 'Sarah' }));
+    expect(screen.getByRole('heading', { name: 'Sarah' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Delete Thread B' }));
+
+    expect(screen.queryByRole('button', { name: 'Thread B' })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Sarah' })).toBeInTheDocument();
+  });
+
+  it('does not auto-rename a thread that already has a custom title', async () => {
+    localStorage.setItem(
+      'webchat_threads:lobby-1',
+      JSON.stringify([
+        { id: 'main', title: 'Main' },
+        { id: 'custom-thread', title: 'Custom topic' },
+      ]),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('button', { name: 'Custom topic' });
+
+    await user.click(screen.getByRole('button', { name: 'Custom topic' }));
+    await user.type(screen.getByPlaceholderText(/Message… use @folder/), 'First message in thread');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+
+    expect(screen.getByRole('button', { name: 'Custom topic' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'First message in thread' })).not.toBeInTheDocument();
+  });
+
+  it('shows a generic error when send fails with a non-Error value', async () => {
+    vi.mocked(api.sendMessage).mockRejectedValueOnce('network down');
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    await user.type(screen.getByPlaceholderText(/Message… use @folder/), 'hello');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+
+    expect(await screen.findByText('send failed')).toBeInTheDocument();
+  });
+
+  it('clears data-theme when system preference is selected', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    localStorage.setItem('webchat_theme', 'dark');
+    document.documentElement.dataset.theme = 'dark';
+
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'NanoClaw' });
+
+    await user.click(screen.getByRole('radio', { name: 'System' }));
+
+    expect(document.documentElement.dataset.theme).toBeUndefined();
+    expect(localStorage.getItem('webchat_theme')).toBe('system');
+    expect(screen.getByRole('radio', { name: 'System' })).toHaveAttribute('aria-checked', 'true');
   });
 });
