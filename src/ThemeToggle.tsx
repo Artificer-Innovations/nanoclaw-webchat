@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from 'react';
+import { useState, type CSSProperties, type KeyboardEvent } from 'react';
 import { applyTheme, getStoredTheme, setStoredTheme, type ThemePreference } from './theme';
 
 const OPTIONS: { value: ThemePreference; label: string }[] = [
@@ -46,7 +46,7 @@ function MoonIcon() {
   );
 }
 
-const ICONS: Record<ThemePreference, () => React.ReactNode> = {
+const ICONS: Record<ThemePreference, () => JSX.Element> = {
   light: SunIcon,
   system: MonitorIcon,
   dark: MoonIcon,
@@ -62,6 +62,24 @@ export function ThemeToggle() {
     applyTheme(next);
   };
 
+  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    const currentIndex = OPTIONS.findIndex((option) => option.value === preference);
+    let nextIndex: number | null = null;
+    if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+      nextIndex = (currentIndex - 1 + OPTIONS.length) % OPTIONS.length;
+    } else if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+      nextIndex = (currentIndex + 1) % OPTIONS.length;
+    } else if (event.key === 'Home') {
+      nextIndex = 0;
+    } else if (event.key === 'End') {
+      nextIndex = OPTIONS.length - 1;
+    }
+
+    if (nextIndex === null) return;
+    event.preventDefault();
+    handleChange(OPTIONS[nextIndex]!.value);
+  };
+
   return (
     <div className="sidebar-footer">
       <div
@@ -69,18 +87,21 @@ export function ThemeToggle() {
         role="radiogroup"
         aria-label="Theme"
         style={{ '--active-index': activeIndex } as CSSProperties}
+        onKeyDown={handleKeyDown}
       >
         <span className="theme-toggle-thumb" aria-hidden="true" />
         {OPTIONS.map((option) => {
           const Icon = ICONS[option.value];
+          const isActive = preference === option.value;
           return (
             <button
               key={option.value}
               type="button"
               role="radio"
               aria-label={option.label}
-              aria-checked={preference === option.value}
-              className={preference === option.value ? 'active' : ''}
+              aria-checked={isActive}
+              tabIndex={isActive ? 0 : -1}
+              className={isActive ? 'active' : ''}
               onClick={() => handleChange(option.value)}
             >
               <Icon />

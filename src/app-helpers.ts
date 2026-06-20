@@ -10,6 +10,21 @@ export function resolveActiveThreadTitle(
   return match ? match.title : null;
 }
 
+export function threadsFromState(
+  threadsByRoom: Record<string, ThreadMeta[]>,
+  platformId: string,
+): ThreadMeta[] {
+  return threadsByRoom[platformId] ?? [];
+}
+
+export function threadsForRoom(
+  threadsByRoom: Record<string, ThreadMeta[]>,
+  platformId: string,
+  loadRoomThreads: (platformId: string) => ThreadMeta[],
+): ThreadMeta[] {
+  return threadsByRoom[platformId] ?? loadRoomThreads(platformId);
+}
+
 export function canSendMessage(
   token: string,
   room: WebChatRoom | null,

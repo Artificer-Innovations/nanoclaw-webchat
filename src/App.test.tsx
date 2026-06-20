@@ -438,6 +438,8 @@ describe('App', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'Lobby' });
 
+    vi.mocked(api.loadThreads).mockClear();
+
     await user.click(screen.getByRole('button', { name: 'New thread in Lobby' }));
     await screen.findByRole('button', { name: 'Thread 1' });
 
@@ -446,6 +448,7 @@ describe('App', () => {
 
     expect(await screen.findByRole('button', { name: 'Review the auth flow' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Thread 1' })).not.toBeInTheDocument();
+    expect(vi.mocked(api.loadThreads)).not.toHaveBeenCalled();
   });
 
   it('renames a thread from the sidebar', async () => {
@@ -859,6 +862,21 @@ describe('App', () => {
     expect(document.documentElement.dataset.theme).toBe('dark');
     expect(localStorage.getItem('webchat_theme')).toBe('dark');
     expect(screen.getByRole('radio', { name: 'Dark' })).toHaveAttribute('aria-checked', 'true');
+  });
+
+  it('moves theme selection with arrow keys', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    localStorage.setItem('webchat_theme', 'light');
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'NanoClaw' });
+
+    const lightRadio = screen.getByRole('radio', { name: 'Light' });
+    lightRadio.focus();
+    await user.keyboard('{ArrowRight}');
+
+    expect(screen.getByRole('radio', { name: 'System' })).toHaveAttribute('aria-checked', 'true');
+    expect(localStorage.getItem('webchat_theme')).toBe('system');
   });
 
   it('collapses expanded threads from the sidebar caret', async () => {

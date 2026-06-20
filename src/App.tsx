@@ -3,6 +3,8 @@ import {
   canSendMessage,
   resolveActiveThreadTitle,
   shouldAppendMessage,
+  threadsForRoom,
+  threadsFromState,
 } from './app-helpers';
 import { formatMessageTime } from './format-message-time';
 import { FormattedMessage } from './FormattedMessage';
@@ -140,7 +142,7 @@ export function App() {
   const updateThreadsForRoom = useCallback(
     (platformId: string, updater: (threads: ThreadMeta[]) => ThreadMeta[]) => {
       setThreadsByRoom((prev) => {
-        const current = prev[platformId];
+        const current = threadsForRoom(prev, platformId, loadThreads);
         const next = updater(current);
         saveThreads(platformId, next);
         return { ...prev, [platformId]: next };
@@ -157,6 +159,7 @@ export function App() {
     const hadNoMessages = messages.length === 0;
     const activeRoom = room;
     const activeThread = threadId;
+    const activeThreads = threadsFromState(threadsByRoom, activeRoom.platformId);
     setDraft('');
     const optimistic: WebChatMessage = {
       id: `local-${Date.now()}`,
@@ -170,8 +173,7 @@ export function App() {
     try {
       await sendMessage(token, activeRoom.platformId, activeThread, text);
       if (hadNoMessages && activeThread !== 'main') {
-        const threads = loadThreads(activeRoom.platformId);
-        const thread = threads.find((t) => t.id === activeThread);
+        const thread = activeThreads.find((t) => t.id === activeThread);
         if (thread && isAutoThreadTitle(thread.title)) {
           const autoTitle = titleFromMessage(text);
           updateThreadsForRoom(activeRoom.platformId, (list) =>
@@ -207,7 +209,7 @@ export function App() {
   };
 
   const handleNewThread = (targetRoom: WebChatRoom) => {
-    const current = threadsByRoom[targetRoom.platformId];
+    const current = threadsForRoom(threadsByRoom, targetRoom.platformId, loadThreads);
     const id = newThreadId();
     const childCount = current.filter((t) => t.id !== 'main').length;
     const next = [...current, { id, title: defaultThreadTitle(childCount) }];
