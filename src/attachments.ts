@@ -154,6 +154,31 @@ export function attachmentDataUrl(att: WebChatAttachment): string | null {
   return `data:${att.mimeType};base64,${att.data}`;
 }
 
+export function attachmentToBlob(att: WebChatAttachment): Blob | null {
+  if (!att.data) return null;
+  try {
+    const binary = atob(att.data);
+    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    return new Blob([bytes], { type: att.mimeType });
+  } catch {
+    return null;
+  }
+}
+
+/** Open attachment content in a new tab (blob URL — data: URIs are blocked in new tabs). */
+export function openAttachmentInNewTab(att: WebChatAttachment): boolean {
+  const blob = attachmentToBlob(att);
+  if (!blob) return false;
+  const url = URL.createObjectURL(blob);
+  const tab = window.open(url, '_blank', 'noopener,noreferrer');
+  if (!tab) {
+    URL.revokeObjectURL(url);
+    return false;
+  }
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  return true;
+}
+
 export function attachmentPreviewUrl(att: PendingAttachment | WebChatAttachment): string | null {
   if ('previewUrl' in att && att.previewUrl) return att.previewUrl;
   return attachmentDataUrl(att);

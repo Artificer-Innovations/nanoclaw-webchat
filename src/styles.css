@@ -775,6 +775,11 @@ body {
   margin-bottom: 0.35rem;
 }
 
+.msg-attachment-image {
+  cursor: pointer;
+  text-decoration: none;
+}
+
 .msg-attachment-image img {
   display: block;
   max-width: min(100%, 320px);

@@ -1,5 +1,6 @@
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
+import * as attachments from './attachments';
 import { MessageAttachments } from './MessageAttachments';
 
 describe('MessageAttachments', () => {
@@ -34,10 +35,30 @@ describe('MessageAttachments', () => {
       'src',
       'data:image/png;base64,aGVsbG8=',
     );
-    const link = screen.getByRole('link', { name: 'photo.png' });
+    const link = screen.getByRole('link', { name: 'Open photo.png in new tab' });
     expect(link).toHaveAttribute('href', 'data:image/png;base64,aGVsbG8=');
-    expect(link).toHaveAttribute('target', '_blank');
-    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    expect(link).not.toHaveAttribute('target');
+  });
+
+  it('opens image attachments via blob URL on click', () => {
+    const openSpy = vi.spyOn(attachments, 'openAttachmentInNewTab').mockReturnValue(true);
+    const { container } = render(
+      <MessageAttachments
+        attachments={[
+          {
+            name: 'photo.png',
+            mimeType: 'image/png',
+            type: 'image',
+            data: 'aGVsbG8=',
+          },
+        ]}
+      />,
+    );
+    fireEvent.click(container.querySelector('.msg-attachment-image')!);
+    expect(openSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'photo.png', mimeType: 'image/png', data: 'aGVsbG8=' }),
+    );
+    openSpy.mockRestore();
   });
 
   it('renders file attachments as download links', () => {
@@ -77,11 +98,11 @@ describe('MessageAttachments', () => {
   });
 
   it('uses distinct keys for duplicate filenames', () => {
-    const attachments = [
+    const attachmentList = [
       { name: 'notes.md', mimeType: 'text/markdown', type: 'file' as const, size: 10, data: 'YQ==' },
       { name: 'notes.md', mimeType: 'text/markdown', type: 'file' as const, size: 10, data: 'Yg==' },
     ];
-    const { container } = render(<MessageAttachments attachments={attachments} />);
+    const { container } = render(<MessageAttachments attachments={attachmentList} />);
     expect(container.querySelectorAll('.msg-attachment-file')).toHaveLength(2);
   });
 });

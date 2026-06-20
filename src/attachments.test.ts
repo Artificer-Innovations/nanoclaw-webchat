@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   attachmentDataUrl,
   attachmentPreviewUrl,
+  attachmentToBlob,
   attachmentTypeFromMime,
   formatAttachmentRejections,
   inferMimeType,
@@ -9,6 +10,7 @@ import {
   MAX_ATTACHMENTS,
   mergePendingAttachments,
   normalizeAttachment,
+  openAttachmentInNewTab,
   readAttachmentFiles,
   removePendingAtIndex,
   revokeAttachmentPreviews,
@@ -164,6 +166,74 @@ describe('attachments', () => {
         type: 'image',
       }),
     ).toBeNull();
+  });
+
+  it('decodes attachments to blobs and opens them in a new tab', () => {
+    const att = {
+      name: 'photo.png',
+      mimeType: 'image/png',
+      type: 'image' as const,
+      data: 'aGVsbG8=',
+    };
+    const blob = attachmentToBlob(att);
+    expect(blob).toBeInstanceOf(Blob);
+    expect(blob?.type).toBe('image/png');
+
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:opened');
+    const open = vi.spyOn(window, 'open').mockReturnValue({} as Window);
+    expect(openAttachmentInNewTab(att)).toBe(true);
+    expect(createObjectURL).toHaveBeenCalledWith(blob);
+    expect(open).toHaveBeenCalledWith('blob:opened', '_blank', 'noopener,noreferrer');
+    createObjectURL.mockRestore();
+    open.mockRestore();
+  });
+
+  it('returns false when a new tab cannot be opened', () => {
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:opened');
+    vi.spyOn(window, 'open').mockReturnValue(null);
+    const revoke = vi.spyOn(URL, 'revokeObjectURL');
+    expect(
+      openAttachmentInNewTab({
+        name: 'photo.png',
+        mimeType: 'image/png',
+        type: 'image',
+        data: 'aGVsbG8=',
+      }),
+    ).toBe(false);
+    expect(revoke).toHaveBeenCalledWith('blob:opened');
+    revoke.mockRestore();
+  });
+
+  it('returns null for invalid attachment data', () => {
+    expect(attachmentToBlob({ name: 'x', mimeType: 'text/plain', type: 'file' })).toBeNull();
+    const att = { name: 'bad.bin', mimeType: 'application/octet-stream', type: 'file' as const, data: 'abc' };
+    const decode = vi.spyOn(global, 'atob').mockImplementation(() => {
+      throw new Error('invalid base64');
+    });
+    expect(attachmentToBlob(att)).toBeNull();
+    expect(openAttachmentInNewTab(att)).toBe(false);
+    decode.mockRestore();
+  });
+
+  it('revokes blob URLs after opening a tab', () => {
+    vi.useFakeTimers();
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:opened');
+    vi.spyOn(window, 'open').mockReturnValue({} as Window);
+    const revoke = vi.spyOn(URL, 'revokeObjectURL');
+    try {
+      openAttachmentInNewTab({
+        name: 'photo.png',
+        mimeType: 'image/png',
+        type: 'image',
+        data: 'aGVsbG8=',
+      });
+      vi.advanceTimersByTime(60_000);
+      expect(revoke).toHaveBeenCalledWith('blob:opened');
+    } finally {
+      createObjectURL.mockRestore();
+      revoke.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it('uses preview URLs when present', () => {

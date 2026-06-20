@@ -1,4 +1,4 @@
-import { attachmentDataUrl, normalizeAttachment } from './attachments';
+import { attachmentDataUrl, normalizeAttachment, openAttachmentInNewTab } from './attachments';
 import type { WebChatAttachment } from './types';
 
 export function MessageAttachments({ attachments }: { attachments: WebChatAttachment[] }) {
@@ -18,8 +18,11 @@ export function MessageAttachments({ attachments }: { attachments: WebChatAttach
               key={key}
               className="msg-attachment-image"
               href={dataUrl}
-              target="_blank"
-              rel="noopener noreferrer"
+              aria-label={`Open ${att.name} in new tab`}
+              onClick={(event) => {
+                event.preventDefault();
+                openAttachmentInNewTab(att);
+              }}
             >
               <img src={dataUrl} alt={att.name} loading="lazy" />
             </a>
