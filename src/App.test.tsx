@@ -1215,7 +1215,7 @@ describe('App', () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText('read failed')).toBeInTheDocument();
+      expect(screen.getByText('Could not read bad.txt')).toBeInTheDocument();
     });
     vi.stubGlobal('FileReader', Original);
   });
@@ -1231,6 +1231,23 @@ describe('App', () => {
     expect(screen.queryByText('   ')).not.toBeInTheDocument();
   });
 
+  it('shows an error when a file exceeds the size limit', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const big = new File([new Uint8Array(attachments.MAX_ATTACHMENT_BYTES + 1)], 'big.png', {
+      type: 'image/png',
+    });
+    fireEvent.drop(document.querySelector('.composer-box')!, {
+      dataTransfer: { files: [big] },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('big.png exceeds the 5 MB limit')).toBeInTheDocument();
+    });
+  });
+
   it('shows a generic attachment error for non-Error failures', async () => {
     sessionStorage.setItem('webchat_token', 'secret');
     vi.spyOn(attachments, 'readAttachmentFiles').mockRejectedValueOnce('nope');
@@ -1243,6 +1260,21 @@ describe('App', () => {
 
     await waitFor(() => {
       expect(screen.getByText('attachment failed')).toBeInTheDocument();
+    });
+  });
+
+  it('shows attachment errors thrown as Error instances', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    vi.spyOn(attachments, 'readAttachmentFiles').mockRejectedValueOnce(new Error('boom'));
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    fireEvent.drop(document.querySelector('.composer-box')!, {
+      dataTransfer: { files: [new File(['x'], 'bad.txt', { type: 'text/plain' })] },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('boom')).toBeInTheDocument();
     });
   });
 

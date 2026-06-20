@@ -28,8 +28,13 @@ export interface WebChatAttachment {
   /** `image` for image/* MIME types; `file` for everything else. */
   type: 'image' | 'file';
   size?: number;
-  /** Base64 payload (no data: prefix). Present on sends and in history/WS. */
+  /**
+   * Base64 payload (no data: prefix). Required on client sends; present on history/WS
+   * today. Adapters may later omit `data` on reads and serve blobs via `url` instead.
+   */
   data?: string;
+  /** Future: server URL when `data` is omitted from history/WS responses. */
+  url?: string;
 }
 
 export interface WebChatMessage {

@@ -18,6 +18,7 @@ import {
   updateSyncCursor,
 } from './app-helpers';
 import {
+  formatAttachmentRejections,
   readAttachmentFiles,
   removePendingAtIndex,
   revokeAttachmentPreviews,
@@ -314,7 +315,12 @@ export function App() {
   const addPendingFiles = async (files: FileList | File[] | null) => {
     if (!files || files.length === 0) return;
     try {
-      const next = await readAttachmentFiles(files, pendingAttachments.length);
+      const { attachments: next, rejected } = await readAttachmentFiles(
+        files,
+        pendingAttachments.length,
+      );
+      const rejectionMessage = formatAttachmentRejections(rejected);
+      if (rejectionMessage) setError(rejectionMessage);
       if (next.length === 0) return;
       setPendingAttachments((prev) => [...prev, ...next]);
     } catch (err) {

@@ -1,4 +1,4 @@
-import { attachmentDataUrl } from './attachments';
+import { attachmentDataUrl, normalizeAttachment } from './attachments';
 import type { WebChatAttachment } from './types';
 
 export function MessageAttachments({ attachments }: { attachments: WebChatAttachment[] }) {
@@ -6,16 +6,17 @@ export function MessageAttachments({ attachments }: { attachments: WebChatAttach
 
   return (
     <div className="msg-attachments">
-      {attachments.map((att) => {
+      {attachments.map((raw, index) => {
+        const att = normalizeAttachment(raw);
         const dataUrl = attachmentDataUrl(att);
         if (!dataUrl) return null;
-        const key = `${att.name}-${att.size ?? 0}`;
+        const key = `${index}-${att.name}-${att.size ?? 0}`;
 
-        if (att.type === 'image' || att.mimeType.startsWith('image/')) {
+        if (att.type === 'image') {
           return (
             <a
               key={key}
-              className="msg-attachment msg-attachment-image"
+              className="msg-attachment-image"
               href={dataUrl}
               target="_blank"
               rel="noopener noreferrer"

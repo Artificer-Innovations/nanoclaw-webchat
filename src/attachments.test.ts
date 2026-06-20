@@ -3,9 +3,11 @@ import {
   attachmentDataUrl,
   attachmentPreviewUrl,
   attachmentTypeFromMime,
+  formatAttachmentRejections,
   inferMimeType,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENTS,
+  normalizeAttachment,
   readAttachmentFiles,
   removePendingAtIndex,
 } from './attachments';
@@ -23,9 +25,37 @@ describe('attachments', () => {
     expect(attachmentTypeFromMime('text/markdown')).toBe('file');
   });
 
+  it('normalizes attachment type from mimeType', () => {
+    expect(
+      normalizeAttachment({
+        name: 'photo.png',
+        mimeType: 'image/png',
+        type: 'file',
+      }),
+    ).toMatchObject({ type: 'image' });
+  });
+
+  it('formats rejection messages', () => {
+    expect(
+      formatAttachmentRejections([
+        { name: 'big.png', reason: 'too_large' },
+        { name: 'bad.txt', reason: 'read_failed' },
+        { name: 'extra.txt', reason: 'capacity' },
+      ]),
+    ).toBe(
+      'big.png exceeds the 5 MB limit; Could not read bad.txt; Only 4 attachments allowed (extra.txt skipped)',
+    );
+    expect(formatAttachmentRejections([])).toBeNull();
+  });
+
+  it('leaves matching attachment types unchanged', () => {
+    const att = { name: 'a.png', mimeType: 'image/png', type: 'image' as const };
+    expect(normalizeAttachment(att)).toBe(att);
+  });
+
   it('reads image files as base64 attachments', async () => {
     const file = new File(['hello'], 'photo.png', { type: 'image/png' });
-    const attachments = await readAttachmentFiles([file]);
+    const { attachments } = await readAttachmentFiles([file]);
     expect(attachments).toHaveLength(1);
     expect(attachments[0]).toMatchObject({
       name: 'photo.png',
@@ -39,7 +69,7 @@ describe('attachments', () => {
 
   it('reads non-image files such as markdown', async () => {
     const file = new File(['# Title'], 'notes.md', { type: 'text/markdown' });
-    const attachments = await readAttachmentFiles([file]);
+    const { attachments } = await readAttachmentFiles([file]);
     expect(attachments).toHaveLength(1);
     expect(attachments[0]).toMatchObject({
       name: 'notes.md',
@@ -53,24 +83,26 @@ describe('attachments', () => {
     const files = Array.from({ length: MAX_ATTACHMENTS + 2 }, (_, i) =>
       new File(['x'], `photo-${i}.png`, { type: 'image/png' }),
     );
-    const attachments = await readAttachmentFiles(files);
+    const { attachments, rejected } = await readAttachmentFiles(files);
     expect(attachments).toHaveLength(MAX_ATTACHMENTS);
+    expect(rejected).toHaveLength(2);
     attachments.forEach((att) => URL.revokeObjectURL(att.previewUrl));
   });
 
   it('respects existing attachment count', async () => {
     const files = [new File(['x'], 'a.png', { type: 'image/png' }), new File(['y'], 'b.png', { type: 'image/png' })];
-    const attachments = await readAttachmentFiles(files, MAX_ATTACHMENTS - 1);
+    const { attachments } = await readAttachmentFiles(files, MAX_ATTACHMENTS - 1);
     expect(attachments).toHaveLength(1);
     URL.revokeObjectURL(attachments[0]!.previewUrl);
   });
 
-  it('skips files over the size limit', async () => {
+  it('reports files over the size limit', async () => {
     const big = new File([new Uint8Array(MAX_ATTACHMENT_BYTES + 1)], 'big.png', {
       type: 'image/png',
     });
-    const attachments = await readAttachmentFiles([big]);
+    const { attachments, rejected } = await readAttachmentFiles([big]);
     expect(attachments).toHaveLength(0);
+    expect(rejected).toEqual([{ name: 'big.png', reason: 'too_large' }]);
   });
 
   it('builds data URLs from stored attachments', () => {
@@ -120,13 +152,13 @@ describe('attachments', () => {
       }
     }
     vi.stubGlobal('FileReader', RawReader);
-    const attachments = await readAttachmentFiles([new File(['x'], 'a.txt', { type: 'text/plain' })]);
+    const { attachments } = await readAttachmentFiles([new File(['x'], 'a.txt', { type: 'text/plain' })]);
     expect(attachments[0]?.data).toBe('rawbase64');
     URL.revokeObjectURL(attachments[0]!.previewUrl);
     vi.stubGlobal('FileReader', Original);
   });
 
-  it('surfaces FileReader errors', async () => {
+  it('reports FileReader errors per file without failing the batch', async () => {
     const Original = global.FileReader;
     class ErrorReader extends Original {
       readAsDataURL() {
@@ -134,20 +166,18 @@ describe('attachments', () => {
       }
     }
     vi.stubGlobal('FileReader', ErrorReader);
-    await expect(readAttachmentFiles([new File(['x'], 'a.txt', { type: 'text/plain' })])).rejects.toThrow(
-      'read failed',
-    );
+    const good = new File(['x'], 'good.txt', { type: 'text/plain' });
+    const bad = new File(['x'], 'bad.txt', { type: 'text/plain' });
+    const { attachments, rejected } = await readAttachmentFiles([good, bad]);
+    expect(attachments).toHaveLength(0);
+    expect(rejected).toEqual([
+      { name: 'good.txt', reason: 'read_failed' },
+      { name: 'bad.txt', reason: 'read_failed' },
+    ]);
     vi.stubGlobal('FileReader', Original);
   });
 
-  it('exposes the readImageFiles alias', async () => {
-    const { readImageFiles } = await import('./attachments');
-    const attachments = await readImageFiles([new File(['x'], 'a.png', { type: 'image/png' })]);
-    URL.revokeObjectURL(attachments[0]!.previewUrl);
-    expect(attachments).toHaveLength(1);
-  });
-
-  it('rejects non-string FileReader results', async () => {
+  it('rejects non-string FileReader results per file', async () => {
     const Original = global.FileReader;
     class BadReader extends Original {
       readAsDataURL() {
@@ -156,9 +186,11 @@ describe('attachments', () => {
       }
     }
     vi.stubGlobal('FileReader', BadReader);
-    await expect(readAttachmentFiles([new File(['x'], 'a.txt', { type: 'text/plain' })])).rejects.toThrow(
-      'read failed',
-    );
+    const { attachments, rejected } = await readAttachmentFiles([
+      new File(['x'], 'a.txt', { type: 'text/plain' }),
+    ]);
+    expect(attachments).toHaveLength(0);
+    expect(rejected).toEqual([{ name: 'a.txt', reason: 'read_failed' }]);
     vi.stubGlobal('FileReader', Original);
   });
 
@@ -183,13 +215,15 @@ describe('attachments', () => {
 
   it('skips unnamed files and respects attachment capacity', async () => {
     const blank = new File(['x'], '   ', { type: 'text/plain' });
-    expect(await readAttachmentFiles([blank])).toHaveLength(0);
+    expect((await readAttachmentFiles([blank])).attachments).toHaveLength(0);
 
     const full = Array.from({ length: MAX_ATTACHMENTS }, (_, i) =>
       new File(['x'], `file-${i}.txt`, { type: 'text/plain' }),
     );
     const loaded = await readAttachmentFiles(full);
-    loaded.forEach((att) => URL.revokeObjectURL(att.previewUrl));
-    expect(await readAttachmentFiles([new File(['y'], 'extra.txt')], MAX_ATTACHMENTS)).toHaveLength(0);
+    loaded.attachments.forEach((att) => URL.revokeObjectURL(att.previewUrl));
+    const overflow = await readAttachmentFiles([new File(['y'], 'extra.txt')], MAX_ATTACHMENTS);
+    expect(overflow.attachments).toHaveLength(0);
+    expect(overflow.rejected).toEqual([{ name: 'extra.txt', reason: 'capacity' }]);
   });
 });

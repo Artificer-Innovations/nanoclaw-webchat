@@ -73,10 +73,20 @@ Body:
 ```
 
 - `text` is optional when `attachments` is non-empty.
-- Max 4 attachments per message; max 5 MB decoded per attachment.
+- Max 4 attachments per message; max 5 MB decoded per attachment. The **server must reject** requests that exceed these limits (HTTP 400); the UI also enforces them client-side and surfaces rejections to the user.
 - Any file type is accepted; MIME type may be inferred from the filename when omitted.
 
 Response: `{ "messageId": "web-123", "timestamp": 1710000000000 }`
+
+### Attachment payloads in history and WebSocket
+
+Today, `data` (base64) is included on attachments in `GET .../messages` and WS push events so the UI can render without extra round trips. This is acceptable for low-volume personal webchat but does not scale: a full history fetch can return very large JSON when many attachments are buffered in memory.
+
+Planned escape hatch (not required for v1):
+
+- Adapters may expose `GET /api/attachments/:id` (or similar) and populate `url` on history/WS attachments instead of repeating `data`.
+- Client sends still use inline `data`; the server stores the blob once and returns `url` on reads.
+- Adapters may omit `data` from history/WS responses above a size threshold once `url` is available.
 
 ## WebSocket
 

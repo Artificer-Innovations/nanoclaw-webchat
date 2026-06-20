@@ -24,6 +24,18 @@ export interface PendingAttachment extends WebChatAttachment {
   previewUrl: string;
 }
 
+export type AttachmentRejectReason = 'too_large' | 'read_failed' | 'capacity';
+
+export interface AttachmentRejection {
+  name: string;
+  reason: AttachmentRejectReason;
+}
+
+export interface ReadAttachmentFilesResult {
+  attachments: PendingAttachment[];
+  rejected: AttachmentRejection[];
+}
+
 export function inferMimeType(name: string, mimeType = ''): string {
   if (mimeType.trim()) return mimeType.trim();
   const ext = name.includes('.') ? `.${name.split('.').pop()!.toLowerCase()}` : '';
@@ -32,6 +44,27 @@ export function inferMimeType(name: string, mimeType = ''): string {
 
 export function attachmentTypeFromMime(mimeType: string): 'image' | 'file' {
   return mimeType.startsWith('image/') ? 'image' : 'file';
+}
+
+/** Align `type` with `mimeType` when server payloads disagree. */
+export function normalizeAttachment(att: WebChatAttachment): WebChatAttachment {
+  const type = attachmentTypeFromMime(att.mimeType);
+  return att.type === type ? att : { ...att, type };
+}
+
+export function formatAttachmentRejections(rejected: AttachmentRejection[]): string | null {
+  if (rejected.length === 0) return null;
+  const parts = rejected.map(({ name, reason }) => {
+    switch (reason) {
+      case 'too_large':
+        return `${name} exceeds the 5 MB limit`;
+      case 'read_failed':
+        return `Could not read ${name}`;
+      case 'capacity':
+        return `Only ${MAX_ATTACHMENTS} attachments allowed (${name} skipped)`;
+    }
+  });
+  return parts.join('; ');
 }
 
 function readFileAsBase64(file: File): Promise<string> {
@@ -54,34 +87,53 @@ function readFileAsBase64(file: File): Promise<string> {
 export async function readAttachmentFiles(
   files: FileList | File[],
   existingCount = 0,
-): Promise<PendingAttachment[]> {
+): Promise<ReadAttachmentFilesResult> {
   const list = Array.from(files).filter((file) => file.name.trim().length > 0);
   const remaining = MAX_ATTACHMENTS - existingCount;
-  if (remaining <= 0 || list.length === 0) return [];
+  const rejected: AttachmentRejection[] = [];
 
-  const selected = list.slice(0, remaining);
-  const results: PendingAttachment[] = [];
-
-  for (const file of selected) {
-    if (file.size > MAX_ATTACHMENT_BYTES) continue;
-    const mimeType = inferMimeType(file.name, file.type);
-    const data = await readFileAsBase64(file);
-    const previewUrl = URL.createObjectURL(file);
-    results.push({
-      name: file.name,
-      mimeType,
-      type: attachmentTypeFromMime(mimeType),
-      size: file.size,
-      data,
-      previewUrl,
-    });
+  if (list.length === 0) {
+    return { attachments: [], rejected };
   }
 
-  return results;
-}
+  if (remaining <= 0) {
+    return {
+      attachments: [],
+      rejected: list.map((file) => ({ name: file.name, reason: 'capacity' })),
+    };
+  }
 
-/** @deprecated Use readAttachmentFiles */
-export const readImageFiles = readAttachmentFiles;
+  const selected = list.slice(0, remaining);
+  for (const file of list.slice(remaining)) {
+    rejected.push({ name: file.name, reason: 'capacity' });
+  }
+
+  const attachments: PendingAttachment[] = [];
+
+  for (const file of selected) {
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      rejected.push({ name: file.name, reason: 'too_large' });
+      continue;
+    }
+    const mimeType = inferMimeType(file.name, file.type);
+    try {
+      const data = await readFileAsBase64(file);
+      const previewUrl = URL.createObjectURL(file);
+      attachments.push({
+        name: file.name,
+        mimeType,
+        type: attachmentTypeFromMime(mimeType),
+        size: file.size,
+        data,
+        previewUrl,
+      });
+    } catch {
+      rejected.push({ name: file.name, reason: 'read_failed' });
+    }
+  }
+
+  return { attachments, rejected };
+}
 
 export function attachmentDataUrl(att: WebChatAttachment): string | null {
   if (!att.data) return null;
