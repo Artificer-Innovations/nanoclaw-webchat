@@ -593,7 +593,7 @@ export function App() {
                 type="button"
                 className="composer-send"
                 aria-label="Send message"
-                disabled={sending || !canSendMessage(token, room, draft, sending, pendingAttachments.length)}
+                disabled={!canSendMessage(token, room, draft, sending, pendingAttachments.length)}
                 onClick={() => void handleSend()}
               >
                 <SendArrowIcon />

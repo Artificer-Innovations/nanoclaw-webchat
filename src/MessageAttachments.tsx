@@ -14,15 +14,9 @@ export function MessageAttachments({ attachments }: { attachments: WebChatAttach
 
         if (att.type === 'image') {
           return (
-            <a
-              key={key}
-              className="msg-attachment-image"
-              href={dataUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
+            <div key={key} className="msg-attachment-image">
               <img src={dataUrl} alt={att.name} loading="lazy" />
-            </a>
+            </div>
           );
         }
 
