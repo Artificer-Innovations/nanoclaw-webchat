@@ -1,4 +1,4 @@
-import { useState, type CSSProperties, type KeyboardEvent } from 'react';
+import { useState, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react';
 import { applyTheme, getStoredTheme, setStoredTheme, type ThemePreference } from './theme';
 
 const OPTIONS: { value: ThemePreference; label: string }[] = [
@@ -46,7 +46,7 @@ function MoonIcon() {
   );
 }
 
-const ICONS: Record<ThemePreference, () => JSX.Element> = {
+const ICONS: Record<ThemePreference, () => ReactNode> = {
   light: SunIcon,
   system: MonitorIcon,
   dark: MoonIcon,
