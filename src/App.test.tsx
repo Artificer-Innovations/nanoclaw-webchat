@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import * as api from './api';
+import * as appHelpers from './app-helpers';
 import * as attachments from './attachments';
 import { App } from './App';
 import type { BootstrapPayload, WebChatMessage } from './types';
@@ -438,6 +439,95 @@ describe('App', () => {
     expect(screen.getByText('Agent reply')).toBeInTheDocument();
     expect(screen.getByText('hello world')).toBeInTheDocument();
     expect(screen.getAllByText('hello world')).toHaveLength(1);
+  });
+
+  it('does not duplicate when two websocket echoes arrive for queued optimistic sends', async () => {
+    vi.spyOn(appHelpers, 'canSendMessage').mockReturnValue(true);
+    vi.mocked(api.sendMessage).mockImplementation(() => new Promise(() => {}));
+    sessionStorage.setItem('webchat_token', 'secret');
+    const MockWebSocket = createWebSocketMock();
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const textarea = screen.getByPlaceholderText(/Message… use @folder/);
+    await user.type(textarea, 'first');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+    await screen.findByText('first');
+
+    await user.type(textarea, 'second');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+    await screen.findByText('second');
+
+    const ws = await waitForWebSocket(MockWebSocket);
+    ws.onmessage?.({
+      data: JSON.stringify({
+        type: 'message',
+        message: {
+          id: 'web-1',
+          direction: 'inbound',
+          text: 'first',
+          timestamp: 1,
+          platformId: 'lobby-1',
+          threadId: 'main',
+        },
+      }),
+    } as MessageEvent);
+    ws.onmessage?.({
+      data: JSON.stringify({
+        type: 'message',
+        message: {
+          id: 'web-2',
+          direction: 'inbound',
+          text: 'second',
+          timestamp: 2,
+          platformId: 'lobby-1',
+          threadId: 'main',
+        },
+      }),
+    } as MessageEvent);
+
+    expect(screen.getAllByText('first')).toHaveLength(1);
+    expect(screen.getAllByText('second')).toHaveLength(1);
+  });
+
+  it('does not duplicate when the websocket echo arrives before the POST response', async () => {
+    let resolveSend: ((value: { messageId: string; timestamp: number }) => void) | undefined;
+    vi.mocked(api.sendMessage).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveSend = resolve;
+        }),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+    const MockWebSocket = createWebSocketMock();
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    await user.type(screen.getByPlaceholderText(/Message… use @folder/), 'hello world');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+    await screen.findByText('hello world');
+
+    const ws = await waitForWebSocket(MockWebSocket);
+    ws.onmessage?.({
+      data: JSON.stringify({
+        type: 'message',
+        message: {
+          id: 'web-race',
+          direction: 'inbound',
+          text: 'hello world',
+          timestamp: 1_700_000_000_000,
+          platformId: 'lobby-1',
+          threadId: 'main',
+        },
+      }),
+    } as MessageEvent);
+
+    resolveSend?.({ messageId: 'web-race', timestamp: 1_700_000_000_000 });
+    await waitFor(() => {
+      expect(screen.getAllByText('hello world')).toHaveLength(1);
+    });
   });
 
   it('does not duplicate the user message when the websocket echoes the persisted send', async () => {

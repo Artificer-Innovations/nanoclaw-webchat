@@ -58,6 +58,69 @@ export function shouldAppendMessage(
   return isActiveConversation(message, room, threadId);
 }
 
+export function dedupeMessagesById(messages: WebChatMessage[]): WebChatMessage[] {
+  const seen = new Set<string>();
+  return messages.filter((m) => {
+    if (seen.has(m.id)) return false;
+    seen.add(m.id);
+    return true;
+  });
+}
+
+export function takePendingOptimisticId(queue: string[] | undefined): {
+  optimisticId: string | null;
+  remaining: string[];
+} {
+  if (!queue?.length) return { optimisticId: null, remaining: [] };
+  const [optimisticId, ...remaining] = queue;
+  return { optimisticId, remaining };
+}
+
+export function dropPendingOptimisticId(
+  pendingByThread: Record<string, string[]>,
+  platformId: string,
+  threadId: string,
+  optimisticId: string,
+): void {
+  const key = unreadKey(platformId, threadId);
+  const queue = pendingByThread[key];
+  if (!queue) return;
+  const next = queue.filter((id) => id !== optimisticId);
+  if (next.length) pendingByThread[key] = next;
+  else delete pendingByThread[key];
+}
+
+export function applyLiveMessage(
+  prev: WebChatMessage[],
+  message: WebChatMessage,
+  room: WebChatRoom | null,
+  threadId: string,
+  pendingOptimisticId: string | null,
+): WebChatMessage[] {
+  if (!isActiveConversation(message, room, threadId)) return prev;
+  const withoutOptimistic = pendingOptimisticId
+    ? prev.filter((m) => m.id !== pendingOptimisticId)
+    : prev;
+  if (withoutOptimistic.some((m) => m.id === message.id)) {
+    return withoutOptimistic;
+  }
+  return [...withoutOptimistic, message];
+}
+
+export function reconcileOptimisticMessage(
+  prev: WebChatMessage[],
+  optimisticId: string,
+  sent: { messageId: string; timestamp: number },
+): WebChatMessage[] {
+  if (prev.some((m) => m.id === sent.messageId)) {
+    return dedupeMessagesById(prev.filter((m) => m.id !== optimisticId));
+  }
+  const next = prev.map((m) =>
+    m.id === optimisticId ? { ...m, id: sent.messageId, timestamp: sent.timestamp } : m,
+  );
+  return dedupeMessagesById(next);
+}
+
 /** Separator avoids collisions when platformId contains ":" (e.g. dm:rahul). */
 export function unreadKey(platformId: string, threadId: string): string {
   return `${platformId}|${threadId}`;

@@ -3,6 +3,8 @@ import * as api from './api';
 import {
   activeUnreadKey,
   appendThreadToRoomMap,
+  applyLiveMessage,
+  dedupeMessagesById,
   applyUnreadFromMessages,
   canCreateThread,
   canSendMessage,
@@ -16,6 +18,8 @@ import {
   markMessagesSeen,
   mergeUnreadDeltas,
   migrateLegacyThreads,
+  reconcileOptimisticMessage,
+  dropPendingOptimisticId,
   defaultRoomThreads,
   resolveActiveThreadTitle,
   seedSyncCursors,
@@ -400,6 +404,77 @@ describe('app-helpers', () => {
       ).toEqual({
         'lobby-1': [...DEFAULT_ROOM_THREADS, { id: 'thread_1', title: 'Thread 1' }],
       });
+    });
+  });
+
+  describe('applyLiveMessage', () => {
+    it('ignores messages for other conversations', () => {
+      expect(applyLiveMessage([], message, null, 'main', null)).toEqual([]);
+    });
+
+    it('appends when there is no pending optimistic message', () => {
+      expect(applyLiveMessage([], message, room, 'main', null)).toEqual([message]);
+    });
+
+    it('replaces a pending optimistic message instead of duplicating the websocket echo', () => {
+      const optimistic = { ...message, id: 'local-1', direction: 'inbound' as const, text: 'hello' };
+      const persisted = { ...message, id: 'web-1', direction: 'inbound' as const, text: 'hello' };
+      expect(
+        applyLiveMessage([optimistic], persisted, room, 'main', 'local-1'),
+      ).toEqual([persisted]);
+    });
+
+    it('dedupes when the persisted message is already present', () => {
+      const persisted = { ...message, id: 'web-1', direction: 'inbound' as const, text: 'hello' };
+      expect(applyLiveMessage([persisted], persisted, room, 'main', 'local-1')).toEqual([persisted]);
+    });
+  });
+
+  describe('dedupeMessagesById', () => {
+    it('removes later messages that share an id', () => {
+      const first = { ...message, id: 'web-1' };
+      const second = { ...message, id: 'web-1', text: 'duplicate' };
+      expect(dedupeMessagesById([first, second])).toEqual([first]);
+    });
+  });
+
+  describe('dropPendingOptimisticId', () => {
+    it('no-ops when the thread queue is missing', () => {
+      const pending: Record<string, string[]> = {};
+      dropPendingOptimisticId(pending, 'lobby-1', 'main', 'local-1');
+      expect(pending).toEqual({});
+    });
+
+    it('removes the queue entry when the last pending id is dropped', () => {
+      const pending: Record<string, string[]> = { 'lobby-1|main': ['local-1'] };
+      dropPendingOptimisticId(pending, 'lobby-1', 'main', 'local-1');
+      expect(pending).toEqual({});
+    });
+
+    it('keeps remaining pending ids when dropping one of several', () => {
+      const pending: Record<string, string[]> = { 'lobby-1|main': ['local-1', 'local-2'] };
+      dropPendingOptimisticId(pending, 'lobby-1', 'main', 'local-1');
+      expect(pending).toEqual({ 'lobby-1|main': ['local-2'] });
+    });
+  });
+
+  describe('reconcileOptimisticMessage', () => {
+    it('updates the optimistic row when the server message is not already present', () => {
+      const optimistic = { ...message, id: 'local-1', direction: 'inbound' as const, text: 'hello' };
+      expect(
+        reconcileOptimisticMessage([optimistic], 'local-1', { messageId: 'web-1', timestamp: 2 }),
+      ).toEqual([{ ...optimistic, id: 'web-1', timestamp: 2 }]);
+    });
+
+    it('dedupes when websocket echo arrived before the POST response', () => {
+      const optimistic = { ...message, id: 'local-1', direction: 'inbound' as const, text: 'hello' };
+      const echoed = { ...message, id: 'web-1', direction: 'inbound' as const, text: 'hello' };
+      expect(
+        reconcileOptimisticMessage([optimistic, echoed], 'local-1', {
+          messageId: 'web-1',
+          timestamp: 2,
+        }),
+      ).toEqual([echoed]);
     });
   });
 

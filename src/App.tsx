@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   activeUnreadKey,
+  applyLiveMessage,
   canSendMessage,
   clearUnread,
   DEFAULT_ROOM_THREADS,
@@ -8,10 +9,13 @@ import {
   isActiveConversation,
   markMessagesSeen,
   mergeUnreadDeltas,
+  migrateLegacyThreads,
+  reconcileOptimisticMessage,
   resolveActiveThreadTitle,
   seedSyncCursors,
-  shouldAppendMessage,
   syncInactiveUnread,
+  takePendingOptimisticId,
+  dropPendingOptimisticId,
   threadsForRoom,
   threadsFromState,
   trackSeenMessageId,
@@ -19,7 +23,6 @@ import {
   updateSyncCursor,
   appendThreadToRoomMap,
   defaultRoomThreads,
-  migrateLegacyThreads,
 } from './app-helpers';
 import {
   formatAttachmentRejections,
@@ -88,6 +91,7 @@ export function App() {
   const syncCursorRef = useRef<Record<string, number>>({});
   const syncInFlightRef = useRef(false);
   const skipNextIntervalSyncRef = useRef(false);
+  const pendingOptimisticByThreadRef = useRef<Record<string, string[]>>({});
   roomRef.current = room;
   threadIdRef.current = threadId;
   threadsByRoomRef.current = threadsByRoom;
@@ -184,10 +188,28 @@ export function App() {
           msg.timestamp,
         );
         if (isActiveConversation(msg, roomRef.current, threadIdRef.current)) {
+          let pendingId: string | null = null;
+          if (msg.direction === 'inbound') {
+            const key = unreadKey(msg.platformId, msg.threadId);
+            const queues = pendingOptimisticByThreadRef.current;
+            const { optimisticId, remaining } = takePendingOptimisticId(queues[key]);
+            pendingId = optimisticId;
+            if (optimisticId) {
+              if (remaining.length) queues[key] = remaining;
+              else delete queues[key];
+            }
+          }
           setMessages((prev) => {
-            if (!shouldAppendMessage(prev, msg, roomRef.current, threadIdRef.current)) return prev;
+            const next = applyLiveMessage(
+              prev,
+              msg,
+              roomRef.current,
+              threadIdRef.current,
+              pendingId,
+            );
+            if (next === prev) return prev;
             trackSeenMessageId(seenIds, msg.id);
-            return [...prev, msg];
+            return next;
           });
           setUnreadCounts((counts) =>
             clearUnread(counts, msg.platformId, msg.threadId),
@@ -294,6 +316,11 @@ export function App() {
       ...(attachments.length > 0 ? { attachments } : {}),
     };
     setMessages((prev) => [...prev, optimistic]);
+    const threadKey = unreadKey(activeRoom.platformId, activeThread);
+    pendingOptimisticByThreadRef.current[threadKey] = [
+      ...(pendingOptimisticByThreadRef.current[threadKey] ?? []),
+      optimisticId,
+    ];
     try {
       const sent = await sendMessage(
         token,
@@ -302,14 +329,14 @@ export function App() {
         text,
         attachments.length > 0 ? attachments : undefined,
       );
-      trackSeenMessageId(seenMessageIdsRef.current, sent.messageId);
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === optimisticId
-            ? { ...m, id: sent.messageId, timestamp: sent.timestamp }
-            : m,
-        ),
+      dropPendingOptimisticId(
+        pendingOptimisticByThreadRef.current,
+        activeRoom.platformId,
+        activeThread,
+        optimisticId,
       );
+      trackSeenMessageId(seenMessageIdsRef.current, sent.messageId);
+      setMessages((prev) => reconcileOptimisticMessage(prev, optimisticId, sent));
       syncCursorRef.current = updateSyncCursor(
         syncCursorRef.current,
         activeRoom.platformId,
@@ -331,6 +358,12 @@ export function App() {
         }
       }
     } catch (err) {
+      dropPendingOptimisticId(
+        pendingOptimisticByThreadRef.current,
+        activeRoom.platformId,
+        activeThread,
+        optimisticId,
+      );
       setError(err instanceof Error ? err.message : 'send failed');
     } finally {
       setSending(false);
