@@ -150,6 +150,7 @@ export function mergePendingAttachments(
 }
 
 export function attachmentDataUrl(att: WebChatAttachment): string | null {
+  if (att.url) return att.url;
   if (!att.data) return null;
   return `data:${att.mimeType};base64,${att.data}`;
 }
@@ -167,6 +168,10 @@ export function attachmentToBlob(att: WebChatAttachment): Blob | null {
 
 /** Open attachment content in a new tab (blob URL — data: URIs are blocked in new tabs). */
 export function openAttachmentInNewTab(att: WebChatAttachment): boolean {
+  if (att.url) {
+    const tab = window.open(att.url, '_blank', 'noopener,noreferrer');
+    return tab !== null;
+  }
   const blob = attachmentToBlob(att);
   if (!blob) return false;
   const url = URL.createObjectURL(blob);

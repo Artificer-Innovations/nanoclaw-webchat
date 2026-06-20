@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
+import * as api from './api';
 import {
   activeUnreadKey,
+  appendThreadToRoomMap,
   applyUnreadFromMessages,
   canCreateThread,
   canSendMessage,
   clearUnread,
+  DEFAULT_ROOM_THREADS,
   formatUnreadCount,
   formatUnreadAriaLabel,
   getUnreadCount,
@@ -12,6 +15,8 @@ import {
   isActiveConversation,
   markMessagesSeen,
   mergeUnreadDeltas,
+  migrateLegacyThreads,
+  defaultRoomThreads,
   resolveActiveThreadTitle,
   seedSyncCursors,
   shouldAppendMessage,
@@ -379,6 +384,40 @@ describe('app-helpers', () => {
         ),
       ).resolves.toEqual({ counts: {}, syncCursor: { 'dm-sarah|main': 0 } });
       expect(fetchMessagesFn).toHaveBeenCalledWith('token', 'dm-sarah', 'main', 0);
+    });
+  });
+
+  describe('defaultRoomThreads', () => {
+    it('returns the default main thread list', () => {
+      expect(defaultRoomThreads('lobby-1')).toEqual(DEFAULT_ROOM_THREADS);
+    });
+  });
+
+  describe('appendThreadToRoomMap', () => {
+    it('appends to default threads when the room is missing from the map', () => {
+      expect(
+        appendThreadToRoomMap({}, 'lobby-1', { id: 'thread_1', title: 'Thread 1' }),
+      ).toEqual({
+        'lobby-1': [...DEFAULT_ROOM_THREADS, { id: 'thread_1', title: 'Thread 1' }],
+      });
+    });
+  });
+
+  describe('migrateLegacyThreads', () => {
+    it('uses default threads when the base map omits a room', async () => {
+      localStorage.setItem(
+        'webchat_threads:lobby-1',
+        JSON.stringify([{ id: 'thread_legacy', title: 'Legacy topic' }]),
+      );
+      vi.spyOn(api, 'createThread').mockResolvedValue({ id: 'thread_new', title: 'Legacy topic' });
+
+      const result = await migrateLegacyThreads('token', [room], {});
+
+      expect(result['lobby-1']).toEqual([
+        ...DEFAULT_ROOM_THREADS,
+        { id: 'thread_new', title: 'Legacy topic' },
+      ]);
+      expect(localStorage.getItem('webchat_threads:lobby-1')).toBeNull();
     });
   });
 });

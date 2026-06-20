@@ -6,28 +6,45 @@ import * as attachments from './attachments';
 import { App } from './App';
 import type { BootstrapPayload, WebChatMessage } from './types';
 
+const threadMocks = vi.hoisted(() => ({
+  createThreadImpl: async (_token: string, _platformId: string, title: string) => ({
+    id: title === 'Saved Thread' ? 'thread_saved' : 'thread_new-thread-uuid',
+    title,
+  }),
+  renameThreadImpl: async (_token: string, _platformId: string, threadId: string, title: string) => ({
+    id: threadId,
+    title,
+  }),
+  deleteThreadImpl: async () => {},
+}));
+
 const actualApi = vi.hoisted(() => ({
-  loadThreads: null as typeof api.loadThreads | null,
   sendMessage: null as typeof api.sendMessage | null,
+  createThread: vi.fn(threadMocks.createThreadImpl),
+  renameThread: vi.fn(threadMocks.renameThreadImpl),
+  deleteThread: vi.fn(threadMocks.deleteThreadImpl),
 }));
 
 vi.mock('./api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./api')>();
-  actualApi.loadThreads = actual.loadThreads;
   actualApi.sendMessage = actual.sendMessage;
   return {
     ...actual,
-    loadThreads: vi.fn(actual.loadThreads),
+    createThread: actualApi.createThread,
+    renameThread: actualApi.renameThread,
+    deleteThread: actualApi.deleteThread,
     sendMessage: vi.fn(actual.sendMessage),
   };
 });
 
+const defaultThreads = [{ id: 'main', title: 'Main' }];
+
 const bootstrapFixture: BootstrapPayload = {
   user: { id: 'u1', displayName: 'Test User' },
   rooms: [
-    { platformId: 'lobby-1', name: 'Lobby', kind: 'lobby' },
-    { platformId: 'dm-sarah', name: 'Sarah', kind: 'dm', folder: 'sarah' },
-    { platformId: 'lobby-2', name: 'Other Lobby', kind: 'lobby' },
+    { platformId: 'lobby-1', name: 'Lobby', kind: 'lobby', threads: [...defaultThreads] },
+    { platformId: 'dm-sarah', name: 'Sarah', kind: 'dm', folder: 'sarah', threads: [...defaultThreads] },
+    { platformId: 'lobby-2', name: 'Other Lobby', kind: 'lobby', threads: [...defaultThreads] },
   ],
   agents: [
     { folder: 'sarah', name: 'Sarah', mention: '@sarah' },
@@ -69,6 +86,18 @@ function parseMessagePath(url: string): { platformId: string; threadId: string }
   };
 }
 
+function bootstrapWithLobbyThreads(
+  threads: Array<{ id: string; title: string }>,
+): BootstrapPayload {
+  return {
+    ...bootstrapFixture,
+    rooms: [
+      { platformId: 'lobby-1', name: 'Lobby', kind: 'lobby', threads },
+      ...bootstrapFixture.rooms.slice(1),
+    ],
+  };
+}
+
 function createFetchMock(handlers: {
   bootstrap?: BootstrapPayload;
   messages?: WebChatMessage[];
@@ -89,7 +118,7 @@ function createFetchMock(handlers: {
       if (handlers.sendError) {
         return jsonResponse(null, false, handlers.sendError);
       }
-      return jsonResponse(null);
+      return jsonResponse({ messageId: 'web-test', timestamp: Date.now() });
     }
     if (url.includes('/messages')) {
       if (handlers.messagesError) {
@@ -162,10 +191,14 @@ describe('App', () => {
   beforeEach(() => {
     sessionStorage.clear();
     localStorage.clear();
-    vi.mocked(api.loadThreads).mockImplementation(actualApi.loadThreads!);
     vi.mocked(api.sendMessage).mockImplementation(actualApi.sendMessage!);
-    vi.mocked(api.loadThreads).mockClear();
+    vi.mocked(api.createThread).mockImplementation(threadMocks.createThreadImpl);
+    vi.mocked(api.renameThread).mockImplementation(threadMocks.renameThreadImpl);
+    vi.mocked(api.deleteThread).mockImplementation(threadMocks.deleteThreadImpl);
     vi.mocked(api.sendMessage).mockClear();
+    vi.mocked(api.createThread).mockClear();
+    vi.mocked(api.renameThread).mockClear();
+    vi.mocked(api.deleteThread).mockClear();
     vi.stubGlobal('location', {
       protocol: 'http:',
       host: 'localhost:3200',
@@ -216,17 +249,29 @@ describe('App', () => {
     expect(await screen.findByText('bootstrap failed: 401')).toBeInTheDocument();
   });
 
-  it('loads stored threads and messages for the selected room', async () => {
-    localStorage.setItem(
-      'webchat_threads:lobby-1',
-      JSON.stringify([
-        { id: 'main', title: 'Main' },
-        { id: 'thread_saved', title: 'Saved Thread' },
-      ]),
-    );
+  it('loads server threads and messages for the selected room', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(createFetchMock({ messages: [messageFixture] })),
+      vi.fn(
+        createFetchMock({
+          bootstrap: {
+            ...bootstrapFixture,
+            rooms: [
+              {
+                platformId: 'lobby-1',
+                name: 'Lobby',
+                kind: 'lobby',
+                threads: [
+                  { id: 'main', title: 'Main' },
+                  { id: 'thread_saved', title: 'Saved Thread' },
+                ],
+              },
+              ...bootstrapFixture.rooms.slice(1),
+            ],
+          },
+          messages: [messageFixture],
+        }),
+      ),
     );
     sessionStorage.setItem('webchat_token', 'secret');
 
@@ -244,7 +289,7 @@ describe('App', () => {
         createFetchMock({
           bootstrap: {
             ...bootstrapFixture,
-            rooms: [{ platformId: 'dm-sarah', name: 'Sarah', kind: 'dm', folder: 'sarah' }],
+            rooms: [{ platformId: 'dm-sarah', name: 'Sarah', kind: 'dm', folder: 'sarah', threads: defaultThreads }],
             agents: [{ folder: 'sarah', name: 'Sarah', mention: '@sarah' }],
           },
           messages: [{ ...messageFixture, platformId: 'dm-sarah' }],
@@ -330,12 +375,16 @@ describe('App', () => {
   });
 
   it('switches threads within the current room', async () => {
-    localStorage.setItem(
-      'webchat_threads:lobby-1',
-      JSON.stringify([
-        { id: 'main', title: 'Main' },
-        { id: 'thread_b', title: 'Thread B' },
-      ]),
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          bootstrap: bootstrapWithLobbyThreads([
+            { id: 'main', title: 'Main' },
+            { id: 'thread_b', title: 'Thread B' },
+          ]),
+        }),
+      ),
     );
     sessionStorage.setItem('webchat_token', 'secret');
 
@@ -371,6 +420,53 @@ describe('App', () => {
         body: JSON.stringify({ text: 'hello world' }),
       }),
     );
+  });
+
+  it('reconciles the optimistic message id when history already contains messages', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(createFetchMock({ messages: [messageFixture] })),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText('Agent reply');
+
+    await user.type(screen.getByPlaceholderText(/Message… use @folder/), 'hello world');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+
+    expect(screen.getByText('Agent reply')).toBeInTheDocument();
+    expect(screen.getByText('hello world')).toBeInTheDocument();
+    expect(screen.getAllByText('hello world')).toHaveLength(1);
+  });
+
+  it('does not duplicate the user message when the websocket echoes the persisted send', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    const MockWebSocket = createWebSocketMock();
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    await user.type(screen.getByPlaceholderText(/Message… use @folder/), 'hello world');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+    await screen.findByText('hello world');
+
+    const ws = await waitForWebSocket(MockWebSocket);
+    ws.onmessage?.({
+      data: JSON.stringify({
+        type: 'message',
+        message: {
+          id: 'web-test',
+          direction: 'inbound',
+          text: 'hello world',
+          timestamp: Date.now(),
+          platformId: 'lobby-1',
+          threadId: 'main',
+        },
+      }),
+    } as MessageEvent);
+
+    expect(screen.getAllByText('hello world')).toHaveLength(1);
   });
 
   it('sends on Enter without Shift and ignores Shift+Enter', async () => {
@@ -451,7 +547,7 @@ describe('App', () => {
     await waitFor(() => {
       expect(screen.queryByText('Agent reply')).not.toBeInTheDocument();
     });
-    expect(localStorage.getItem('webchat_threads:lobby-1')).toContain('thread_new-thread-uuid');
+    expect(vi.mocked(api.createThread)).toHaveBeenCalled();
   });
 
   it('auto-names a thread from the first message', async () => {
@@ -460,7 +556,7 @@ describe('App', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'Lobby' });
 
-    vi.mocked(api.loadThreads).mockClear();
+    vi.mocked(api.renameThread).mockClear();
 
     await user.click(screen.getByRole('button', { name: 'New thread in Lobby' }));
     await screen.findByRole('button', { name: 'Thread 1' });
@@ -470,16 +566,31 @@ describe('App', () => {
 
     expect(await screen.findByRole('button', { name: 'Review the auth flow' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Thread 1' })).not.toBeInTheDocument();
-    expect(vi.mocked(api.loadThreads)).not.toHaveBeenCalled();
+    expect(vi.mocked(api.renameThread)).toHaveBeenCalled();
   });
 
   it('renames a thread from the sidebar', async () => {
-    localStorage.setItem(
-      'webchat_threads:lobby-1',
-      JSON.stringify([
-        { id: 'main', title: 'Main' },
-        { id: 'thread_b', title: 'Thread B' },
-      ]),
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          bootstrap: {
+            ...bootstrapFixture,
+            rooms: [
+              {
+                platformId: 'lobby-1',
+                name: 'Lobby',
+                kind: 'lobby',
+                threads: [
+                  { id: 'main', title: 'Main' },
+                  { id: 'thread_b', title: 'Thread B' },
+                ],
+              },
+              ...bootstrapFixture.rooms.slice(1),
+            ],
+          },
+        }),
+      ),
     );
     sessionStorage.setItem('webchat_token', 'secret');
     const user = userEvent.setup();
@@ -492,7 +603,12 @@ describe('App', () => {
     await user.type(renameInput, 'Renamed topic{Enter}');
 
     expect(await screen.findByRole('button', { name: 'Renamed topic' })).toBeInTheDocument();
-    expect(localStorage.getItem('webchat_threads:lobby-1')).toContain('Renamed topic');
+    expect(vi.mocked(api.renameThread)).toHaveBeenCalledWith(
+      'secret',
+      'lobby-1',
+      'thread_b',
+      'Renamed topic',
+    );
   });
 
   it('appends websocket messages for the active room and thread', async () => {
@@ -549,12 +665,27 @@ describe('App', () => {
 
   it('tracks unread counts for other rooms and threads via websocket', async () => {
     sessionStorage.setItem('webchat_token', 'secret');
-    localStorage.setItem(
-      'webchat_threads:lobby-1',
-      JSON.stringify([
-        { id: 'main', title: 'Main' },
-        { id: 'thread_b', title: 'Thread B' },
-      ]),
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          bootstrap: {
+            ...bootstrapFixture,
+            rooms: [
+              {
+                platformId: 'lobby-1',
+                name: 'Lobby',
+                kind: 'lobby',
+                threads: [
+                  { id: 'main', title: 'Main' },
+                  { id: 'thread_b', title: 'Thread B' },
+                ],
+              },
+              ...bootstrapFixture.rooms.slice(1),
+            ],
+          },
+        }),
+      ),
     );
     const MockWebSocket = createWebSocketMock();
     render(<App />);
@@ -586,12 +717,16 @@ describe('App', () => {
 
   it('clears unread when selecting a room or thread', async () => {
     sessionStorage.setItem('webchat_token', 'secret');
-    localStorage.setItem(
-      'webchat_threads:lobby-1',
-      JSON.stringify([
-        { id: 'main', title: 'Main' },
-        { id: 'thread_b', title: 'Thread B' },
-      ]),
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          bootstrap: bootstrapWithLobbyThreads([
+            { id: 'main', title: 'Main' },
+            { id: 'thread_b', title: 'Thread B' },
+          ]),
+        }),
+      ),
     );
     const MockWebSocket = createWebSocketMock();
     const user = userEvent.setup();
@@ -819,16 +954,17 @@ describe('App', () => {
   it('clears unread when messages are loaded for the active conversation', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(createFetchMock({ messages: [messageFixture] })),
+      vi.fn(
+        createFetchMock({
+          bootstrap: bootstrapWithLobbyThreads([
+            { id: 'main', title: 'Main' },
+            { id: 'thread_b', title: 'Thread B' },
+          ]),
+          messages: [messageFixture],
+        }),
+      ),
     );
     sessionStorage.setItem('webchat_token', 'secret');
-    localStorage.setItem(
-      'webchat_threads:lobby-1',
-      JSON.stringify([
-        { id: 'main', title: 'Main' },
-        { id: 'thread_b', title: 'Thread B' },
-      ]),
-    );
     const MockWebSocket = createWebSocketMock();
     const user = userEvent.setup();
     render(<App />);
@@ -1052,12 +1188,16 @@ describe('App', () => {
   });
 
   it('highlights the active thread and keeps others inactive', async () => {
-    localStorage.setItem(
-      'webchat_threads:lobby-1',
-      JSON.stringify([
-        { id: 'main', title: 'Main' },
-        { id: 'thread_b', title: 'Thread B' },
-      ]),
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          bootstrap: bootstrapWithLobbyThreads([
+            { id: 'main', title: 'Main' },
+            { id: 'thread_b', title: 'Thread B' },
+          ]),
+        }),
+      ),
     );
     sessionStorage.setItem('webchat_token', 'secret');
     const user = userEvent.setup();
@@ -1093,8 +1233,18 @@ describe('App', () => {
     expect(screen.getByText('Token required')).toBeInTheDocument();
   });
 
-  it('falls back to the main thread id when stored threads are empty', async () => {
-    vi.mocked(api.loadThreads).mockReturnValue([]);
+  it('falls back to the main thread when bootstrap threads are empty', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          bootstrap: {
+            ...bootstrapFixture,
+            rooms: [{ platformId: 'lobby-1', name: 'Lobby', kind: 'lobby', threads: [] }],
+          },
+        }),
+      ),
+    );
     sessionStorage.setItem('webchat_token', 'secret');
 
     render(<App />);
@@ -1373,12 +1523,16 @@ describe('App', () => {
   });
 
   it('deletes a thread from the sidebar and returns to main', async () => {
-    localStorage.setItem(
-      'webchat_threads:lobby-1',
-      JSON.stringify([
-        { id: 'main', title: 'Main' },
-        { id: 'thread_b', title: 'Thread B' },
-      ]),
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          bootstrap: bootstrapWithLobbyThreads([
+            { id: 'main', title: 'Main' },
+            { id: 'thread_b', title: 'Thread B' },
+          ]),
+        }),
+      ),
     );
     sessionStorage.setItem('webchat_token', 'secret');
     const user = userEvent.setup();
@@ -1390,7 +1544,7 @@ describe('App', () => {
 
     expect(screen.queryByRole('button', { name: 'Thread B' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Lobby' })).toHaveClass('active');
-    expect(localStorage.getItem('webchat_threads:lobby-1')).not.toContain('thread_b');
+    expect(vi.mocked(api.deleteThread)).toHaveBeenCalledWith('secret', 'lobby-1', 'thread_b');
   });
 
   it('renders theme toggle in authenticated view', async () => {
@@ -1433,12 +1587,16 @@ describe('App', () => {
   });
 
   it('collapses expanded threads from the sidebar caret', async () => {
-    localStorage.setItem(
-      'webchat_threads:lobby-1',
-      JSON.stringify([
-        { id: 'main', title: 'Main' },
-        { id: 'thread_b', title: 'Thread B' },
-      ]),
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          bootstrap: bootstrapWithLobbyThreads([
+            { id: 'main', title: 'Main' },
+            { id: 'thread_b', title: 'Thread B' },
+          ]),
+        }),
+      ),
     );
     sessionStorage.setItem('webchat_token', 'secret');
     const user = userEvent.setup();
@@ -1455,12 +1613,16 @@ describe('App', () => {
   });
 
   it('skips thread rename when the title is unchanged or blank', async () => {
-    localStorage.setItem(
-      'webchat_threads:lobby-1',
-      JSON.stringify([
-        { id: 'main', title: 'Main' },
-        { id: 'thread_b', title: 'Thread B' },
-      ]),
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          bootstrap: bootstrapWithLobbyThreads([
+            { id: 'main', title: 'Main' },
+            { id: 'thread_b', title: 'Thread B' },
+          ]),
+        }),
+      ),
     );
     sessionStorage.setItem('webchat_token', 'secret');
     const user = userEvent.setup();
@@ -1473,8 +1635,7 @@ describe('App', () => {
     await user.type(renameInput, 'Thread B{Enter}');
 
     expect(screen.getByRole('button', { name: 'Thread B' })).toBeInTheDocument();
-    expect(localStorage.getItem('webchat_threads:lobby-1')).toContain('"title":"Thread B"');
-    expect(localStorage.getItem('webchat_threads:lobby-1')).not.toContain('Renamed');
+    expect(vi.mocked(api.renameThread)).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole('button', { name: 'Rename Thread B' }));
     await user.clear(screen.getByLabelText('Thread name'));
@@ -1484,12 +1645,16 @@ describe('App', () => {
   });
 
   it('deletes a child thread while viewing the room main thread', async () => {
-    localStorage.setItem(
-      'webchat_threads:lobby-1',
-      JSON.stringify([
-        { id: 'main', title: 'Main' },
-        { id: 'thread_b', title: 'Thread B' },
-      ]),
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          bootstrap: bootstrapWithLobbyThreads([
+            { id: 'main', title: 'Main' },
+            { id: 'thread_b', title: 'Thread B' },
+          ]),
+        }),
+      ),
     );
     sessionStorage.setItem('webchat_token', 'secret');
     const user = userEvent.setup();
@@ -1504,12 +1669,16 @@ describe('App', () => {
   });
 
   it('deletes a thread in another room without changing the active view', async () => {
-    localStorage.setItem(
-      'webchat_threads:lobby-1',
-      JSON.stringify([
-        { id: 'main', title: 'Main' },
-        { id: 'thread_b', title: 'Thread B' },
-      ]),
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          bootstrap: bootstrapWithLobbyThreads([
+            { id: 'main', title: 'Main' },
+            { id: 'thread_b', title: 'Thread B' },
+          ]),
+        }),
+      ),
     );
     sessionStorage.setItem('webchat_token', 'secret');
     const user = userEvent.setup();
@@ -1526,12 +1695,16 @@ describe('App', () => {
   });
 
   it('does not auto-rename a thread that already has a custom title', async () => {
-    localStorage.setItem(
-      'webchat_threads:lobby-1',
-      JSON.stringify([
-        { id: 'main', title: 'Main' },
-        { id: 'custom-thread', title: 'Custom topic' },
-      ]),
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          bootstrap: bootstrapWithLobbyThreads([
+            { id: 'main', title: 'Main' },
+            { id: 'custom-thread', title: 'Custom topic' },
+          ]),
+        }),
+      ),
     );
     sessionStorage.setItem('webchat_token', 'secret');
     const user = userEvent.setup();
@@ -1557,6 +1730,171 @@ describe('App', () => {
     await user.click(screen.getByRole('button', { name: 'Send message' }));
 
     expect(await screen.findByText('send failed')).toBeInTheDocument();
+  });
+
+  it('migrates legacy localStorage threads when the server only has main', async () => {
+    localStorage.setItem(
+      'webchat_threads:lobby-1',
+      JSON.stringify([
+        { id: 'main', title: 'Main' },
+        { id: 'thread_legacy', title: 'Legacy topic' },
+      ]),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+    render(<App />);
+
+    expect(await screen.findByRole('button', { name: 'Legacy topic' })).toBeInTheDocument();
+    expect(vi.mocked(api.createThread)).toHaveBeenCalledWith('secret', 'lobby-1', 'Legacy topic');
+    expect(localStorage.getItem('webchat_threads:lobby-1')).toBeNull();
+  });
+
+  it('shows an error when create thread fails', async () => {
+    vi.mocked(api.createThread).mockRejectedValueOnce(new Error('create thread failed: 500'));
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    await user.click(screen.getByRole('button', { name: 'New thread in Lobby' }));
+
+    expect(await screen.findByText('create thread failed: 500')).toBeInTheDocument();
+  });
+
+  it('shows a generic error when create thread fails with a non-Error value', async () => {
+    vi.mocked(api.createThread).mockRejectedValueOnce('network down');
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    await user.click(screen.getByRole('button', { name: 'New thread in Lobby' }));
+
+    expect(await screen.findByText('create thread failed')).toBeInTheDocument();
+  });
+
+  it('shows an error when rename thread fails', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          bootstrap: bootstrapWithLobbyThreads([
+            { id: 'main', title: 'Main' },
+            { id: 'thread_b', title: 'Thread B' },
+          ]),
+        }),
+      ),
+    );
+    vi.mocked(api.renameThread).mockRejectedValueOnce(new Error('rename thread failed: 403'));
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('button', { name: 'Thread B' });
+
+    await user.click(screen.getByRole('button', { name: 'Rename Thread B' }));
+    const renameInput = screen.getByLabelText('Thread name');
+    await user.clear(renameInput);
+    await user.type(renameInput, 'Renamed topic{Enter}');
+
+    expect(await screen.findByText('rename thread failed: 403')).toBeInTheDocument();
+  });
+
+  it('shows a generic error when rename thread fails with a non-Error value', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          bootstrap: bootstrapWithLobbyThreads([
+            { id: 'main', title: 'Main' },
+            { id: 'thread_b', title: 'Thread B' },
+          ]),
+        }),
+      ),
+    );
+    vi.mocked(api.renameThread).mockRejectedValueOnce('network down');
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('button', { name: 'Thread B' });
+
+    await user.click(screen.getByRole('button', { name: 'Rename Thread B' }));
+    const renameInput = screen.getByLabelText('Thread name');
+    await user.clear(renameInput);
+    await user.type(renameInput, 'Renamed topic{Enter}');
+
+    expect(await screen.findByText('rename thread failed')).toBeInTheDocument();
+  });
+
+  it('shows an error when delete thread fails', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          bootstrap: bootstrapWithLobbyThreads([
+            { id: 'main', title: 'Main' },
+            { id: 'thread_b', title: 'Thread B' },
+          ]),
+        }),
+      ),
+    );
+    vi.mocked(api.deleteThread).mockRejectedValueOnce(new Error('delete thread failed: 404'));
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('button', { name: 'Thread B' });
+
+    await user.click(screen.getByRole('button', { name: 'Delete Thread B' }));
+
+    expect(await screen.findByText('delete thread failed: 404')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Thread B' })).toBeInTheDocument();
+  });
+
+  it('shows a generic error when delete thread fails with a non-Error value', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          bootstrap: bootstrapWithLobbyThreads([
+            { id: 'main', title: 'Main' },
+            { id: 'thread_b', title: 'Thread B' },
+          ]),
+        }),
+      ),
+    );
+    vi.mocked(api.deleteThread).mockRejectedValueOnce('network down');
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('button', { name: 'Thread B' });
+
+    await user.click(screen.getByRole('button', { name: 'Delete Thread B' }));
+
+    expect(await screen.findByText('delete thread failed')).toBeInTheDocument();
+  });
+
+  it('does not migrate legacy threads when the server already has child threads', async () => {
+    localStorage.setItem(
+      'webchat_threads:lobby-1',
+      JSON.stringify([{ id: 'thread_legacy', title: 'Legacy topic' }]),
+    );
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          bootstrap: bootstrapWithLobbyThreads([
+            { id: 'main', title: 'Main' },
+            { id: 'thread_b', title: 'Thread B' },
+          ]),
+        }),
+      ),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+    render(<App />);
+    await screen.findByRole('button', { name: 'Thread B' });
+
+    expect(vi.mocked(api.createThread)).not.toHaveBeenCalled();
+    expect(localStorage.getItem('webchat_threads:lobby-1')).toBe(
+      JSON.stringify([{ id: 'thread_legacy', title: 'Legacy topic' }]),
+    );
   });
 
   it('clears data-theme when system preference is selected', async () => {

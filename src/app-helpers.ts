@@ -1,7 +1,10 @@
-import type { ThreadMeta } from './api';
+import type { ThreadMeta } from './types';
 import type { BootstrapPayload, WebChatMessage, WebChatRoom } from './types';
+import { clearLegacyThreads, createThread, loadLegacyThreads } from './api';
 
 export const SEEN_MESSAGE_IDS_MAX = 1000;
+
+export const DEFAULT_ROOM_THREADS: ThreadMeta[] = [{ id: 'main', title: 'Main' }];
 
 export function resolveActiveThreadTitle(
   threads: ThreadMeta[] | undefined,
@@ -17,6 +20,10 @@ export function threadsFromState(
   platformId: string,
 ): ThreadMeta[] {
   return threadsByRoom[platformId] ?? [];
+}
+
+export function defaultRoomThreads(_platformId: string): ThreadMeta[] {
+  return DEFAULT_ROOM_THREADS;
 }
 
 export function threadsForRoom(
@@ -246,4 +253,38 @@ export async function syncInactiveUnread(
   }
 
   return { counts: nextCounts, syncCursor: nextCursor };
+}
+
+export function appendThreadToRoomMap(
+  prev: Record<string, ThreadMeta[]>,
+  platformId: string,
+  thread: ThreadMeta,
+): Record<string, ThreadMeta[]> {
+  const base = prev[platformId] ?? DEFAULT_ROOM_THREADS;
+  return {
+    ...prev,
+    [platformId]: [...base, thread],
+  };
+}
+
+export async function migrateLegacyThreads(
+  token: string,
+  rooms: WebChatRoom[],
+  baseMap: Record<string, ThreadMeta[]>,
+): Promise<Record<string, ThreadMeta[]>> {
+  const map = { ...baseMap };
+  for (const room of rooms) {
+    const server = map[room.platformId] ?? DEFAULT_ROOM_THREADS;
+    const legacy = loadLegacyThreads(room.platformId);
+    const hasOnlyMain = server.filter((t) => t.id !== 'main').length === 0;
+    if (legacy.length === 0 || !hasOnlyMain) continue;
+    const next = [...server];
+    for (const thread of legacy) {
+      const created = await createThread(token, room.platformId, thread.title);
+      next.push(created);
+    }
+    map[room.platformId] = next;
+    clearLegacyThreads(room.platformId);
+  }
+  return map;
 }

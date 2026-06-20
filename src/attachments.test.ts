@@ -164,8 +164,30 @@ describe('attachments', () => {
         name: 'a.png',
         mimeType: 'image/png',
         type: 'image',
+        url: '/api/attachments/msg-1/a.png',
+      }),
+    ).toBe('/api/attachments/msg-1/a.png');
+    expect(
+      attachmentDataUrl({
+        name: 'a.png',
+        mimeType: 'image/png',
+        type: 'image',
       }),
     ).toBeNull();
+  });
+
+  it('opens persisted attachments via url when data is absent', () => {
+    const open = vi.spyOn(window, 'open').mockReturnValue({} as Window);
+    expect(
+      openAttachmentInNewTab({
+        name: 'photo.png',
+        mimeType: 'image/png',
+        type: 'image',
+        url: '/api/attachments/msg-1/photo.png',
+      }),
+    ).toBe(true);
+    expect(open).toHaveBeenCalledWith('/api/attachments/msg-1/photo.png', '_blank', 'noopener,noreferrer');
+    open.mockRestore();
   });
 
   it('decodes attachments to blobs and opens them in a new tab', () => {
