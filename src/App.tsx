@@ -20,10 +20,12 @@ import {
 import {
   formatAttachmentRejections,
   MAX_ATTACHMENTS,
+  mergePendingAttachments,
   readAttachmentFiles,
   removePendingAtIndex,
   revokeAttachmentPreviews,
   toSendAttachments,
+  type AttachmentRejection,
   type PendingAttachment,
 } from './attachments';
 import { MessageAttachments } from './MessageAttachments';
@@ -315,15 +317,24 @@ export function App() {
 
   const addPendingFiles = async (files: FileList | File[] | null) => {
     if (!files || files.length === 0) return;
+    const existingCount = pendingAttachmentsRef.current.length;
     try {
-      const { attachments: next, rejected } = await readAttachmentFiles(
-        files,
-        pendingAttachments.length,
-      );
-      const rejectionMessage = formatAttachmentRejections(rejected);
+      const { attachments: next, rejected } = await readAttachmentFiles(files, existingCount);
+      if (next.length === 0) {
+        const rejectionMessage = formatAttachmentRejections(rejected);
+        if (rejectionMessage) setError(rejectionMessage);
+        return;
+      }
+
+      let capRejected: AttachmentRejection[] = [];
+      setPendingAttachments((prev) => {
+        const { attachments, dropped } = mergePendingAttachments(prev, next);
+        capRejected = dropped.map((att) => ({ name: att.name, reason: 'capacity' as const }));
+        return attachments;
+      });
+
+      const rejectionMessage = formatAttachmentRejections([...rejected, ...capRejected]);
       if (rejectionMessage) setError(rejectionMessage);
-      if (next.length === 0) return;
-      setPendingAttachments((prev) => [...prev, ...next]);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'attachment failed');
     }

@@ -52,6 +52,8 @@ describe('MessageAttachments', () => {
     const link = screen.getByRole('link', { name: 'report.pdf' });
     expect(link).toHaveAttribute('download', 'report.pdf');
     expect(link).toHaveAttribute('href', 'data:application/pdf;base64,aGVsbG8=');
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
   });
 
   it('renders mismatched server type using mimeType', () => {

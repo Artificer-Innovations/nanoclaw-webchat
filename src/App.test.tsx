@@ -1198,6 +1198,40 @@ describe('App', () => {
     clickSpy.mockRestore();
   });
 
+  it('caps pending attachments when files are added concurrently', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    const pending = (name: string) => ({
+      name,
+      mimeType: 'text/plain',
+      type: 'file' as const,
+      size: 1,
+      data: 'eA==',
+      previewUrl: `blob:${name}`,
+    });
+
+    vi.spyOn(attachments, 'readAttachmentFiles')
+      .mockResolvedValueOnce({ attachments: [pending('a.txt'), pending('b.txt')], rejected: [] })
+      .mockResolvedValueOnce({
+        attachments: [pending('c.txt'), pending('d.txt'), pending('e.txt')],
+        rejected: [],
+      });
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const composer = document.querySelector('.composer-box')!;
+    fireEvent.drop(composer, { dataTransfer: { files: [new File(['a'], 'a.txt')] } });
+    await waitFor(() => {
+      expect(document.querySelectorAll('.composer-preview')).toHaveLength(2);
+    });
+
+    fireEvent.drop(composer, { dataTransfer: { files: [new File(['c'], 'c.txt')] } });
+    await waitFor(() => {
+      expect(document.querySelectorAll('.composer-preview')).toHaveLength(attachments.MAX_ATTACHMENTS);
+      expect(screen.getByText(/Only 4 attachments allowed \(e.txt skipped\)/)).toBeInTheDocument();
+    });
+  });
+
   it('shows an error when attachment upload fails', async () => {
     sessionStorage.setItem('webchat_token', 'secret');
     const Original = global.FileReader;

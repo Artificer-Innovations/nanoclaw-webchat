@@ -135,6 +135,22 @@ export async function readAttachmentFiles(
   return { attachments, rejected };
 }
 
+/** Append new pending attachments without exceeding MAX_ATTACHMENTS; revokes dropped previews. */
+export function mergePendingAttachments(
+  prev: PendingAttachment[],
+  next: PendingAttachment[],
+): { attachments: PendingAttachment[]; dropped: PendingAttachment[] } {
+  const remaining = MAX_ATTACHMENTS - prev.length;
+  if (remaining <= 0) {
+    revokeAttachmentPreviews(next);
+    return { attachments: prev, dropped: next };
+  }
+  const accepted = next.slice(0, remaining);
+  const dropped = next.slice(remaining);
+  revokeAttachmentPreviews(dropped);
+  return { attachments: [...prev, ...accepted], dropped };
+}
+
 export function attachmentDataUrl(att: WebChatAttachment): string | null {
   if (!att.data) return null;
   return `data:${att.mimeType};base64,${att.data}`;

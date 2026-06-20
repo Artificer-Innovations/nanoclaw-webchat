@@ -32,6 +32,8 @@ export function MessageAttachments({ attachments }: { attachments: WebChatAttach
             className="msg-attachment-file"
             href={dataUrl}
             download={att.name}
+            target="_blank"
+            rel="noopener noreferrer"
           >
             {att.name}
           </a>

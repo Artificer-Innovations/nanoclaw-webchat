@@ -7,9 +7,11 @@ import {
   inferMimeType,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENTS,
+  mergePendingAttachments,
   normalizeAttachment,
   readAttachmentFiles,
   removePendingAtIndex,
+  type PendingAttachment,
 } from './attachments';
 
 describe('attachments', () => {
@@ -51,6 +53,44 @@ describe('attachments', () => {
   it('leaves matching attachment types unchanged', () => {
     const att = { name: 'a.png', mimeType: 'image/png', type: 'image' as const };
     expect(normalizeAttachment(att)).toBe(att);
+  });
+
+  it('merges pending attachments without exceeding the cap', () => {
+    const make = (name: string, previewUrl: string): PendingAttachment => ({
+      name,
+      mimeType: 'text/plain',
+      type: 'file',
+      previewUrl,
+      data: 'x',
+    });
+    const prev = [make('a.txt', 'blob:a'), make('b.txt', 'blob:b'), make('c.txt', 'blob:c')];
+    const next = [make('d.txt', 'blob:d'), make('e.txt', 'blob:e')];
+    const revoke = vi.spyOn(URL, 'revokeObjectURL');
+
+    const { attachments, dropped } = mergePendingAttachments(prev, next);
+    expect(attachments).toHaveLength(MAX_ATTACHMENTS);
+    expect(dropped).toHaveLength(1);
+    expect(revoke).toHaveBeenCalledWith('blob:e');
+    revoke.mockRestore();
+  });
+
+  it('revokes all incoming previews when already at capacity', () => {
+    const make = (name: string, previewUrl: string): PendingAttachment => ({
+      name,
+      mimeType: 'text/plain',
+      type: 'file',
+      previewUrl,
+      data: 'x',
+    });
+    const prev = Array.from({ length: MAX_ATTACHMENTS }, (_, i) => make(`file-${i}.txt`, `blob:${i}`));
+    const next = [make('extra.txt', 'blob:extra')];
+    const revoke = vi.spyOn(URL, 'revokeObjectURL');
+
+    const { attachments, dropped } = mergePendingAttachments(prev, next);
+    expect(attachments).toEqual(prev);
+    expect(dropped).toEqual(next);
+    expect(revoke).toHaveBeenCalledWith('blob:extra');
+    revoke.mockRestore();
   });
 
   it('reads image files as base64 attachments', async () => {
