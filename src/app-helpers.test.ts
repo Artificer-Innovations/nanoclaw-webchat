@@ -50,8 +50,13 @@ describe('app-helpers', () => {
       expect(canSendMessage('token', null, 'hello', false)).toBe(false);
     });
 
-    it('returns false when draft is blank', () => {
+    it('returns false when draft is blank and there are no attachments', () => {
       expect(canSendMessage('token', room, '   ', false)).toBe(false);
+      expect(canSendMessage('token', room, '   ', false, 0)).toBe(false);
+    });
+
+    it('returns true when attachments are present without draft text', () => {
+      expect(canSendMessage('token', room, '   ', false, 1)).toBe(true);
     });
 
     it('returns false while a send is in flight', () => {

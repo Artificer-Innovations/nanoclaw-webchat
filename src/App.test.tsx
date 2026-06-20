@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import * as api from './api';
+import * as attachments from './attachments';
 import { App } from './App';
 import type { BootstrapPayload, WebChatMessage } from './types';
 
@@ -1131,7 +1132,244 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
 
     expect(api.sendMessage).toHaveBeenCalledTimes(1);
-    expect(api.sendMessage).toHaveBeenCalledWith('secret', 'lobby-1', 'main', 'first');
+    expect(api.sendMessage).toHaveBeenCalledWith('secret', 'lobby-1', 'main', 'first', undefined);
+  });
+
+  it('sends image attachments selected through the file input', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const file = new File(['hello'], 'photo.png', { type: 'image/png' });
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [file] } });
+
+    await waitFor(() => {
+      expect(screen.getByAltText('photo.png')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+
+    await waitFor(() => {
+      expect(api.sendMessage).toHaveBeenCalledWith(
+        'secret',
+        'lobby-1',
+        'main',
+        '',
+        expect.arrayContaining([
+          expect.objectContaining({ name: 'photo.png', mimeType: 'image/png', type: 'image' }),
+        ]),
+      );
+    });
+  });
+
+  it('supports composer attachment workflows', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const composer = document.querySelector('.composer-box')!;
+    const markdown = new File(['# Title'], 'notes.md', { type: 'text/markdown' });
+    const image = new File(['hello'], 'photo.png', { type: 'image/png' });
+
+    fireEvent.dragOver(composer);
+    expect(composer).toHaveClass('is-dragover');
+    fireEvent.dragLeave(composer, { relatedTarget: document.body });
+    expect(composer).not.toHaveClass('is-dragover');
+
+    fireEvent.drop(composer, { dataTransfer: { files: [markdown] } });
+    await waitFor(() => {
+      expect(screen.getByText('notes.md')).toBeInTheDocument();
+    });
+
+    fireEvent.change(document.querySelector('input[type="file"]') as HTMLInputElement, {
+      target: { files: [image] },
+    });
+    await waitFor(() => {
+      expect(screen.getByAltText('photo.png')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove photo.png' }));
+    expect(screen.queryByAltText('photo.png')).not.toBeInTheDocument();
+
+    const clickSpy = vi.spyOn(HTMLInputElement.prototype, 'click');
+    fireEvent.click(screen.getByRole('button', { name: 'Attach file' }));
+    expect(clickSpy).toHaveBeenCalled();
+    clickSpy.mockRestore();
+  });
+
+  it('caps pending attachments when files are added concurrently', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    const pending = (name: string) => ({
+      name,
+      mimeType: 'text/plain',
+      type: 'file' as const,
+      size: 1,
+      data: 'eA==',
+      previewUrl: `blob:${name}`,
+    });
+
+    vi.spyOn(attachments, 'readAttachmentFiles')
+      .mockResolvedValueOnce({ attachments: [pending('a.txt'), pending('b.txt')], rejected: [] })
+      .mockResolvedValueOnce({
+        attachments: [pending('c.txt'), pending('d.txt'), pending('e.txt')],
+        rejected: [],
+      });
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const composer = document.querySelector('.composer-box')!;
+    fireEvent.drop(composer, { dataTransfer: { files: [new File(['a'], 'a.txt')] } });
+    await waitFor(() => {
+      expect(document.querySelectorAll('.composer-preview')).toHaveLength(2);
+    });
+
+    fireEvent.drop(composer, { dataTransfer: { files: [new File(['c'], 'c.txt')] } });
+    await waitFor(() => {
+      expect(document.querySelectorAll('.composer-preview')).toHaveLength(attachments.MAX_ATTACHMENTS);
+      expect(screen.getByText(/Only 4 attachments allowed \(e.txt skipped\)/)).toBeInTheDocument();
+    });
+  });
+
+  it('shows an error when attachment upload fails', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    const Original = global.FileReader;
+    class ErrorReader extends Original {
+      readAsDataURL() {
+        this.onerror?.(new ProgressEvent('error'));
+      }
+    }
+    vi.stubGlobal('FileReader', ErrorReader);
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    fireEvent.drop(document.querySelector('.composer-box')!, {
+      dataTransfer: { files: [new File(['x'], 'bad.txt', { type: 'text/plain' })] },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('Could not read bad.txt')).toBeInTheDocument();
+    });
+    vi.stubGlobal('FileReader', Original);
+  });
+
+  it('ignores empty attachment drops and invalid attachment batches', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const composer = document.querySelector('.composer-box')!;
+    fireEvent.drop(composer, { dataTransfer: { files: [] } });
+    fireEvent.drop(composer, { dataTransfer: { files: [new File(['x'], '   ', { type: 'text/plain' })] } });
+    expect(screen.queryByText('   ')).not.toBeInTheDocument();
+  });
+
+  it('shows an error when a file exceeds the size limit', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const big = new File([new Uint8Array(attachments.MAX_ATTACHMENT_BYTES + 1)], 'big.png', {
+      type: 'image/png',
+    });
+    fireEvent.drop(document.querySelector('.composer-box')!, {
+      dataTransfer: { files: [big] },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('big.png exceeds the 5 MB limit')).toBeInTheDocument();
+    });
+  });
+
+  it('shows a generic attachment error for non-Error failures', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    vi.spyOn(attachments, 'readAttachmentFiles').mockRejectedValueOnce('nope');
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    fireEvent.drop(document.querySelector('.composer-box')!, {
+      dataTransfer: { files: [new File(['x'], 'bad.txt', { type: 'text/plain' })] },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('attachment failed')).toBeInTheDocument();
+    });
+  });
+
+  it('shows attachment errors thrown as Error instances', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    vi.spyOn(attachments, 'readAttachmentFiles').mockRejectedValueOnce(new Error('boom'));
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    fireEvent.drop(document.querySelector('.composer-box')!, {
+      dataTransfer: { files: [new File(['x'], 'bad.txt', { type: 'text/plain' })] },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('boom')).toBeInTheDocument();
+    });
+  });
+
+  it('keeps drag-over styling when leaving to a child element', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const composer = document.querySelector('.composer-box')!;
+    fireEvent.dragOver(composer);
+    vi.spyOn(composer, 'contains').mockReturnValue(true);
+    fireEvent.dragLeave(composer, { relatedTarget: document.body });
+    expect(composer).toHaveClass('is-dragover');
+  });
+
+  it('renders image attachments in message history', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/messages')) {
+        return {
+          ok: true,
+          json: async () => ({
+            messages: [
+              {
+                id: 'msg-img',
+                direction: 'outbound',
+                text: '',
+                timestamp: 1_700_000_000_000,
+                platformId: 'lobby-1',
+                threadId: 'main',
+                attachments: [
+                  {
+                    name: 'chart.png',
+                    mimeType: 'image/png',
+                    type: 'image',
+                    data: 'aGVsbG8=',
+                  },
+                ],
+              },
+            ],
+          }),
+        } as Response;
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          user: { id: 'u1', displayName: 'Test User' },
+          rooms: [{ platformId: 'lobby-1', name: 'Lobby', kind: 'lobby' }],
+          agents: [{ folder: 'sarah', name: 'Sarah', mention: '@sarah' }],
+        }),
+      } as Response;
+    });
+
+    const { container } = render(<App />);
+    const link = await screen.findByRole('link', { name: 'Open chart.png in new tab' });
+    expect(link).toHaveAttribute('href', 'data:image/png;base64,aGVsbG8=');
+    expect(container.querySelector('.msg-attachment-image img')).toHaveAttribute(
+      'src',
+      'data:image/png;base64,aGVsbG8=',
+    );
   });
 
   it('deletes a thread from the sidebar and returns to main', async () => {

@@ -22,6 +22,21 @@ export interface BootstrapPayload {
   agents: WebChatAgent[];
 }
 
+export interface WebChatAttachment {
+  name: string;
+  mimeType: string;
+  /** `image` for image/* MIME types; `file` for everything else. */
+  type: 'image' | 'file';
+  size?: number;
+  /**
+   * Base64 payload (no data: prefix). Required on client sends; present on history/WS
+   * today. Adapters may later omit `data` on reads and serve blobs via `url` instead.
+   */
+  data?: string;
+  /** Future: server URL when `data` is omitted from history/WS responses. */
+  url?: string;
+}
+
 export interface WebChatMessage {
   id: string;
   direction: 'inbound' | 'outbound';
@@ -31,6 +46,7 @@ export interface WebChatMessage {
   threadId: string;
   /** Agent display name when provided by the host adapter. */
   senderName?: string;
+  attachments?: WebChatAttachment[];
 }
 
 export interface WsMessageEvent {

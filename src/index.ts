@@ -11,6 +11,7 @@ export function getAssetDir(): string {
 export type {
   BootstrapPayload,
   WebChatAgent,
+  WebChatAttachment,
   WebChatMessage,
   WebChatRoom,
   WebChatUser,

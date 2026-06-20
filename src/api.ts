@@ -1,4 +1,4 @@
-import type { BootstrapPayload, WebChatMessage, WsEvent } from './types';
+import type { BootstrapPayload, WebChatAttachment, WebChatMessage, WsEvent } from './types';
 
 const DEFAULT_WEBCHAT_API_TARGET = 'http://127.0.0.1:3200';
 
@@ -50,12 +50,15 @@ export async function sendMessage(
   platformId: string,
   threadId: string,
   text: string,
+  attachments?: WebChatAttachment[],
 ): Promise<void> {
   const path = `/api/rooms/${encodeURIComponent(platformId)}/threads/${encodeURIComponent(threadId)}/messages`;
+  const body: { text: string; attachments?: WebChatAttachment[] } = { text };
+  if (attachments?.length) body.attachments = attachments;
   const res = await fetch(path, {
     method: 'POST',
     headers: { ...authHeaders(token), 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`send failed: ${res.status}`);
 }

@@ -19,7 +19,16 @@ pnpm install
 pnpm run dev      # Vite dev server (needs a running adapter for API)
 pnpm run build
 pnpm run typecheck
+pnpm run test:coverage
 ```
+
+### Branches & releases
+
+This repository uses a **single long-lived `main` branch**. It is published as an npm package (`@artificer-innovations/nanoclaw-webchat`) and does **not** follow the org-wide `develop` → `main` SDLC used by application repos.
+
+- Open pull requests against **`main`**
+- CI runs on pushes and PRs to `main` (see [`.github/workflows/ci.yml`](./.github/workflows/ci.yml))
+- There is no `develop` branch in this repo by design
 
 ## Usage
 
