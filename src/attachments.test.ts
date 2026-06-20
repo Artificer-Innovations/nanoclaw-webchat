@@ -11,6 +11,7 @@ import {
   normalizeAttachment,
   readAttachmentFiles,
   removePendingAtIndex,
+  revokeAttachmentPreviews,
   type PendingAttachment,
 } from './attachments';
 
@@ -70,6 +71,7 @@ describe('attachments', () => {
     const { attachments, dropped } = mergePendingAttachments(prev, next);
     expect(attachments).toHaveLength(MAX_ATTACHMENTS);
     expect(dropped).toHaveLength(1);
+    revokeAttachmentPreviews(dropped);
     expect(revoke).toHaveBeenCalledWith('blob:e');
     revoke.mockRestore();
   });
@@ -89,6 +91,7 @@ describe('attachments', () => {
     const { attachments, dropped } = mergePendingAttachments(prev, next);
     expect(attachments).toEqual(prev);
     expect(dropped).toEqual(next);
+    revokeAttachmentPreviews(dropped);
     expect(revoke).toHaveBeenCalledWith('blob:extra');
     revoke.mockRestore();
   });

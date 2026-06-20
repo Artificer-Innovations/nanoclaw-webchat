@@ -34,7 +34,10 @@ describe('MessageAttachments', () => {
       'src',
       'data:image/png;base64,aGVsbG8=',
     );
-    expect(screen.queryByRole('link', { name: 'photo.png' })).not.toBeInTheDocument();
+    const link = screen.getByRole('link', { name: 'photo.png' });
+    expect(link).toHaveAttribute('href', 'data:image/png;base64,aGVsbG8=');
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
   });
 
   it('renders file attachments as download links', () => {

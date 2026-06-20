@@ -25,7 +25,6 @@ import {
   removePendingAtIndex,
   revokeAttachmentPreviews,
   toSendAttachments,
-  type AttachmentRejection,
   type PendingAttachment,
 } from './attachments';
 import { MessageAttachments } from './MessageAttachments';
@@ -326,12 +325,14 @@ export function App() {
         return;
       }
 
-      let capRejected: AttachmentRejection[] = [];
+      let dropped: PendingAttachment[] = [];
       setPendingAttachments((prev) => {
-        const { attachments, dropped } = mergePendingAttachments(prev, next);
-        capRejected = dropped.map((att) => ({ name: att.name, reason: 'capacity' as const }));
-        return attachments;
+        const merged = mergePendingAttachments(prev, next);
+        dropped = merged.dropped;
+        return merged.attachments;
       });
+      revokeAttachmentPreviews(dropped);
+      const capRejected = dropped.map((att) => ({ name: att.name, reason: 'capacity' as const }));
 
       const rejectionMessage = formatAttachmentRejections([...rejected, ...capRejected]);
       if (rejectionMessage) setError(rejectionMessage);
