@@ -1,6 +1,6 @@
 import type { ThreadMeta } from './types';
 import type { BootstrapPayload, WebChatMessage, WebChatRoom } from './types';
-import { clearLegacyThreads, createThread, loadLegacyThreads } from './api';
+import { createThread, loadLegacyThreads, removeLegacyThread } from './api';
 
 export const SEEN_MESSAGE_IDS_MAX = 1000;
 
@@ -337,17 +337,27 @@ export async function migrateLegacyThreads(
 ): Promise<Record<string, ThreadMeta[]>> {
   const map = { ...baseMap };
   for (const room of rooms) {
-    const server = map[room.platformId] ?? DEFAULT_ROOM_THREADS;
-    const legacy = loadLegacyThreads(room.platformId);
-    const hasOnlyMain = server.filter((t) => t.id !== 'main').length === 0;
-    if (legacy.length === 0 || !hasOnlyMain) continue;
-    const next = [...server];
-    for (const thread of legacy) {
-      const created = await createThread(token, room.platformId, thread.title);
-      next.push(created);
+    try {
+      const legacy = loadLegacyThreads(room.platformId);
+      if (legacy.length === 0) continue;
+
+      const server = map[room.platformId] ?? DEFAULT_ROOM_THREADS;
+      const next = [...server];
+      const results = await Promise.allSettled(
+        legacy.map((thread) => createThread(token, room.platformId, thread.title)),
+      );
+
+      results.forEach((result, index) => {
+        if (result.status === 'fulfilled') {
+          next.push(result.value);
+          removeLegacyThread(room.platformId, legacy[index]!.id);
+        }
+      });
+
+      map[room.platformId] = next;
+    } catch {
+      // best-effort per room — bootstrap should not fail on migration
     }
-    map[room.platformId] = next;
-    clearLegacyThreads(room.platformId);
   }
   return map;
 }

@@ -111,7 +111,7 @@ Response: `{ "messageId": "web-123", "timestamp": 1710000000000 }`
 
 ### `GET /api/attachments/:messageId/:filename`
 
-Returns stored attachment bytes for messages persisted in `webchat.db`. Auth required.
+Returns stored attachment bytes for messages persisted in `webchat.db`. Auth required via `Authorization: Bearer` or `?token=<secret>` query parameter (same as WebSocket). The UI appends `?token=` when rendering `<img src>` and download links because those requests cannot send headers.
 
 ### Attachment payloads in history and WebSocket
 

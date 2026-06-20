@@ -8,6 +8,7 @@ import {
   fetchMessages,
   getStoredToken,
   loadLegacyThreads,
+  removeLegacyThread,
   renameThread,
   resolveWebSocketUrl,
   sendMessage,
@@ -574,6 +575,45 @@ describe('api', () => {
     it('removes legacy storage key', () => {
       localStorage.setItem('webchat_threads:lobby-1', '[]');
       clearLegacyThreads('lobby-1');
+      expect(localStorage.getItem('webchat_threads:lobby-1')).toBeNull();
+    });
+  });
+
+  describe('removeLegacyThread', () => {
+    it('removes one thread and clears storage when only main remains', () => {
+      localStorage.setItem(
+        'webchat_threads:lobby-1',
+        JSON.stringify([
+          { id: 'main', title: 'Main' },
+          { id: 'thread_1', title: 'One' },
+        ]),
+      );
+      removeLegacyThread('lobby-1', 'thread_1');
+      expect(localStorage.getItem('webchat_threads:lobby-1')).toBeNull();
+    });
+
+    it('keeps remaining threads in storage', () => {
+      localStorage.setItem(
+        'webchat_threads:lobby-1',
+        JSON.stringify([
+          { id: 'thread_1', title: 'One' },
+          { id: 'thread_2', title: 'Two' },
+        ]),
+      );
+      removeLegacyThread('lobby-1', 'thread_1');
+      expect(JSON.parse(localStorage.getItem('webchat_threads:lobby-1')!)).toEqual([
+        { id: 'thread_2', title: 'Two' },
+      ]);
+    });
+
+    it('ignores corrupt legacy storage', () => {
+      localStorage.setItem('webchat_threads:lobby-1', '{bad json');
+      removeLegacyThread('lobby-1', 'thread_1');
+      expect(localStorage.getItem('webchat_threads:lobby-1')).toBe('{bad json');
+    });
+
+    it('is a no-op when legacy storage is missing', () => {
+      removeLegacyThread('lobby-1', 'thread_1');
       expect(localStorage.getItem('webchat_threads:lobby-1')).toBeNull();
     });
   });

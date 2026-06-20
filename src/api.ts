@@ -198,3 +198,21 @@ export function loadLegacyThreads(roomKey: string): ThreadMeta[] {
 export function clearLegacyThreads(roomKey: string): void {
   localStorage.removeItem(`webchat_threads:${roomKey}`);
 }
+
+/** Remove one migrated thread from legacy storage so partial migration can retry the rest. */
+export function removeLegacyThread(roomKey: string, threadId: string): void {
+  try {
+    const raw = localStorage.getItem(`webchat_threads:${roomKey}`);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as ThreadMeta[];
+    const next = parsed.filter((t) => t.id !== threadId);
+    const withoutMain = next.filter((t) => t.id !== 'main');
+    if (withoutMain.length === 0) {
+      localStorage.removeItem(`webchat_threads:${roomKey}`);
+    } else {
+      localStorage.setItem(`webchat_threads:${roomKey}`, JSON.stringify(next));
+    }
+  } catch {
+    // ignore corrupt storage
+  }
+}

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   attachmentDataUrl,
+  isSafeAttachmentUrl,
   attachmentPreviewUrl,
   attachmentToBlob,
   attachmentTypeFromMime,
@@ -160,13 +161,16 @@ describe('attachments', () => {
       }),
     ).toBe('data:image/png;base64,aGVsbG8=');
     expect(
-      attachmentDataUrl({
-        name: 'a.png',
-        mimeType: 'image/png',
-        type: 'image',
-        url: '/api/attachments/msg-1/a.png',
-      }),
-    ).toBe('/api/attachments/msg-1/a.png');
+      attachmentDataUrl(
+        {
+          name: 'a.png',
+          mimeType: 'image/png',
+          type: 'image',
+          url: '/api/attachments/msg-1/a.png',
+        },
+        'secret',
+      ),
+    ).toBe('/api/attachments/msg-1/a.png?token=secret');
     expect(
       attachmentDataUrl({
         name: 'a.png',
@@ -176,8 +180,105 @@ describe('attachments', () => {
     ).toBeNull();
   });
 
+  it('prefers inline data over persisted url', () => {
+    expect(
+      attachmentDataUrl({
+        name: 'a.png',
+        mimeType: 'image/png',
+        type: 'image',
+        data: 'aGVsbG8=',
+        url: '/api/attachments/msg-1/a.png',
+      }),
+    ).toBe('data:image/png;base64,aGVsbG8=');
+  });
+
+  it('rejects unsafe attachment urls', () => {
+    expect(isSafeAttachmentUrl('javascript:alert(1)')).toBe(false);
+    expect(isSafeAttachmentUrl('//evil.example/api/attachments/msg/x')).toBe(false);
+    expect(isSafeAttachmentUrl('/api/attachments/http://evil/x')).toBe(false);
+    expect(isSafeAttachmentUrl('/api/attachments/msg/data:text/html,x')).toBe(false);
+    expect(
+      attachmentDataUrl({
+        name: 'x',
+        mimeType: 'text/plain',
+        type: 'file',
+        url: 'javascript:alert(1)',
+      }),
+    ).toBeNull();
+    expect(
+      attachmentDataUrl({
+        name: 'x',
+        mimeType: 'text/plain',
+        type: 'file',
+        url: '//evil.example/api/attachments/msg/x',
+      }),
+    ).toBeNull();
+    expect(
+      attachmentDataUrl({
+        name: 'x',
+        mimeType: 'text/plain',
+        type: 'file',
+        url: '/other/path',
+      }),
+    ).toBeNull();
+    expect(
+      openAttachmentInNewTab({
+        name: 'x',
+        mimeType: 'text/plain',
+        type: 'file',
+        url: 'https://evil.example/a.png',
+      }),
+    ).toBe(false);
+  });
+
+  it('uses stored token and appends query params for persisted urls', () => {
+    sessionStorage.setItem('webchat_token', 'stored-secret');
+    expect(
+      attachmentDataUrl({
+        name: 'a.png',
+        mimeType: 'image/png',
+        type: 'image',
+        url: '/api/attachments/msg-1/a.png?size=1',
+      }),
+    ).toBe('/api/attachments/msg-1/a.png?size=1&token=stored-secret');
+    expect(
+      attachmentDataUrl({
+        name: 'a.png',
+        mimeType: 'image/png',
+        type: 'image',
+        url: '/api/attachments/msg-1/a.png',
+      }),
+    ).toBe('/api/attachments/msg-1/a.png?token=stored-secret');
+    sessionStorage.removeItem('webchat_token');
+    expect(
+      attachmentDataUrl({
+        name: 'a.png',
+        mimeType: 'image/png',
+        type: 'image',
+        url: '/api/attachments/msg-1/a.png',
+      }),
+    ).toBe('/api/attachments/msg-1/a.png');
+  });
+
   it('opens persisted attachments via url when data is absent', () => {
     const open = vi.spyOn(window, 'open').mockReturnValue({} as Window);
+    expect(
+      openAttachmentInNewTab(
+        {
+          name: 'photo.png',
+          mimeType: 'image/png',
+          type: 'image',
+          url: '/api/attachments/msg-1/photo.png',
+        },
+        'secret',
+      ),
+    ).toBe(true);
+    expect(open).toHaveBeenCalledWith(
+      '/api/attachments/msg-1/photo.png?token=secret',
+      '_blank',
+      'noopener,noreferrer',
+    );
+    sessionStorage.setItem('webchat_token', 'stored');
     expect(
       openAttachmentInNewTab({
         name: 'photo.png',
@@ -186,7 +287,12 @@ describe('attachments', () => {
         url: '/api/attachments/msg-1/photo.png',
       }),
     ).toBe(true);
-    expect(open).toHaveBeenCalledWith('/api/attachments/msg-1/photo.png', '_blank', 'noopener,noreferrer');
+    expect(open).toHaveBeenCalledWith(
+      '/api/attachments/msg-1/photo.png?token=stored',
+      '_blank',
+      'noopener,noreferrer',
+    );
+    sessionStorage.removeItem('webchat_token');
     open.mockRestore();
   });
 

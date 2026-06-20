@@ -494,5 +494,61 @@ describe('app-helpers', () => {
       ]);
       expect(localStorage.getItem('webchat_threads:lobby-1')).toBeNull();
     });
+
+    it('removes only successfully migrated threads from localStorage', async () => {
+      localStorage.setItem(
+        'webchat_threads:lobby-1',
+        JSON.stringify([
+          { id: 'thread_a', title: 'A' },
+          { id: 'thread_b', title: 'B' },
+        ]),
+      );
+      vi.spyOn(api, 'createThread').mockImplementation(async (_token, _room, title) => {
+        if (title === 'B') throw new Error('server error');
+        return { id: `thread_${title}`, title };
+      });
+
+      const result = await migrateLegacyThreads('token', [room], {});
+
+      expect(result['lobby-1']).toEqual([
+        ...DEFAULT_ROOM_THREADS,
+        { id: 'thread_A', title: 'A' },
+      ]);
+      expect(JSON.parse(localStorage.getItem('webchat_threads:lobby-1')!)).toEqual([
+        { id: 'thread_b', title: 'B' },
+      ]);
+    });
+
+    it('retries remaining legacy threads even when the server already has child threads', async () => {
+      localStorage.setItem(
+        'webchat_threads:lobby-1',
+        JSON.stringify([{ id: 'thread_b', title: 'B' }]),
+      );
+      const serverThreads = [
+        ...DEFAULT_ROOM_THREADS,
+        { id: 'thread_A', title: 'A' },
+      ];
+      vi.spyOn(api, 'createThread').mockResolvedValue({ id: 'thread_B', title: 'B' });
+
+      const result = await migrateLegacyThreads('token', [room], { 'lobby-1': serverThreads });
+
+      expect(result['lobby-1']).toEqual([
+        ...serverThreads,
+        { id: 'thread_B', title: 'B' },
+      ]);
+      expect(localStorage.getItem('webchat_threads:lobby-1')).toBeNull();
+    });
+
+    it('does not throw when migration fails', async () => {
+      localStorage.setItem(
+        'webchat_threads:lobby-1',
+        JSON.stringify([{ id: 'thread_a', title: 'A' }]),
+      );
+      vi.spyOn(api, 'createThread').mockRejectedValue(new Error('network'));
+
+      const base = { 'lobby-1': DEFAULT_ROOM_THREADS };
+      await expect(migrateLegacyThreads('token', [room], base)).resolves.toEqual(base);
+      expect(localStorage.getItem('webchat_threads:lobby-1')).not.toBeNull();
+    });
   });
 });

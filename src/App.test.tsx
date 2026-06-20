@@ -1961,7 +1961,7 @@ describe('App', () => {
     expect(await screen.findByText('delete thread failed')).toBeInTheDocument();
   });
 
-  it('does not migrate legacy threads when the server already has child threads', async () => {
+  it('migrates remaining legacy threads when the server already has child threads', async () => {
     localStorage.setItem(
       'webchat_threads:lobby-1',
       JSON.stringify([{ id: 'thread_legacy', title: 'Legacy topic' }]),
@@ -1979,12 +1979,10 @@ describe('App', () => {
     );
     sessionStorage.setItem('webchat_token', 'secret');
     render(<App />);
-    await screen.findByRole('button', { name: 'Thread B' });
 
-    expect(vi.mocked(api.createThread)).not.toHaveBeenCalled();
-    expect(localStorage.getItem('webchat_threads:lobby-1')).toBe(
-      JSON.stringify([{ id: 'thread_legacy', title: 'Legacy topic' }]),
-    );
+    expect(await screen.findByRole('button', { name: 'Legacy topic' })).toBeInTheDocument();
+    expect(vi.mocked(api.createThread)).toHaveBeenCalledWith('secret', 'lobby-1', 'Legacy topic');
+    expect(localStorage.getItem('webchat_threads:lobby-1')).toBeNull();
   });
 
   it('clears data-theme when system preference is selected', async () => {

@@ -99,7 +99,12 @@ export function App() {
   const loadBootstrap = useCallback(async (authToken: string) => {
     const data = await fetchBootstrap(authToken);
     const baseThreads = threadsMapFromRooms(data.rooms);
-    const threadsMap = await migrateLegacyThreads(authToken, data.rooms, baseThreads);
+    let threadsMap = baseThreads;
+    try {
+      threadsMap = await migrateLegacyThreads(authToken, data.rooms, baseThreads);
+    } catch {
+      // migration is best-effort; bootstrap already succeeded
+    }
     setBootstrap(data);
     setThreadsByRoom(threadsMap);
     setUnreadCounts({});
