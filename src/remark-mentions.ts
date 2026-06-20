@@ -1,29 +1,12 @@
-import type { Root } from 'mdast';
+import type { Mention, PhrasingContent, Root } from 'mdast';
 import { visit } from 'unist-util-visit';
+import { MENTION_HANDLE_PATTERN, textHasMention } from './mention-pattern';
 
-const MENTION_PATTERN = /@(\w+)/g;
-
-interface MentionNode {
-  type: 'mention';
-  data: {
-    hName: 'span';
-    hProperties: { className: string[] };
-  };
-  children: [{ type: 'text'; value: string }];
-}
-
-type TextNode = { type: 'text'; value: string };
-type PhrasingNode = TextNode | MentionNode;
-
-function hasMention(text: string): boolean {
-  return /@\w+/.test(text);
-}
-
-function splitTextWithMentions(value: string): PhrasingNode[] {
-  const nodes: PhrasingNode[] = [];
+function splitTextWithMentions(value: string): PhrasingContent[] {
+  const nodes: PhrasingContent[] = [];
   let lastIndex = 0;
   let match: RegExpExecArray | null;
-  const pattern = new RegExp(MENTION_PATTERN.source, MENTION_PATTERN.flags);
+  const pattern = new RegExp(MENTION_HANDLE_PATTERN.source, MENTION_HANDLE_PATTERN.flags);
 
   while ((match = pattern.exec(value)) !== null) {
     if (match.index > lastIndex) {
@@ -49,7 +32,7 @@ function splitTextWithMentions(value: string): PhrasingNode[] {
   return nodes;
 }
 
-function isMentionParent(parent: { type: string }): parent is MentionNode {
+function isMentionParent(parent: { type: string }): parent is Mention {
   return parent.type === 'mention';
 }
 
@@ -57,10 +40,10 @@ export function remarkMentions() {
   return (tree: Root) => {
     visit(tree, 'text', (node, index, parent) => {
       if (index === undefined || !parent || isMentionParent(parent)) return;
-      if (!hasMention(node.value)) return;
+      if (!textHasMention(node.value)) return;
 
       const nodes = splitTextWithMentions(node.value);
-      parent.children.splice(index, 1, ...(nodes as Root['children']));
+      parent.children.splice(index, 1, ...nodes);
     });
   };
 }

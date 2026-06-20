@@ -104,6 +104,12 @@ line two`} />);
     expect(container.querySelector('code.language-javascript')?.textContent).toContain('const x = 1');
   });
 
+  it('wraps tables in a horizontally scrollable container', () => {
+    const { container } = render(<FormattedMessage text={'| A | B |\n| --- | --- |\n| 1 | 2 |'} />);
+    expect(container.querySelector('.markdown-table-wrap')).toBeInTheDocument();
+    expect(container.querySelector('.markdown-table-wrap table')).toBeInTheDocument();
+  });
+
   it('does not style mentions inside inline code', () => {
     const { container } = render(<FormattedMessage text="`@sarah`" />);
     const code = container.querySelector('.inline-code');

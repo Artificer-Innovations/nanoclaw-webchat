@@ -11,6 +11,11 @@ const markdownComponents: Components = {
     </a>
   ),
   pre: ({ children }) => <pre className="code-block">{children}</pre>,
+  table: ({ children }) => (
+    <div className="markdown-table-wrap">
+      <table>{children}</table>
+    </div>
+  ),
   code: ({ children, className, ...props }) => {
     if (className) {
       return (
@@ -20,6 +25,7 @@ const markdownComponents: Components = {
       );
     }
     const text = String(children);
+    // Fenced blocks without a language tag omit className; react-markdown appends a trailing newline.
     if (text.includes('\n')) {
       return <code {...props}>{children}</code>;
     }
@@ -31,6 +37,7 @@ const markdownComponents: Components = {
   },
 };
 
+/** Block-level message body renderer (used inside `.msg-text` in App.tsx). */
 export function FormattedMessage({ text, className }: { text: string; className?: string }) {
   return (
     <div className={className ?? 'formatted-message'}>

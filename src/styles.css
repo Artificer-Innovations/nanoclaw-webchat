@@ -536,11 +536,15 @@ body {
   accent-color: var(--accent);
 }
 
+.formatted-message .markdown-table-wrap {
+  overflow-x: auto;
+  max-width: 100%;
+  margin: 0.35em 0;
+}
+
 .formatted-message table {
   border-collapse: collapse;
-  margin: 0.35em 0;
   width: auto;
-  max-width: 100%;
 }
 
 .formatted-message th,
