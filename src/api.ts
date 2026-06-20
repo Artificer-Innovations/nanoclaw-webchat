@@ -1,5 +1,7 @@
 import type { BootstrapPayload, WebChatMessage, WsEvent } from './types';
 
+const DEFAULT_WEBCHAT_API_TARGET = 'http://127.0.0.1:3200';
+
 function tokenFromLocation(): string {
   const params = new URLSearchParams(window.location.search);
   return params.get('token') ?? sessionStorage.getItem('webchat_token') ?? '';
@@ -7,6 +9,20 @@ function tokenFromLocation(): string {
 
 function authHeaders(token: string): HeadersInit {
   return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+export function resolveWebSocketUrl(
+  token: string,
+  env: Pick<ImportMetaEnv, 'DEV' | 'VITE_WEBCHAT_API_TARGET'> = import.meta.env,
+): string {
+  if (env.DEV) {
+    const target = env.VITE_WEBCHAT_API_TARGET ?? DEFAULT_WEBCHAT_API_TARGET;
+    const backend = new URL(target);
+    const wsProto = backend.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${wsProto}//${backend.host}/api/ws?token=${encodeURIComponent(token)}`;
+  }
+  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  return `${proto}://${window.location.host}/api/ws?token=${encodeURIComponent(token)}`;
 }
 
 export async function fetchBootstrap(token: string): Promise<BootstrapPayload> {
@@ -44,18 +60,70 @@ export async function sendMessage(
   if (!res.ok) throw new Error(`send failed: ${res.status}`);
 }
 
-export function connectWebSocket(token: string, onEvent: (event: WsEvent) => void): WebSocket {
-  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-  const url = `${proto}://${window.location.host}/api/ws?token=${encodeURIComponent(token)}`;
-  const ws = new WebSocket(url);
-  ws.onmessage = (ev) => {
-    try {
-      onEvent(JSON.parse(ev.data as string) as WsEvent);
-    } catch {
-      // ignore malformed frames
-    }
+export interface WebSocketConnection {
+  close: () => void;
+}
+
+function closeWebSocket(ws: WebSocket | null): void {
+  if (!ws) return;
+  if (ws.readyState === WebSocket.CONNECTING) {
+    ws.addEventListener('open', () => ws.close(), { once: true });
+    return;
+  }
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.close();
+  }
+}
+
+export function connectWebSocket(
+  token: string,
+  onEvent: (event: WsEvent) => void,
+  onOpen?: () => void,
+): WebSocketConnection {
+  let ws: WebSocket | null = null;
+  let closed = false;
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let reconnectAttempt = 0;
+
+  const scheduleReconnect = () => {
+    if (closed) return;
+    const delay = Math.min(1000 * 2 ** reconnectAttempt, 30_000);
+    reconnectAttempt += 1;
+    reconnectTimer = setTimeout(connect, delay);
   };
-  return ws;
+
+  const connect = () => {
+    ws = new WebSocket(resolveWebSocketUrl(token));
+    ws.onopen = () => {
+      reconnectAttempt = 0;
+      onOpen?.();
+    };
+    ws.onmessage = (ev) => {
+      try {
+        onEvent(JSON.parse(ev.data as string) as WsEvent);
+      } catch {
+        // ignore malformed frames
+      }
+    };
+    ws.onclose = () => {
+      ws = null;
+      scheduleReconnect();
+    };
+    ws.onerror = () => {
+      closeWebSocket(ws);
+    };
+  };
+
+  connect();
+
+  return {
+    close: () => {
+      closed = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      closeWebSocket(ws);
+      ws = null;
+    },
+  };
 }
 
 export function getStoredToken(): string {

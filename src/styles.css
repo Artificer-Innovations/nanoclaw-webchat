@@ -818,6 +818,21 @@ body {
     gap: 0;
   }
 
+  .nav-room-item {
+    position: relative;
+  }
+
+  .nav-unread-badge {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    margin-left: 0;
+    min-width: 14px;
+    padding: 0 4px;
+    font-size: 9px;
+    line-height: 14px;
+  }
+
   .sidebar-footer {
     padding: 12px 8px;
   }

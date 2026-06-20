@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  applyUnreadFromMessages,
+  applyUnreadFromMessages,
   canCreateThread,
   canSendMessage,
   clearUnread,
@@ -7,13 +9,17 @@ import {
   getUnreadCount,
   incrementUnread,
   isActiveConversation,
+  markMessagesSeen,
   resolveActiveThreadTitle,
+  seedSyncCursors,
   shouldAppendMessage,
+  syncInactiveUnread,
   threadsForRoom,
   threadsFromState,
   unreadKey,
+  updateSyncCursor,
 } from './app-helpers';
-import type { WebChatMessage, WebChatRoom } from './types';
+import type { BootstrapPayload, WebChatMessage, WebChatRoom } from './types';
 
 const room: WebChatRoom = {
   platformId: 'lobby-1',
@@ -182,6 +188,153 @@ describe('app-helpers', () => {
     it('formats unread counts with a cap', () => {
       expect(formatUnreadCount(5)).toBe('5');
       expect(formatUnreadCount(100)).toBe('99+');
+    });
+
+    it('applies unread from fetched messages', () => {
+      const seenIds = new Set<string>();
+      const childMessage = { ...message, id: 'msg-2', threadId: 'thread_b', timestamp: 42 };
+      const result = applyUnreadFromMessages({}, [message, childMessage], seenIds);
+      expect(result.counts).toEqual({ 'lobby-1:main': 1, 'lobby-1:thread_b': 1 });
+      expect(result.maxTimestamp).toBe(42);
+      expect(seenIds.size).toBe(2);
+    });
+
+    it('seeds sync cursors for every room thread', () => {
+      const baseline = 1_700_000_000_000;
+      const cursors = seedSyncCursors(
+        {},
+        [
+          { platformId: 'lobby-1', name: 'Lobby', kind: 'lobby' },
+          { platformId: 'dm-sarah', name: 'Sarah', kind: 'dm' },
+        ],
+        {
+          'lobby-1': [
+            { id: 'main', title: 'Main' },
+            { id: 'thread_b', title: 'Thread B' },
+          ],
+        },
+        baseline,
+      );
+      expect(cursors).toEqual({
+        'lobby-1:main': baseline,
+        'lobby-1:thread_b': baseline,
+        'dm-sarah:main': baseline,
+      });
+    });
+
+    it('marks fetched messages as seen', () => {
+      const seenIds = new Set<string>();
+      expect(markMessagesSeen([message, { ...message, id: 'msg-2', timestamp: 42 }], seenIds)).toBe(42);
+      expect(seenIds).toEqual(new Set(['msg-1', 'msg-2']));
+    });
+
+    it('updates sync cursors from fetched messages', () => {
+      expect(updateSyncCursor({}, 'lobby-1', 'main', 0)).toEqual({});
+      expect(updateSyncCursor({}, 'lobby-1', 'main', 42)).toEqual({ 'lobby-1:main': 42 });
+      expect(updateSyncCursor({ 'lobby-1:main': 10 }, 'lobby-1', 'main', 5)).toEqual({
+        'lobby-1:main': 10,
+      });
+    });
+
+    it('syncs unread for inactive rooms from history', async () => {
+      const bootstrap: BootstrapPayload = {
+        user: { id: 'u1', displayName: 'Test User' },
+        rooms: [
+          { platformId: 'lobby-1', name: 'Lobby', kind: 'lobby' },
+          { platformId: 'dm-sarah', name: 'Sarah', kind: 'dm' },
+        ],
+        agents: [],
+      };
+      const seenIds = new Set<string>();
+      const fetchMessagesFn = vi.fn(async (_token, platformId: string) => {
+        if (platformId === 'dm-sarah') {
+          return [{ ...message, id: 'sync-1', platformId: 'dm-sarah', timestamp: 100 }];
+        }
+        return [];
+      });
+
+      const result = await syncInactiveUnread(
+        'token',
+        bootstrap,
+        { 'lobby-1': [{ id: 'main', title: 'Main' }] },
+        room,
+        'main',
+        { 'lobby-1:main': 50, 'dm-sarah:main': 0 },
+        seenIds,
+        fetchMessagesFn,
+      );
+
+      expect(result.counts).toEqual({ 'dm-sarah:main': 1 });
+      expect(result.syncCursor).toEqual({ 'lobby-1:main': 50, 'dm-sarah:main': 100 });
+      expect(fetchMessagesFn).toHaveBeenCalledWith('token', 'dm-sarah', 'main', 0);
+    });
+
+    it('uses a recent baseline when a thread cursor is missing', async () => {
+      const meiRoom: WebChatRoom = { platformId: 'dm-mei', name: 'Mei', kind: 'dm' };
+      const bootstrap: BootstrapPayload = {
+        user: { id: 'u1', displayName: 'Test User' },
+        rooms: [meiRoom],
+        agents: [],
+      };
+      const fetchMessagesFn = vi.fn(async (_token, _platformId, _threadId, since = 0) => {
+        if (since < 5000) return [{ ...message, id: 'old-1', platformId: 'dm-mei', timestamp: 1 }];
+        return [];
+      });
+
+      const result = await syncInactiveUnread(
+        'token',
+        bootstrap,
+        {
+          'dm-mei': [
+            { id: 'main', title: 'Main' },
+            { id: 'thread_orphan', title: 'Orphan' },
+          ],
+        },
+        meiRoom,
+        'main',
+        { 'dm-mei:main': 1000 },
+        new Set(),
+        fetchMessagesFn,
+        5000,
+      );
+
+      expect(fetchMessagesFn).not.toHaveBeenCalledWith(
+        'token',
+        'dm-mei',
+        'main',
+        expect.anything(),
+      );
+      expect(fetchMessagesFn).toHaveBeenCalledWith('token', 'dm-mei', 'thread_orphan', 5000);
+      expect(result.counts).toEqual({});
+    });
+
+    it('ignores active conversations and sync failures', async () => {
+      const bootstrap: BootstrapPayload = {
+        user: { id: 'u1', displayName: 'Test User' },
+        rooms: [
+          { platformId: 'lobby-1', name: 'Lobby', kind: 'lobby' },
+          { platformId: 'dm-sarah', name: 'Sarah', kind: 'dm' },
+        ],
+        agents: [],
+      };
+      const fetchMessagesFn = vi.fn(async (_token, platformId: string) => {
+        if (platformId === 'dm-sarah') throw new Error('network');
+        return [];
+      });
+
+      await expect(
+        syncInactiveUnread(
+          'token',
+          bootstrap,
+          {},
+          room,
+          'main',
+          { 'dm-sarah:main': 0 },
+          new Set(),
+          fetchMessagesFn,
+        ),
+      ).resolves.toEqual({ counts: {}, syncCursor: { 'dm-sarah:main': 0 } });
+      expect(fetchMessagesFn).toHaveBeenCalledWith('token', 'dm-sarah', 'main', 0);
     });
   });
 });

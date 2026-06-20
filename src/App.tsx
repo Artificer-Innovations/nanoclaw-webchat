@@ -3,10 +3,16 @@ import {
   canSendMessage,
   clearUnread,
   incrementUnread,
+  isActiveConversation,
+  markMessagesSeen,
   resolveActiveThreadTitle,
+  seedSyncCursors,
   shouldAppendMessage,
+  syncInactiveUnread,
   threadsForRoom,
   threadsFromState,
+  unreadKey,
+  updateSyncCursor,
 } from './app-helpers';
 import { formatMessageTime } from './format-message-time';
 import { FormattedMessage } from './FormattedMessage';
@@ -55,23 +61,54 @@ export function App() {
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const roomRef = useRef(room);
   const threadIdRef = useRef(threadId);
+  const threadsByRoomRef = useRef(threadsByRoom);
+  const bootstrapRef = useRef(bootstrap);
   const seenMessageIdsRef = useRef(new Set<string>());
+  const syncCursorRef = useRef<Record<string, number>>({});
   roomRef.current = room;
   threadIdRef.current = threadId;
+  threadsByRoomRef.current = threadsByRoom;
+  bootstrapRef.current = bootstrap;
 
   const loadBootstrap = useCallback(async (authToken: string) => {
     const data = await fetchBootstrap(authToken);
+    const threadsMap = buildThreadsMap(data.rooms);
     setBootstrap(data);
-    setThreadsByRoom(buildThreadsMap(data.rooms));
+    setThreadsByRoom(threadsMap);
     setUnreadCounts({});
     seenMessageIdsRef.current = new Set();
+    syncCursorRef.current = seedSyncCursors({}, data.rooms, threadsMap);
     const lobby = data.rooms.find((r) => r.kind === 'lobby') ?? data.rooms[0] ?? null;
+    roomRef.current = lobby;
+    threadIdRef.current = 'main';
     setRoom(lobby);
     setThreadId('main');
     if (lobby) {
       setExpandedRooms(new Set([lobby.platformId]));
     }
   }, []);
+
+  const syncInactiveRooms = useCallback(async () => {
+    const result = await syncInactiveUnread(
+      token,
+      bootstrapRef.current,
+      threadsByRoomRef.current,
+      roomRef.current,
+      threadIdRef.current,
+      syncCursorRef.current,
+      seenMessageIdsRef.current,
+      fetchMessages,
+    );
+    syncCursorRef.current = { ...syncCursorRef.current, ...result.syncCursor };
+    if (Object.keys(result.counts).length === 0) return;
+    setUnreadCounts((prev) => {
+      const next = { ...prev };
+      for (const [key, count] of Object.entries(result.counts)) {
+        next[key] = (prev[key] ?? 0) + count;
+      }
+      return next;
+    });
+  }, [token]);
 
   useEffect(() => {
     if (!token) return;
@@ -89,7 +126,17 @@ export function App() {
     let cancelled = false;
     fetchMessages(token, room.platformId, threadId)
       .then((msgs) => {
-        if (!cancelled) setMessages(msgs);
+        if (!cancelled) {
+          setMessages(msgs);
+          const maxTs = markMessagesSeen(msgs, seenMessageIdsRef.current);
+          syncCursorRef.current = updateSyncCursor(
+            syncCursorRef.current,
+            room.platformId,
+            threadId,
+            maxTs,
+          );
+          setUnreadCounts((counts) => clearUnread(counts, room.platformId, threadId));
+        }
       })
       .catch((err: Error) => setError(err.message));
     return () => {
@@ -98,22 +145,47 @@ export function App() {
   }, [token, room, threadId]);
 
   useEffect(() => {
-    if (!token) return;
-    const ws = connectWebSocket(token, (event) => {
-      if (event.type !== 'message') return;
-      const msg = event.message;
-      const seenIds = seenMessageIdsRef.current;
-      setMessages((prev) => {
-        if (!shouldAppendMessage(prev, msg, roomRef.current, threadIdRef.current)) return prev;
-        seenIds.add(msg.id);
-        return [...prev, msg];
-      });
-      if (!shouldAppendMessage([], msg, roomRef.current, threadIdRef.current)) {
-        setUnreadCounts((counts) => incrementUnread(counts, msg, seenIds));
-      }
-    });
-    return () => ws.close();
-  }, [token]);
+    if (!token || !bootstrap) return;
+    const connection = connectWebSocket(
+      token,
+      (event) => {
+        if (event.type !== 'message') return;
+        const msg = event.message;
+        const seenIds = seenMessageIdsRef.current;
+        syncCursorRef.current = updateSyncCursor(
+          syncCursorRef.current,
+          msg.platformId,
+          msg.threadId,
+          msg.timestamp,
+        );
+        if (isActiveConversation(msg, roomRef.current, threadIdRef.current)) {
+          setMessages((prev) => {
+            if (!shouldAppendMessage(prev, msg, roomRef.current, threadIdRef.current)) return prev;
+            seenIds.add(msg.id);
+            return [...prev, msg];
+          });
+          setUnreadCounts((counts) =>
+            clearUnread(counts, msg.platformId, msg.threadId),
+          );
+        } else {
+          setUnreadCounts((counts) => incrementUnread(counts, msg, seenIds));
+        }
+      },
+      () => {
+        void syncInactiveRooms();
+      },
+    );
+    return () => connection.close();
+  }, [token, bootstrap, syncInactiveRooms]);
+
+  useEffect(() => {
+    if (!token || !bootstrap) return;
+    void syncInactiveRooms();
+    const id = setInterval(() => {
+      void syncInactiveRooms();
+    }, 5000);
+    return () => clearInterval(id);
+  }, [token, bootstrap, syncInactiveRooms]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -200,12 +272,16 @@ export function App() {
   };
 
   const handleSelectRoomMain = (targetRoom: WebChatRoom) => {
+    roomRef.current = targetRoom;
+    threadIdRef.current = 'main';
     setUnreadCounts((counts) => clearUnread(counts, targetRoom.platformId, 'main'));
     setRoom(targetRoom);
     setThreadId('main');
   };
 
   const handleSelectThread = (targetRoom: WebChatRoom, nextThreadId: string) => {
+    roomRef.current = targetRoom;
+    threadIdRef.current = nextThreadId;
     setUnreadCounts((counts) => clearUnread(counts, targetRoom.platformId, nextThreadId));
     setRoom(targetRoom);
     setThreadId(nextThreadId);
@@ -229,6 +305,9 @@ export function App() {
     saveThreads(targetRoom.platformId, next);
     setThreadsByRoom((prev) => ({ ...prev, [targetRoom.platformId]: next }));
     setExpandedRooms((prev) => new Set(prev).add(targetRoom.platformId));
+    syncCursorRef.current[unreadKey(targetRoom.platformId, id)] = Date.now();
+    roomRef.current = targetRoom;
+    threadIdRef.current = id;
     setRoom(targetRoom);
     setThreadId(id);
     setMessages([]);
@@ -245,6 +324,7 @@ export function App() {
     updateThreadsForRoom(targetRoom.platformId, (list) => list.filter((t) => t.id !== thread.id));
     setUnreadCounts((counts) => clearUnread(counts, targetRoom.platformId, thread.id));
     if (room && room.platformId === targetRoom.platformId && threadId === thread.id) {
+      threadIdRef.current = 'main';
       setThreadId('main');
       setMessages([]);
     }
