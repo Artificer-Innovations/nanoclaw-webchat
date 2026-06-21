@@ -677,6 +677,46 @@ body {
   background: color-mix(in srgb, var(--accent) 8%, var(--bg));
 }
 
+.composer-engaged-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.composer-engaged-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--mention-user-fg);
+  background: var(--mention-user-bg);
+  border-radius: 999px;
+  padding: 0.2rem 0.35rem 0.2rem 0.65rem;
+}
+
+.composer-engaged-chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.75;
+}
+
+.composer-engaged-chip-remove:hover,
+.composer-engaged-chip-remove:focus-visible {
+  opacity: 1;
+  background: color-mix(in srgb, var(--mention-user-fg) 12%, transparent);
+}
+
 .composer-previews {
   display: flex;
   flex-wrap: wrap;

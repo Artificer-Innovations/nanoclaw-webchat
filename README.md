@@ -38,7 +38,7 @@ This repository uses a **single long-lived `main` branch**. It is published as a
 
 ### Lobby
 
-Type `@sarah review this` in the lobby — only the agent whose folder matches the pattern engages (per NanoClaw wiring).
+Type `@sarah review this` in the lobby — only the agent whose folder matches the pattern engages (per NanoClaw wiring). Once an agent has been @'d in a thread, they keep receiving follow-up messages in that thread without being @'d again.
 
 ### DMs
 

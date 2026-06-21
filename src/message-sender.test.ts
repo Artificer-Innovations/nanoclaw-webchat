@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mentionFromText, mentionsInOrder, messageSenderLabel } from './message-sender';
+import { engagedStateAfterSend, mentionFromText, mentionsInOrder, mergeEngagedAgents, mentionedFoldersInOrder, messageSenderLabel } from './message-sender';
 import type { WebChatAgent, WebChatMessage, WebChatRoom } from './types';
 
 const agents: WebChatAgent[] = [
@@ -307,5 +307,44 @@ describe('message-sender', () => {
     ];
     const orphan: WebChatMessage = { ...messages[1]!, id: 'missing' };
     expect(messageSenderLabel(orphan, messages, lobby, agents)).toBe('Diego');
+  });
+
+  it('parses mentioned agent folders including @team alias', () => {
+    const teamAgents: WebChatAgent[] = [
+      { folder: 'team-coord', name: 'Team', mention: '@team' },
+      { folder: 'sarah', name: 'Sarah', mention: '@sarah' },
+    ];
+    expect(mentionedFoldersInOrder('@team and @sarah', teamAgents)).toEqual([
+      'team-coord',
+      'sarah',
+    ]);
+  });
+
+  it('merges newly mentioned folders into engaged list', () => {
+    const current = ['sarah'];
+    expect(mergeEngagedAgents(current, '@diego please', agents)).toEqual(['sarah', 'diego']);
+    expect(mergeEngagedAgents(current, 'no mentions', agents)).toEqual(['sarah']);
+    expect(mergeEngagedAgents(current, 'no mentions', agents)).toBe(current);
+    expect(mergeEngagedAgents(current, '@sarah again', agents)).toBe(current);
+  });
+
+  it('returns prior state when send text adds no new engaged agents', () => {
+    const prev = { 'lobby|main': ['sarah'] };
+    expect(engagedStateAfterSend(prev, 'lobby|main', 'thanks', agents)).toBe(prev);
+  });
+
+  it('ignores @here when parsing folder mentions', () => {
+    expect(mentionedFoldersInOrder('@here @sarah', agents)).toEqual(['sarah']);
+    expect(mentionsInOrder('@here @sarah', agents)).toEqual(['Sarah']);
+    expect(mentionedFoldersInOrder('@unknown @sarah', agents)).toEqual(['sarah']);
+  });
+
+  it('updates engaged state maps after send', () => {
+    expect(
+      engagedStateAfterSend({}, 'lobby|main', '@sarah hello', agents),
+    ).toEqual({ 'lobby|main': ['sarah'] });
+    expect(
+      engagedStateAfterSend({ 'lobby|main': ['sarah'] }, 'lobby|main', '@team join', agents),
+    ).toEqual({ 'lobby|main': ['sarah', 'team'] });
   });
 });

@@ -4,6 +4,7 @@ import {
   connectWebSocket,
   createThread,
   deleteThread,
+  disengageAgent,
   fetchBootstrap,
   fetchMessages,
   getStoredToken,
@@ -124,7 +125,27 @@ describe('api', () => {
         '/api/rooms/lobby-1/threads/main/messages',
         { headers: { Authorization: 'Bearer secret' } },
       );
-      expect(messages).toEqual([messageFixture]);
+      expect(messages).toEqual({ messages: [messageFixture], engagedAgents: [] });
+    });
+
+    it('defaults engagedAgents when omitted from response', async () => {
+      vi.mocked(fetch).mockResolvedValue({
+        ok: true,
+        json: async () => ({ messages: [] }),
+      } as Response);
+
+      const result = await fetchMessages('secret', 'lobby-1', 'main');
+      expect(result.engagedAgents).toEqual([]);
+    });
+
+    it('parses engagedAgents from response', async () => {
+      vi.mocked(fetch).mockResolvedValue({
+        ok: true,
+        json: async () => ({ messages: [], engagedAgents: ['sarah', 'diego'] }),
+      } as Response);
+
+      const result = await fetchMessages('secret', 'lobby-1', 'main');
+      expect(result.engagedAgents).toEqual(['sarah', 'diego']);
     });
 
     it('includes since query when since is greater than zero', async () => {
@@ -691,6 +712,37 @@ describe('api', () => {
         vi.fn(async () => ({ ok: false, status: 404, json: async () => null }) as Response),
       );
       await expect(deleteThread('token', 'lobby-1', 'thread_b')).rejects.toThrow('delete thread failed: 404');
+    });
+  });
+
+  describe('disengageAgent', () => {
+    it('DELETEs engaged agent and returns updated list', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input: string, init?: RequestInit) => ({
+          ok: true,
+          json: async () => ({ agents: ['diego'] }),
+        }) as Response),
+      );
+
+      const agents = await disengageAgent('token', 'lobby', 'main', 'sarah');
+
+      expect(fetch).toHaveBeenCalledWith(
+        '/api/rooms/lobby/threads/main/engaged/sarah',
+        { method: 'DELETE', headers: { Authorization: 'Bearer token' } },
+      );
+      expect(agents).toEqual(['diego']);
+    });
+
+    it('throws when disengage request fails', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => ({ ok: false, status: 500, json: async () => null }) as Response),
+      );
+
+      await expect(disengageAgent('token', 'lobby', 'main', 'sarah')).rejects.toThrow(
+        'disengage failed: 500',
+      );
     });
   });
 });

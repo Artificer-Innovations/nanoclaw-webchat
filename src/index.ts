@@ -11,11 +11,13 @@ export function getAssetDir(): string {
 export type {
   BootstrapPayload,
   ThreadMeta,
+  ThreadMessagesPayload,
   WebChatAgent,
   WebChatAttachment,
   WebChatMessage,
   WebChatRoom,
   WebChatUser,
+  WsEngagedEvent,
   WsEvent,
   WsMessageEvent,
   WsTypingEvent,

@@ -269,7 +269,7 @@ export async function syncInactiveUnread(
     platformId: string,
     threadId: string,
     since?: number,
-  ) => Promise<WebChatMessage[]>,
+  ) => Promise<{ messages: WebChatMessage[]; engagedAgents?: string[] }>,
   missingCursorBaseline = Date.now(),
 ): Promise<{ counts: Record<string, number>; syncCursor: Record<string, number> }> {
   let nextCounts: Record<string, number> = {};
@@ -301,7 +301,7 @@ export async function syncInactiveUnread(
 
   const fetches = await Promise.allSettled(
     workItems.map(async ({ platformId, threadId, key, since }) => {
-      const msgs = await fetchMessagesFn(token, platformId, threadId, since);
+      const { messages: msgs } = await fetchMessagesFn(token, platformId, threadId, since);
       return { key, since, msgs };
     }),
   );

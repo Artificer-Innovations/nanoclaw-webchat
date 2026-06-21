@@ -1,4 +1,12 @@
-import type { BootstrapPayload, SendMessageResult, ThreadMeta, WebChatAttachment, WebChatMessage, WsEvent } from './types';
+import type {
+  BootstrapPayload,
+  SendMessageResult,
+  ThreadMeta,
+  ThreadMessagesPayload,
+  WebChatAttachment,
+  WebChatMessage,
+  WsEvent,
+} from './types';
 
 const DEFAULT_WEBCHAT_API_TARGET = 'http://127.0.0.1:3200';
 
@@ -36,13 +44,16 @@ export async function fetchMessages(
   platformId: string,
   threadId: string,
   since = 0,
-): Promise<WebChatMessage[]> {
+): Promise<ThreadMessagesPayload> {
   const q = since > 0 ? `?since=${since}` : '';
   const path = `/api/rooms/${encodeURIComponent(platformId)}/threads/${encodeURIComponent(threadId)}/messages${q}`;
   const res = await fetch(path, { headers: authHeaders(token) });
   if (!res.ok) throw new Error(`messages failed: ${res.status}`);
-  const data = (await res.json()) as { messages: WebChatMessage[] };
-  return data.messages;
+  const data = (await res.json()) as { messages: WebChatMessage[]; engagedAgents?: string[] };
+  return {
+    messages: data.messages,
+    engagedAgents: data.engagedAgents ?? [],
+  };
 }
 
 export async function sendMessage(
@@ -106,6 +117,22 @@ export async function deleteThread(
     headers: authHeaders(token),
   });
   if (!res.ok) throw new Error(`delete thread failed: ${res.status}`);
+}
+
+export async function disengageAgent(
+  token: string,
+  platformId: string,
+  threadId: string,
+  agentFolder: string,
+): Promise<string[]> {
+  const path = `/api/rooms/${encodeURIComponent(platformId)}/threads/${encodeURIComponent(threadId)}/engaged/${encodeURIComponent(agentFolder)}`;
+  const res = await fetch(path, {
+    method: 'DELETE',
+    headers: authHeaders(token),
+  });
+  if (!res.ok) throw new Error(`disengage failed: ${res.status}`);
+  const data = (await res.json()) as { agents: string[] };
+  return data.agents;
 }
 
 export interface WebSocketConnection {
