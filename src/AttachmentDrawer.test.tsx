@@ -6,8 +6,10 @@ import { AttachmentDrawer } from './AttachmentDrawer';
 describe('AttachmentDrawer', () => {
   afterEach(() => {
     cleanup();
+    localStorage.clear();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    document.body.classList.remove('attachment-drawer-resizing');
   });
 
   it('renders markdown preview after loading text', async () => {
@@ -364,6 +366,80 @@ describe('AttachmentDrawer', () => {
     });
     expect(screen.queryByText('Copied')).not.toBeInTheDocument();
     timeoutSpy.mockRestore();
+  });
+
+  it('scrolls drawer body to top when the attachment changes', async () => {
+    vi.spyOn(attachments, 'fetchAttachmentText').mockResolvedValue('# First');
+    const { container, rerender } = render(
+      <AttachmentDrawer
+        attachment={{
+          name: 'first.md',
+          mimeType: 'text/markdown',
+          type: 'file',
+          data: 'IyBGaXJzdA==',
+        }}
+        onClose={vi.fn()}
+      />,
+    );
+    await screen.findByRole('heading', { level: 1, name: 'First' });
+    const body = container.querySelector('.attachment-drawer-body') as HTMLDivElement;
+    body.scrollTop = 240;
+    rerender(
+      <AttachmentDrawer
+        attachment={{
+          name: 'second.md',
+          mimeType: 'text/markdown',
+          type: 'file',
+          data: 'IyBTZWNvbmQ=',
+        }}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(body.scrollTop).toBe(0);
+  });
+
+  it('clamps drawer width when the window is resized', () => {
+    localStorage.setItem('webchat_attachment_drawer_width', '900');
+    const { container } = render(
+      <AttachmentDrawer
+        attachment={{
+          name: 'photo.png',
+          mimeType: 'image/png',
+          type: 'image',
+          data: 'aGVsbG8=',
+        }}
+        onClose={vi.fn()}
+      />,
+    );
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 800, writable: true });
+    fireEvent(window, new Event('resize'));
+    expect((container.querySelector('.attachment-drawer') as HTMLElement).style.width).toBe('640px');
+  });
+
+  it('updates width while dragging the resize handle', () => {
+    const { container } = render(
+      <AttachmentDrawer
+        attachment={{
+          name: 'photo.png',
+          mimeType: 'image/png',
+          type: 'image',
+          data: 'aGVsbG8=',
+        }}
+        onClose={vi.fn()}
+      />,
+    );
+    const drawer = container.querySelector('.attachment-drawer') as HTMLElement;
+    const handle = container.querySelector('.attachment-drawer-resize-handle') as HTMLElement;
+    const initialWidth = Number.parseInt(drawer.style.width, 10);
+    handle.setPointerCapture = vi.fn();
+    handle.releasePointerCapture = vi.fn();
+    fireEvent.pointerDown(handle, { clientX: 900, pointerId: 1 });
+    fireEvent.pointerMove(handle, { clientX: 850, pointerId: 1 });
+    expect(drawer.style.width).toBe(`${Math.round(initialWidth + 50)}px`);
+    fireEvent.pointerUp(handle, { clientX: 850, pointerId: 1 });
+    expect(localStorage.getItem('webchat_attachment_drawer_width')).toBe(
+      String(Math.round(initialWidth + 50)),
+    );
   });
 
   it('shows image type in metadata when server type disagrees with mime', () => {

@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  attachmentDrawerWidthFromDrag,
+  getStoredAttachmentDrawerWidth,
+  clampAttachmentDrawerWidth,
+  resetDrawerBodyScroll,
+  setStoredAttachmentDrawerWidth,
+} from './attachment-drawer-layout';
 import {
   attachmentDataUrl,
   attachmentPreviewMode,
@@ -24,10 +31,24 @@ export function AttachmentDrawer({
   const mode = attachmentPreviewMode(att.mimeType);
   const embedUrl = mode === 'embed' ? attachmentDataUrl(att) : null;
 
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(getStoredAttachmentDrawerWidth);
   const [markdownText, setMarkdownText] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(mode === 'markdown');
   const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    resetDrawerBodyScroll(bodyRef.current);
+  }, [att.name, att.mimeType, att.data, att.url]);
+
+  useEffect(() => {
+    const onResize = () => {
+      setWidth((current) => clampAttachmentDrawerWidth(current));
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
 
   useEffect(() => {
     setCopied(false);
@@ -85,8 +106,48 @@ export function AttachmentDrawer({
     openAttachmentInNewTab(att);
   }, [att]);
 
+  const handleResizePointerDown = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      const handle = event.currentTarget;
+      const startX = event.clientX;
+      const startWidth = width;
+      handle.setPointerCapture(event.pointerId);
+      document.body.classList.add('attachment-drawer-resizing');
+
+      const onPointerMove = (moveEvent: PointerEvent) => {
+        setWidth(attachmentDrawerWidthFromDrag(startWidth, startX, moveEvent.clientX));
+      };
+
+      const onPointerUp = (upEvent: PointerEvent) => {
+        handle.releasePointerCapture(event.pointerId);
+        handle.removeEventListener('pointermove', onPointerMove);
+        handle.removeEventListener('pointerup', onPointerUp);
+        document.body.classList.remove('attachment-drawer-resizing');
+        const finalWidth = attachmentDrawerWidthFromDrag(startWidth, startX, upEvent.clientX);
+        setWidth(finalWidth);
+        setStoredAttachmentDrawerWidth(finalWidth);
+      };
+
+      handle.addEventListener('pointermove', onPointerMove);
+      handle.addEventListener('pointerup', onPointerUp);
+    },
+    [width],
+  );
+
   return (
-    <aside className="attachment-drawer" aria-label={`Attachment preview: ${att.name}`}>
+    <aside
+      className="attachment-drawer"
+      style={{ width }}
+      aria-label={`Attachment preview: ${att.name}`}
+    >
+      <div
+        className="attachment-drawer-resize-handle"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize attachment preview"
+        onPointerDown={handleResizePointerDown}
+      />
       <header className="attachment-drawer-header">
         <h3 className="attachment-drawer-title" title={att.name}>
           {att.name}
@@ -129,7 +190,7 @@ export function AttachmentDrawer({
           </button>
         </div>
       </header>
-      <div className="attachment-drawer-body">
+      <div ref={bodyRef} className="attachment-drawer-body">
         {mode === 'markdown' && loading ? (
           <p className="attachment-drawer-status">Loading…</p>
         ) : null}
