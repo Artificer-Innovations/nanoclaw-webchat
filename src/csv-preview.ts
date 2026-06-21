@@ -17,6 +17,15 @@ export function csvDelimiterFromAttachment(name: string): string {
   return attachmentExtension(name) === '.tsv' ? '\t' : ',';
 }
 
+export const CSV_MAX_PREVIEW_ROWS = 1000;
+
+export function limitCsvPreviewRows(rows: string[][]): { rows: string[][]; truncated: boolean } {
+  if (rows.length <= CSV_MAX_PREVIEW_ROWS) {
+    return { rows, truncated: false };
+  }
+  return { rows: rows.slice(0, CSV_MAX_PREVIEW_ROWS), truncated: true };
+}
+
 /** Parse RFC 4180-style CSV/TSV into rows of fields. */
 export function parseCsv(text: string, delimiter = ','): string[][] {
   const rows: string[][] = [];
@@ -82,7 +91,7 @@ export function csvColumnCount(rows: string[][]): number {
   return rows.reduce((max, row) => Math.max(max, row.length), 0);
 }
 
-export function renderCsvTableHtml(rows: string[][]): string {
+export function renderCsvTableHtml(rows: string[][], truncated = false): string {
   if (rows.length === 0) {
     return '<p class="csv-empty">No data</p>';
   }
@@ -100,5 +109,9 @@ export function renderCsvTableHtml(rows: string[][]): string {
     })
     .join('');
 
-  return `<div class="csv-table-wrap"><table class="csv-table"><thead><tr>${headHtml}</tr></thead><tbody>${bodyHtml}</tbody></table></div>`;
+  const truncatedNotice = truncated
+    ? `<p class="csv-truncated">Showing first ${CSV_MAX_PREVIEW_ROWS.toLocaleString()} rows.</p>`
+    : '';
+
+  return `${truncatedNotice}<div class="csv-table-wrap"><table class="csv-table"><thead><tr>${headHtml}</tr></thead><tbody>${bodyHtml}</tbody></table></div>`;
 }

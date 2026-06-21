@@ -21,8 +21,8 @@ describe('attachment-text-popout', () => {
     );
   });
 
-  it('builds a markdown popout document with preview and raw views', () => {
-    const html = buildMarkdownPopoutDocument('notes.md', '# Title\n\nbody');
+  it('builds a markdown popout document with preview and raw views', async () => {
+    const html = await buildMarkdownPopoutDocument('notes.md', '# Title\n\nbody');
     expect(html).toContain('<title>notes.md</title>');
     expect(html).toContain('id="preview-view"');
     expect(html).toContain('id="raw-view"');

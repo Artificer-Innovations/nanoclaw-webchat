@@ -54,7 +54,7 @@ export function AttachmentDrawer({
   const category = attachmentTextCategory(att.mimeType, att.name);
   const mode = attachmentPreviewMode(att.mimeType, att.name);
   const embedUrl = mode === 'embed' ? attachmentDataUrl(att, token) : null;
-  const htmlEmbedUrl = category === 'html' ? attachmentDataUrl(att, token) : null;
+  const copyActionLabel = mode === 'text' ? 'Copy content' : 'Copy link';
 
   const bodyRef = useRef<HTMLDivElement>(null);
   const copiedTimeoutRef = useRef<number | null>(null);
@@ -222,16 +222,8 @@ export function AttachmentDrawer({
     [persistWidth, width],
   );
 
-  const showTextLoading =
-    mode === 'text' &&
-    loading &&
-    !(category === 'html' && textView === 'preview' && htmlEmbedUrl);
-
-  const showTextError =
-    mode === 'text' &&
-    !loading &&
-    loadError != null &&
-    !(category === 'html' && textView === 'preview' && htmlEmbedUrl);
+  const showTextLoading = mode === 'text' && loading;
+  const showTextError = mode === 'text' && !loading && loadError != null;
 
   return (
     <aside
@@ -279,7 +271,7 @@ export function AttachmentDrawer({
           <button
             type="button"
             className="attachment-drawer-action"
-            aria-label={copied ? 'Copied' : mode === 'text' ? 'Copy content' : 'Copy link'}
+            aria-label={copied ? `${copyActionLabel} (copied)` : copyActionLabel}
             onClick={() => void handleCopy()}
           >
             <CopyIcon />
@@ -316,11 +308,11 @@ export function AttachmentDrawer({
       <div ref={bodyRef} className="attachment-drawer-body">
         {showTextLoading ? <p className="attachment-drawer-status">Loading…</p> : null}
         {showTextError ? <p className="attachment-drawer-error">{loadError}</p> : null}
-        {mode === 'text' && category === 'html' && textView === 'preview' && htmlEmbedUrl ? (
+        {mode === 'text' && category === 'html' && textView === 'preview' && textContent !== null ? (
           <iframe
             className="attachment-drawer-embed"
             title={att.name}
-            src={htmlEmbedUrl}
+            srcDoc={textContent}
             sandbox={ATTACHMENT_HTML_IFRAME_SANDBOX}
           />
         ) : null}
@@ -336,8 +328,8 @@ export function AttachmentDrawer({
                 className="formatted-message attachment-drawer-formatted"
               />
             )
-          ) : category === 'code' && codeLanguage ? (
-            textView === 'raw' ? (
+          ) : category === 'code' ? (
+            textView === 'raw' || !codeLanguage ? (
               <pre className="attachment-drawer-raw">{textContent}</pre>
             ) : (
               <CodePreview text={textContent} language={codeLanguage} />

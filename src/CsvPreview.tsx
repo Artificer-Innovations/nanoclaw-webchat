@@ -1,9 +1,16 @@
 import { useMemo } from 'react';
-import { csvColumnCount, csvDelimiterFromAttachment, parseCsv, padRow } from './csv-preview';
+import {
+  csvColumnCount,
+  csvDelimiterFromAttachment,
+  limitCsvPreviewRows,
+  parseCsv,
+  padRow,
+} from './csv-preview';
 
 export function CsvPreview({ text, name }: { text: string; name: string }) {
   const delimiter = csvDelimiterFromAttachment(name);
-  const rows = useMemo(() => parseCsv(text, delimiter), [delimiter, text]);
+  const parsed = useMemo(() => parseCsv(text, delimiter), [delimiter, text]);
+  const { rows, truncated } = useMemo(() => limitCsvPreviewRows(parsed), [parsed]);
   const columnCount = useMemo(() => csvColumnCount(rows), [rows]);
 
   if (rows.length === 0) {
@@ -15,6 +22,11 @@ export function CsvPreview({ text, name }: { text: string; name: string }) {
 
   return (
     <div className="attachment-drawer-csv-wrap">
+      {truncated ? (
+        <p className="attachment-drawer-csv-truncated">
+          Showing first {rows.length.toLocaleString()} rows.
+        </p>
+      ) : null}
       <table className="attachment-drawer-csv">
         <thead>
           <tr>

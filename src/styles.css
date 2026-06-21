@@ -848,10 +848,6 @@ body {
 }
 
 .msg-attachment-file {
-  padding: 0;
-  border: none;
-  background: none;
-  font: inherit;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
@@ -862,6 +858,7 @@ body {
   color: var(--accent);
   text-decoration: none;
   font-size: 0.875rem;
+  font: inherit;
 }
 
 .msg-attachment-file:hover {
@@ -1078,6 +1075,12 @@ body.attachment-drawer-resizing * {
   color: var(--muted);
 }
 
+.attachment-drawer-csv-truncated {
+  margin: 0 0 0.5rem;
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
 .attachment-drawer-title {
   margin: 0;
   font-size: 0.9375rem;
@@ -1179,7 +1182,7 @@ body.attachment-drawer-resizing * {
   .attachment-drawer {
     position: fixed;
     inset: 0 0 0 auto;
-    width: min(100vw, 480px) !important;
+    width: 100vw !important;
     height: 100vh;
     max-height: none;
     z-index: 20;

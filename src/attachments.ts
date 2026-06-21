@@ -405,7 +405,7 @@ export async function openMarkdownAttachmentInNewTab(
 ): Promise<boolean> {
   const text = await fetchAttachmentText(att, token);
   if (text == null) return false;
-  return openHtmlDocumentInNewTab(buildMarkdownPopoutDocument(att.name, text));
+  return openHtmlDocumentInNewTab(await buildMarkdownPopoutDocument(att.name, text));
 }
 
 /** Plain-text pop-out preserves blank lines via pre-wrap HTML. */

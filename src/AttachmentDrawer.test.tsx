@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import * as attachmentCode from './attachment-code';
 import * as attachments from './attachments';
 import { AttachmentDrawer } from './AttachmentDrawer';
 
@@ -214,8 +215,12 @@ describe('AttachmentDrawer', () => {
         onClose={vi.fn()}
       />,
     );
-    const iframe = container.querySelector('.attachment-drawer-embed');
-    expect(iframe).toHaveAttribute('src', 'data:text/html;base64,PGgxPkhlbGxvPC9oMT4=');
+    const iframe = await waitFor(() => {
+      const element = container.querySelector('iframe.attachment-drawer-embed');
+      if (!element) throw new Error('iframe not found');
+      return element;
+    });
+    expect(iframe).toHaveAttribute('srcdoc', '<h1>Hello</h1>');
     expect(iframe).toHaveAttribute('sandbox', attachments.ATTACHMENT_HTML_IFRAME_SANDBOX);
     expect(screen.getByRole('group', { name: 'View mode' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Raw' }));
@@ -245,9 +250,9 @@ describe('AttachmentDrawer', () => {
     expect(openSpy).toHaveBeenCalled();
   });
 
-  it('keeps html preview visible when raw content fails to load', async () => {
+  it('shows an error when html preview content fails to load', async () => {
     vi.spyOn(attachments, 'fetchAttachmentText').mockResolvedValue(null);
-    const { container } = render(
+    render(
       <AttachmentDrawer
         attachment={{
           name: 'page.html',
@@ -259,10 +264,8 @@ describe('AttachmentDrawer', () => {
         onClose={vi.fn()}
       />,
     );
-    expect(container.querySelector('.attachment-drawer-embed')).toBeTruthy();
-    expect(screen.queryByText('Could not load attachment content.')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Raw' }));
     expect(await screen.findByText('Could not load attachment content.')).toBeInTheDocument();
+    expect(document.querySelector('iframe.attachment-drawer-embed')).toBeNull();
   });
 
   it('shows loading for html raw view while content is fetched', async () => {
@@ -332,6 +335,24 @@ describe('AttachmentDrawer', () => {
     expect(openSpy).toHaveBeenCalled();
   });
 
+  it('falls back to raw text when code language cannot be resolved', async () => {
+    vi.spyOn(attachments, 'fetchAttachmentText').mockResolvedValue('hello');
+    vi.spyOn(attachmentCode, 'codeLanguageFromAttachment').mockReturnValue(null);
+    render(
+      <AttachmentDrawer
+        attachment={{
+          name: 'app.ts',
+          mimeType: 'text/typescript',
+          type: 'file',
+          data: btoa('hello'),
+        }}
+        token="secret"
+        onClose={vi.fn()}
+      />,
+    );
+    expect(await screen.findByText('hello')).toHaveClass('attachment-drawer-raw');
+  });
+
   it('renders syntax-highlighted code with preview/raw toggle', async () => {
     vi.spyOn(attachments, 'fetchAttachmentText').mockResolvedValue('const x = 1;');
     const openSpy = vi.spyOn(attachments, 'openCodeAttachmentInNewTab').mockResolvedValue(true);
@@ -396,7 +417,7 @@ describe('AttachmentDrawer', () => {
     await waitFor(() => {
       expect(writeText).toHaveBeenCalledWith('hello');
       expect(screen.getByText('Copied')).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Copied' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Copy content (copied)' })).toBeInTheDocument();
     });
   });
 
@@ -755,7 +776,7 @@ describe('AttachmentDrawer', () => {
     await waitFor(() => {
       expect(screen.getByText('Copied')).toBeInTheDocument();
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Copied' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Copy content (copied)' }));
     expect(clearTimeoutSpy).toHaveBeenCalled();
     clearTimeoutSpy.mockRestore();
   });

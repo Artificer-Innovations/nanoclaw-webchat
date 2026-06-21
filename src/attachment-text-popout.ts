@@ -1,7 +1,6 @@
-import { renderFormattedMessageHtml } from './formatted-message-html';
 import { highlightCodeHtml } from './code-highlight';
 import { CODE_HIGHLIGHT_STYLES } from './code-highlight-styles';
-import { csvDelimiterFromAttachment, parseCsv, renderCsvTableHtml } from './csv-preview';
+import { csvDelimiterFromAttachment, limitCsvPreviewRows, parseCsv, renderCsvTableHtml } from './csv-preview';
 
 /** HTML previews: run JS in an isolated origin; never add allow-same-origin (parent/token access). */
 export const ATTACHMENT_HTML_IFRAME_SANDBOX = 'allow-scripts allow-popups allow-modals';
@@ -187,6 +186,7 @@ main { padding: 20px; }
   background: color-mix(in srgb, var(--border) 18%, transparent);
 }
 .csv-empty { color: var(--muted); margin: 0; }
+.csv-truncated { color: var(--muted); margin: 0 0 0.75rem; font-size: 0.8125rem; }
 ${CODE_HIGHLIGHT_STYLES}
 `;
 
@@ -208,7 +208,8 @@ const POPOUT_SCRIPT = `
 })();
 `;
 
-export function buildMarkdownPopoutDocument(title: string, text: string): string {
+export async function buildMarkdownPopoutDocument(title: string, text: string): Promise<string> {
+  const { renderFormattedMessageHtml } = await import('./formatted-message-html');
   const previewHtml = renderFormattedMessageHtml(text);
   const safeTitle = escapeHtml(title);
   const safeRaw = escapeHtml(text);
@@ -327,7 +328,9 @@ export function buildCsvPopoutDocument(title: string, text: string, name: string
   const safeTitle = escapeHtml(title);
   const safeRaw = escapeHtml(text);
   const delimiter = csvDelimiterFromAttachment(name);
-  const previewHtml = renderCsvTableHtml(parseCsv(text, delimiter));
+  const parsed = parseCsv(text, delimiter);
+  const { rows, truncated } = limitCsvPreviewRows(parsed);
+  const previewHtml = renderCsvTableHtml(rows, truncated);
   return `<!DOCTYPE html>
 <html lang="en">
 <head>

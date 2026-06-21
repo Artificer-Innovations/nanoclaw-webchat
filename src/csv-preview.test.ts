@@ -3,6 +3,7 @@ import {
   csvColumnCount,
   csvDelimiterFromAttachment,
   isCsvAttachment,
+  limitCsvPreviewRows,
   parseCsv,
   padRow,
   renderCsvTableHtml,
@@ -54,6 +55,14 @@ describe('csv-preview', () => {
   it('pads rows and counts columns', () => {
     expect(padRow(['a'], 3)).toEqual(['a', '', '']);
     expect(csvColumnCount([['a', 'b'], ['c']])).toBe(2);
+  });
+
+  it('limits csv preview rows and shows a truncation notice', () => {
+    const rows = Array.from({ length: 1001 }, (_, index) => [`row-${index}`]);
+    const limited = limitCsvPreviewRows(rows);
+    expect(limited.truncated).toBe(true);
+    expect(limited.rows).toHaveLength(1000);
+    expect(renderCsvTableHtml(limited.rows, true)).toContain('Showing first 1,000 rows.');
   });
 
   it('renders csv tables with escaped html', () => {
