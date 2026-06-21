@@ -96,7 +96,6 @@ flowchart TB
 - **DM behavior changes** — DMs continue to route every message via `platformId`.
 - **Client-side mention injection** — UI sends user text as typed; routing is server-side.
 - **Auto-disengage on timeout** — optional future enhancement (P2).
-- **Standalone disengage API** — removal is UI-driven only; host handles internally.
 
 ---
 
@@ -400,7 +399,15 @@ Emitted when the engaged set changes (`@` mention adds agent, or × removes agen
 
 No body change. User text is unchanged.
 
-Disengage is **UI-only** — triggered from × chips; host updates engaged state and broadcasts `engaged` internally. No standalone public disengage endpoint required.
+### `DELETE .../engaged/:agentFolder`
+
+Removes one agent from the thread engaged set. Response:
+
+```json
+{ "agents": ["diego"] }
+```
+
+Host broadcasts the `engaged` WebSocket event with the updated list.
 
 ---
 

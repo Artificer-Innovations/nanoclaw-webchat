@@ -321,9 +321,16 @@ describe('message-sender', () => {
   });
 
   it('merges newly mentioned folders into engaged list', () => {
-    expect(mergeEngagedAgents(['sarah'], '@diego please', agents)).toEqual(['sarah', 'diego']);
-    expect(mergeEngagedAgents(['sarah'], 'no mentions', agents)).toEqual(['sarah']);
-    expect(mergeEngagedAgents(['sarah'], '@sarah again', agents)).toEqual(['sarah']);
+    const current = ['sarah'];
+    expect(mergeEngagedAgents(current, '@diego please', agents)).toEqual(['sarah', 'diego']);
+    expect(mergeEngagedAgents(current, 'no mentions', agents)).toEqual(['sarah']);
+    expect(mergeEngagedAgents(current, 'no mentions', agents)).toBe(current);
+    expect(mergeEngagedAgents(current, '@sarah again', agents)).toBe(current);
+  });
+
+  it('returns prior state when send text adds no new engaged agents', () => {
+    const prev = { 'lobby|main': ['sarah'] };
+    expect(engagedStateAfterSend(prev, 'lobby|main', 'thanks', agents)).toBe(prev);
   });
 
   it('ignores @here when parsing folder mentions', () => {

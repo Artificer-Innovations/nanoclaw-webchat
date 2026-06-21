@@ -9,8 +9,8 @@ function agentForHandle(handle: string, agents: WebChatAgent[]): WebChatAgent | 
   });
 }
 
-export function mentionedFoldersInOrder(text: string, agents: WebChatAgent[]): string[] {
-  const folders: string[] = [];
+function mentionedAgentsInOrder(text: string, agents: WebChatAgent[]): WebChatAgent[] {
+  const result: WebChatAgent[] = [];
   const seen = new Set<string>();
   const pattern = new RegExp(MENTION_HANDLE_PATTERN.source, MENTION_HANDLE_PATTERN.flags);
   let match: RegExpExecArray | null;
@@ -20,9 +20,13 @@ export function mentionedFoldersInOrder(text: string, agents: WebChatAgent[]): s
     const agent = agentForHandle(handle, agents);
     if (!agent || seen.has(agent.folder)) continue;
     seen.add(agent.folder);
-    folders.push(agent.folder);
+    result.push(agent);
   }
-  return folders;
+  return result;
+}
+
+export function mentionedFoldersInOrder(text: string, agents: WebChatAgent[]): string[] {
+  return mentionedAgentsInOrder(text, agents).map((agent) => agent.folder);
 }
 
 export function mergeEngagedAgents(
@@ -31,7 +35,7 @@ export function mergeEngagedAgents(
   agents: WebChatAgent[],
 ): string[] {
   const fromText = mentionedFoldersInOrder(text, agents);
-  if (fromText.length === 0) return [...current];
+  if (fromText.length === 0) return current as string[];
   const merged = [...current];
   const seen = new Set(current);
   for (const folder of fromText) {
@@ -40,7 +44,7 @@ export function mergeEngagedAgents(
       seen.add(folder);
     }
   }
-  return merged;
+  return merged.length === current.length ? (current as string[]) : merged;
 }
 
 export function engagedStateAfterSend(
@@ -49,10 +53,10 @@ export function engagedStateAfterSend(
   text: string,
   agents: WebChatAgent[],
 ): Record<string, string[]> {
-  return {
-    ...prev,
-    [engagedKey]: mergeEngagedAgents(prev[engagedKey] ?? [], text, agents),
-  };
+  const current = prev[engagedKey] ?? [];
+  const next = mergeEngagedAgents(current, text, agents);
+  if (next === current) return prev;
+  return { ...prev, [engagedKey]: next };
 }
 
 export function mentionFromText(text: string, agents: WebChatAgent[]): string | null {
@@ -61,19 +65,7 @@ export function mentionFromText(text: string, agents: WebChatAgent[]): string | 
 }
 
 export function mentionsInOrder(text: string, agents: WebChatAgent[]): string[] {
-  const names: string[] = [];
-  const seen = new Set<string>();
-  const pattern = new RegExp(MENTION_HANDLE_PATTERN.source, MENTION_HANDLE_PATTERN.flags);
-  let match: RegExpExecArray | null;
-  while ((match = pattern.exec(text)) !== null) {
-    const handle = match[1]!.toLowerCase();
-    if (handle === 'here') continue;
-    const agent = agentForHandle(handle, agents);
-    if (!agent || seen.has(agent.folder)) continue;
-    seen.add(agent.folder);
-    names.push(agent.name);
-  }
-  return names;
+  return mentionedAgentsInOrder(text, agents).map((agent) => agent.name);
 }
 
 function lobbySenderFromMentions(

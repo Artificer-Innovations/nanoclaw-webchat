@@ -126,10 +126,6 @@ export function unreadKey(platformId: string, threadId: string): string {
   return `${platformId}|${threadId}`;
 }
 
-export function engagedThreadKey(platformId: string, threadId: string): string {
-  return unreadKey(platformId, threadId);
-}
-
 export function isActiveConversation(
   message: WebChatMessage,
   room: WebChatRoom | null,

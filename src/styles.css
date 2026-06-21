@@ -698,8 +698,8 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 1.75rem;
-  min-height: 1.75rem;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
   padding: 0;
   border: none;
   border-radius: 999px;
@@ -715,16 +715,6 @@ body {
 .composer-engaged-chip-remove:focus-visible {
   opacity: 1;
   background: color-mix(in srgb, var(--mention-user-fg) 12%, transparent);
-}
-
-.composer-engaged {
-  margin: 0;
-  font-size: 0.75rem;
-  color: var(--mention-user-fg);
-  background: var(--mention-user-bg);
-  border-radius: 999px;
-  padding: 0.2rem 0.65rem;
-  width: fit-content;
 }
 
 .composer-previews {

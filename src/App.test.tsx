@@ -413,16 +413,17 @@ describe('App', () => {
   });
 
   it('does not track engaged agents when sending in a DM', async () => {
-    vi.stubGlobal('fetch', vi.fn(createFetchMock({ messages: [] })));
+    vi.stubGlobal('fetch', vi.fn(createFetchMock({ messages: [], sendError: 500 })));
     sessionStorage.setItem('webchat_token', 'secret');
     const user = userEvent.setup();
     render(<App />);
     await screen.findByRole('heading', { name: 'Lobby' });
 
     await user.click(screen.getByRole('button', { name: 'Sarah' }));
-    await user.type(screen.getByRole('textbox'), 'direct hello');
+    await user.type(screen.getByRole('textbox'), '@sarah direct hello');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
 
+    expect(await screen.findByText('send failed: 500')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Stop .* from listening/i })).not.toBeInTheDocument();
   });
 
@@ -817,6 +818,79 @@ describe('App', () => {
 
     expect(await screen.findByText('send failed: 500')).toBeInTheDocument();
     expect(screen.getByText('fail me')).toBeInTheDocument();
+  });
+
+  it('rolls back optimistic engaged agents when send fails', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(createFetchMock({ sendError: 500 })),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    await user.type(screen.getByPlaceholderText(/Message… use @folder/), '@sarah hello');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+
+    expect(await screen.findByText('send failed: 500')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Stop Sarah from listening' })).not.toBeInTheDocument();
+  });
+
+  it('clears engaged agents when bootstrap reloads', async () => {
+    vi.stubGlobal('fetch', vi.fn(createFetchMock({ messages: [] })));
+    const MockWebSocket = createWebSocketMock();
+    sessionStorage.setItem('webchat_token', 'secret');
+
+    const { unmount } = render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const ws = MockWebSocket.instances[0]!;
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: 'engaged',
+          platformId: 'lobby-1',
+          threadId: 'main',
+          agents: ['sarah'],
+        }),
+      } as MessageEvent);
+    });
+    expect(await screen.findByRole('button', { name: 'Stop Sarah from listening' })).toBeInTheDocument();
+
+    unmount();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+    expect(screen.queryByRole('button', { name: 'Stop Sarah from listening' })).not.toBeInTheDocument();
+  });
+
+  it('ignores duplicate disengage requests while one is in flight', async () => {
+    let resolveDisengage: ((value: { agents: string[] }) => void) | undefined;
+    const disengageSpy = vi.spyOn(api, 'disengageAgent').mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveDisengage = resolve;
+        }),
+    );
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(createFetchMock({ messages: [], engagedAgents: ['sarah'] })),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+    render(<App />);
+    const dismiss = await screen.findByRole('button', { name: 'Stop Sarah from listening' });
+
+    await act(async () => {
+      fireEvent.click(dismiss);
+      fireEvent.click(dismiss);
+    });
+    expect(disengageSpy).toHaveBeenCalledTimes(1);
+
+    resolveDisengage?.({ agents: [] });
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: 'Stop Sarah from listening' })).not.toBeInTheDocument();
+    });
+    disengageSpy.mockRestore();
   });
 
   it('handles non-Error send failures', async () => {

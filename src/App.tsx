@@ -5,7 +5,6 @@ import {
   canSendMessage,
   clearUnread,
   DEFAULT_ROOM_THREADS,
-  engagedThreadKey,
   incrementUnread,
   isActiveConversation,
   markMessagesSeen,
@@ -95,6 +94,7 @@ export function App() {
   const syncInFlightRef = useRef(false);
   const skipNextIntervalSyncRef = useRef(false);
   const pendingOptimisticByThreadRef = useRef<Record<string, string[]>>({});
+  const disengagingRef = useRef(new Set<string>());
   roomRef.current = room;
   threadIdRef.current = threadId;
   threadsByRoomRef.current = threadsByRoom;
@@ -111,6 +111,7 @@ export function App() {
     setBootstrap(data);
     setThreadsByRoom(threadsMap);
     setUnreadCounts({});
+    setEngagedAgentsByThread({});
     seenMessageIdsRef.current = new Set();
     syncCursorRef.current = seedSyncCursors({}, data.rooms, threadsMap);
     const lobby = data.rooms.find((r) => r.kind === 'lobby') ?? data.rooms[0] ?? null;
@@ -168,7 +169,7 @@ export function App() {
           if (room.kind === 'lobby') {
             setEngagedAgentsByThread((prev) => ({
               ...prev,
-              [engagedThreadKey(room.platformId, threadId)]: engagedAgents,
+              [unreadKey(room.platformId, threadId)]: engagedAgents,
             }));
           }
           const maxTs = markMessagesSeen(msgs, seenMessageIdsRef.current);
@@ -195,7 +196,7 @@ export function App() {
         if (event.type === 'engaged') {
           setEngagedAgentsByThread((prev) => ({
             ...prev,
-            [engagedThreadKey(event.platformId, event.threadId)]: event.agents,
+            [unreadKey(event.platformId, event.threadId)]: event.agents,
           }));
           return;
         }
@@ -294,7 +295,7 @@ export function App() {
 
   const engagedFolders = useMemo(() => {
     if (!room || room.kind !== 'lobby') return [];
-    return engagedAgentsByThread[engagedThreadKey(room.platformId, threadId)] ?? [];
+    return engagedAgentsByThread[unreadKey(room.platformId, threadId)] ?? [];
   }, [room, threadId, engagedAgentsByThread]);
 
   const hasEngagedAgents = engagedFolders.length > 0;
@@ -322,7 +323,10 @@ export function App() {
 
   const handleDisengageAgent = async (agentFolder: string) => {
     const activeRoom = room!;
-    const key = engagedThreadKey(activeRoom.platformId, threadId);
+    const key = unreadKey(activeRoom.platformId, threadId);
+    const inFlightKey = `${key}|${agentFolder}`;
+    if (disengagingRef.current.has(inFlightKey)) return;
+    disengagingRef.current.add(inFlightKey);
     const prior = engagedFolders;
     setEngagedAgentsByThread((prev) => ({
       ...prev,
@@ -334,6 +338,8 @@ export function App() {
     } catch (err) {
       setEngagedAgentsByThread((prev) => ({ ...prev, [key]: prior }));
       setError(err instanceof Error ? err.message : 'Failed to remove agent');
+    } finally {
+      disengagingRef.current.delete(inFlightKey);
     }
   };
 
@@ -361,10 +367,14 @@ export function App() {
       ...(attachments.length > 0 ? { attachments } : {}),
     };
     setMessages((prev) => [...prev, optimistic]);
-    if (activeRoom.kind === 'lobby' && bootstrap?.agents.length) {
-      const engagedKey = engagedThreadKey(activeRoom.platformId, activeThread);
+    const lobbyEngagedKey =
+      activeRoom.kind === 'lobby' && bootstrap?.agents.length
+        ? unreadKey(activeRoom.platformId, activeThread)
+        : null;
+    const priorEngaged = lobbyEngagedKey ? [...engagedFolders] : null;
+    if (lobbyEngagedKey) {
       setEngagedAgentsByThread((prev) =>
-        engagedStateAfterSend(prev, engagedKey, text, bootstrap.agents),
+        engagedStateAfterSend(prev, lobbyEngagedKey, text, bootstrap!.agents),
       );
     }
     const threadKey = unreadKey(activeRoom.platformId, activeThread);
@@ -415,6 +425,9 @@ export function App() {
         activeThread,
         optimisticId,
       );
+      if (lobbyEngagedKey && priorEngaged) {
+        setEngagedAgentsByThread((prev) => ({ ...prev, [lobbyEngagedKey]: priorEngaged }));
+      }
       setError(err instanceof Error ? err.message : 'send failed');
     } finally {
       setSending(false);
