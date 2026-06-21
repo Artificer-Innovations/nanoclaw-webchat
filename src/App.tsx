@@ -110,7 +110,6 @@ export function App() {
   const stickToBottomRef = useRef(true);
   const pendingScrollUnreadRef = useRef(0);
   const resizeFrameRef = useRef<number | null>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pendingAttachmentsRef = useRef(pendingAttachments);
@@ -899,7 +898,6 @@ export function App() {
                   </div>
                 );
               })}
-              <div ref={bottomRef} />
             </div>
 
             <div className="composer">
