@@ -31,10 +31,10 @@
   },
   "scripts": {
     "build": "vite build && tsc -p tsconfig.build.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && pnpm --filter @artificer-innovations/nanoclaw-webchat-mcp typecheck",
     "dev": "vite",
-    "test:unit": "vitest run",
-    "test:coverage": "vitest run --coverage",
+    "test:unit": "vitest run && pnpm --filter @artificer-innovations/nanoclaw-webchat-mcp test:unit",
+    "test:coverage": "vitest run --coverage && pnpm --filter @artificer-innovations/nanoclaw-webchat-mcp test:coverage",
     "prepublishOnly": "pnpm run build"
   },
   "devDependencies": {

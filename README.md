@@ -48,6 +48,57 @@ Pick an agent from the sidebar DM list. Every message goes to that agent (`engag
 
 Use **New thread** in the header. Each thread gets its own session on threaded adapters.
 
+## MCP server
+
+The [`mcp/`](./mcp/) package exposes a stdio MCP server so Cursor and other MCP clients can interact with web channels without the browser UI — similar to Slack MCP.
+
+### Setup
+
+1. Build the MCP server:
+
+```bash
+pnpm install
+pnpm --filter @artificer-innovations/nanoclaw-webchat-mcp build
+```
+
+2. Add to Cursor MCP settings (`.cursor/mcp.json` or global config):
+
+```json
+{
+  "mcpServers": {
+    "nanoclaw-webchat": {
+      "command": "node",
+      "args": ["/absolute/path/to/nanoclaw-webchat/mcp/dist/index.js"],
+      "env": {
+        "WEBCHAT_API_BASE": "http://127.0.0.1:3200",
+        "WEBCHAT_SECRET": "your-secret-from-nanoclaw-env"
+      }
+    }
+  }
+}
+```
+
+See [`mcp/mcp.example.json`](./mcp/mcp.example.json) for a template.
+
+### Tools
+
+| Tool | Purpose |
+|------|---------|
+| `webchat_list_channels` | List lobby and DM rooms |
+| `webchat_list_agents` | List agents with `@mention` and DM platform IDs |
+| `webchat_read_channel` | Read main-thread messages |
+| `webchat_read_thread` | Read a specific thread |
+| `webchat_send_message` | Post a message (optional attachments via local paths) |
+| `webchat_create_thread` | Create a server-side thread |
+| `webchat_list_threads` | List threads for a channel |
+
+### Typical workflow
+
+1. `webchat_list_agents` — pick an agent or use `lobby`
+2. `webchat_create_thread` — optional, for an isolated session
+3. `webchat_send_message` — e.g. `@sarah review this diff`
+4. `webchat_read_thread` with `since=<timestamp from send>` — poll every **2–5 seconds** until agent replies appear (avoid tight loops)
+
 ## License
 
 MIT — Copyright (c) 2026 [Artificer Innovations, LLC](https://github.com/Artificer-Innovations)
