@@ -1,7 +1,13 @@
-import { attachmentDataUrl, normalizeAttachment, openAttachmentInNewTab } from './attachments';
+import { attachmentDataUrl, normalizeAttachment } from './attachments';
 import type { WebChatAttachment } from './types';
 
-export function MessageAttachments({ attachments }: { attachments: WebChatAttachment[] }) {
+export function MessageAttachments({
+  attachments,
+  onOpenAttachment,
+}: {
+  attachments: WebChatAttachment[];
+  onOpenAttachment: (att: WebChatAttachment) => void;
+}) {
   if (attachments.length === 0) return null;
 
   return (
@@ -14,33 +20,27 @@ export function MessageAttachments({ attachments }: { attachments: WebChatAttach
 
         if (att.type === 'image') {
           return (
-            <a
+            <button
               key={key}
+              type="button"
               className="msg-attachment-image"
-              href={dataUrl}
-              aria-label={`Open ${att.name} in new tab`}
-              onClick={(event) => {
-                if (openAttachmentInNewTab(att)) {
-                  event.preventDefault();
-                }
-              }}
+              aria-label={`View ${att.name}`}
+              onClick={() => onOpenAttachment(att)}
             >
               <img src={dataUrl} alt="" loading="lazy" />
-            </a>
+            </button>
           );
         }
 
         return (
-          <a
+          <button
             key={key}
+            type="button"
             className="msg-attachment-file"
-            href={dataUrl}
-            download={att.name}
-            target="_blank"
-            rel="noopener noreferrer"
+            onClick={() => onOpenAttachment(att)}
           >
             {att.name}
-          </a>
+          </button>
         );
       })}
     </div>

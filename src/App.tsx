@@ -34,6 +34,7 @@ import {
   toSendAttachments,
   type PendingAttachment,
 } from './attachments';
+import { AttachmentDrawer } from './AttachmentDrawer';
 import { MessageAttachments } from './MessageAttachments';
 import { formatMessageTime } from './format-message-time';
 import { FormattedMessage } from './FormattedMessage';
@@ -43,7 +44,7 @@ import { senderColor } from './sender-color';
 import { SidebarSection } from './SidebarRoom';
 import { ThemeToggle } from './ThemeToggle';
 import { defaultThreadTitle, isAutoThreadTitle, titleFromMessage } from './thread-names';
-import type { BootstrapPayload, ThreadMeta, WebChatMessage, WebChatRoom } from './types';
+import type { BootstrapPayload, ThreadMeta, WebChatAttachment, WebChatMessage, WebChatRoom } from './types';
 import {
   connectWebSocket,
   createThread,
@@ -81,6 +82,7 @@ export function App() {
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   const [composerDragOver, setComposerDragOver] = useState(false);
   const [sending, setSending] = useState(false);
+  const [selectedAttachment, setSelectedAttachment] = useState<WebChatAttachment | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -276,6 +278,14 @@ export function App() {
   useEffect(() => {
     resizeComposer();
   }, [draft, pendingAttachments.length, resizeComposer]);
+
+  useEffect(() => {
+    setSelectedAttachment(null);
+  }, [room?.platformId, threadId]);
+
+  const handleCloseAttachment = useCallback(() => {
+    setSelectedAttachment(null);
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -622,143 +632,157 @@ export function App() {
         <ThemeToggle />
       </aside>
 
-      <div className="main">
-        <header className="header">
-          <h2>
-            {room.name}
-            {activeThreadTitle ? ` — ${activeThreadTitle}` : ''}
-          </h2>
-        </header>
+      <div className={`main${selectedAttachment ? ' main--drawer-open' : ''}`}>
+        <div className="main-body">
+          <div className="chat-column">
+            <header className="header">
+              <h2>
+                {room.name}
+                {activeThreadTitle ? ` — ${activeThreadTitle}` : ''}
+              </h2>
+            </header>
 
-        <div className="messages">
-          {messages.map((m) => {
-            const sender = messageSenderLabel(m, messages, room, bootstrap.agents);
-            return (
-              <div key={m.id} className="msg">
-                <time className="msg-time" dateTime={new Date(m.timestamp).toISOString()}>
-                  {formatMessageTime(m.timestamp)}
-                </time>
-                <span className="msg-sender" style={{ color: senderColor(sender) }}>
-                  {sender}
-                </span>
-                <div className="msg-text">
-                  {m.attachments && m.attachments.length > 0 && (
-                    <MessageAttachments attachments={m.attachments} />
-                  )}
-                  {m.text.trim() ? <FormattedMessage text={m.text} /> : null}
+            <div className="messages">
+              {messages.map((m) => {
+                const sender = messageSenderLabel(m, messages, room, bootstrap.agents);
+                return (
+                  <div key={m.id} className="msg">
+                    <time className="msg-time" dateTime={new Date(m.timestamp).toISOString()}>
+                      {formatMessageTime(m.timestamp)}
+                    </time>
+                    <span className="msg-sender" style={{ color: senderColor(sender) }}>
+                      {sender}
+                    </span>
+                    <div className="msg-text">
+                      {m.attachments && m.attachments.length > 0 && (
+                        <MessageAttachments
+                          attachments={m.attachments}
+                          onOpenAttachment={setSelectedAttachment}
+                        />
+                      )}
+                      {m.text.trim() ? <FormattedMessage text={m.text} /> : null}
+                    </div>
+                  </div>
+                );
+              })}
+              <div ref={bottomRef} />
+            </div>
+
+            <div className="composer">
+              <div
+                className={`composer-box${composerDragOver ? ' is-dragover' : ''}`}
+                onDragOver={handleComposerDragOver}
+                onDragLeave={handleComposerDragLeave}
+                onDrop={handleComposerDrop}
+              >
+                {hasEngagedAgents && (
+                  <div className="composer-engaged-chips">
+                    {engagedFolders.map((folder) => {
+                      const name =
+                        bootstrap?.agents.find((a) => a.folder === folder)?.name ?? folder;
+                      return (
+                        <span key={folder} className="composer-engaged-chip">
+                          {name}
+                          <button
+                            type="button"
+                            className="composer-engaged-chip-remove"
+                            aria-label={`Stop ${name} from listening`}
+                            onClick={() => void handleDisengageAgent(folder)}
+                          >
+                            ×
+                          </button>
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
+                {pendingAttachments.length > 0 && (
+                  <div className="composer-previews">
+                    {pendingAttachments.map((att, index) => (
+                      <div
+                        key={`${att.name}-${index}`}
+                        className={`composer-preview${att.type === 'file' ? ' composer-preview-file' : ''}`}
+                      >
+                        {att.type === 'image' ? (
+                          <img src={att.previewUrl} alt={att.name} />
+                        ) : (
+                          <span className="composer-preview-name" title={att.name}>
+                            {att.name}
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          className="composer-preview-remove"
+                          aria-label={`Remove ${att.name}`}
+                          onClick={() => handleRemovePendingAttachment(index)}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="composer-input-row">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    hidden
+                    onChange={(e) => {
+                      void addPendingFiles(e.target.files);
+                      e.target.value = '';
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="composer-attach"
+                    aria-label="Attach file"
+                    disabled={sending || pendingAttachments.length >= MAX_ATTACHMENTS}
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    <PlusIcon />
+                  </button>
+                  <textarea
+                    ref={composerRef}
+                    rows={1}
+                    value={draft}
+                    onChange={(e) => setDraft(e.target.value)}
+                    placeholder={
+                      room.kind === 'lobby'
+                        ? hasEngagedAgents
+                          ? "Message… agents you've @'d keep listening in this thread"
+                          : 'Message… use @folder to reach an agent (e.g. @sarah hello)'
+                        : 'Message…'
+                    }
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        void handleSend();
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="composer-send"
+                    aria-label="Send message"
+                    disabled={!canSendMessage(token, room, draft, sending, pendingAttachments.length)}
+                    onClick={() => void handleSend()}
+                  >
+                    <SendArrowIcon />
+                  </button>
                 </div>
               </div>
-            );
-          })}
-          <div ref={bottomRef} />
-        </div>
-
-        <div className="composer">
-          <div
-            className={`composer-box${composerDragOver ? ' is-dragover' : ''}`}
-            onDragOver={handleComposerDragOver}
-            onDragLeave={handleComposerDragLeave}
-            onDrop={handleComposerDrop}
-          >
-            {hasEngagedAgents && (
-              <div className="composer-engaged-chips">
-                {engagedFolders.map((folder) => {
-                  const name =
-                    bootstrap?.agents.find((a) => a.folder === folder)?.name ?? folder;
-                  return (
-                    <span key={folder} className="composer-engaged-chip">
-                      {name}
-                      <button
-                        type="button"
-                        className="composer-engaged-chip-remove"
-                        aria-label={`Stop ${name} from listening`}
-                        onClick={() => void handleDisengageAgent(folder)}
-                      >
-                        ×
-                      </button>
-                    </span>
-                  );
-                })}
-              </div>
-            )}
-            {pendingAttachments.length > 0 && (
-              <div className="composer-previews">
-                {pendingAttachments.map((att, index) => (
-                  <div
-                    key={`${att.name}-${index}`}
-                    className={`composer-preview${att.type === 'file' ? ' composer-preview-file' : ''}`}
-                  >
-                    {att.type === 'image' ? (
-                      <img src={att.previewUrl} alt={att.name} />
-                    ) : (
-                      <span className="composer-preview-name" title={att.name}>
-                        {att.name}
-                      </span>
-                    )}
-                    <button
-                      type="button"
-                      className="composer-preview-remove"
-                      aria-label={`Remove ${att.name}`}
-                      onClick={() => handleRemovePendingAttachment(index)}
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-            <div className="composer-input-row">
-              <input
-                ref={fileInputRef}
-                type="file"
-                multiple
-                hidden
-                onChange={(e) => {
-                  void addPendingFiles(e.target.files);
-                  e.target.value = '';
-                }}
-              />
-              <button
-                type="button"
-                className="composer-attach"
-                aria-label="Attach file"
-                disabled={sending || pendingAttachments.length >= MAX_ATTACHMENTS}
-                onClick={() => fileInputRef.current?.click()}
-              >
-                <PlusIcon />
-              </button>
-              <textarea
-                ref={composerRef}
-                rows={1}
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                placeholder={
-                  room.kind === 'lobby'
-                    ? hasEngagedAgents
-                      ? "Message… agents you've @'d keep listening in this thread"
-                      : 'Message… use @folder to reach an agent (e.g. @sarah hello)'
-                    : 'Message…'
-                }
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    void handleSend();
-                  }
-                }}
-              />
-              <button
-                type="button"
-                className="composer-send"
-                aria-label="Send message"
-                disabled={!canSendMessage(token, room, draft, sending, pendingAttachments.length)}
-                onClick={() => void handleSend()}
-              >
-                <SendArrowIcon />
-              </button>
             </div>
+            {error && <p className="error composer-error">{error}</p>}
           </div>
+          {selectedAttachment ? (
+            <AttachmentDrawer
+              attachment={selectedAttachment}
+              token={token}
+              onClose={handleCloseAttachment}
+            />
+          ) : null}
         </div>
-        {error && <p className="error composer-error">{error}</p>}
       </div>
     </div>
   );

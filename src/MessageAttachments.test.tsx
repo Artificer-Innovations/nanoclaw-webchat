@@ -1,11 +1,18 @@
-import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
-import * as attachments from './attachments';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MessageAttachments } from './MessageAttachments';
 
+const onOpenAttachment = vi.fn();
+
 describe('MessageAttachments', () => {
+  afterEach(() => {
+    cleanup();
+    onOpenAttachment.mockClear();
+  });
   it('renders nothing for empty attachments', () => {
-    const { container } = render(<MessageAttachments attachments={[]} />);
+    const { container } = render(
+      <MessageAttachments attachments={[]} onOpenAttachment={onOpenAttachment} />,
+    );
     expect(container).toBeEmptyDOMElement();
   });
 
@@ -13,12 +20,13 @@ describe('MessageAttachments', () => {
     const { container } = render(
       <MessageAttachments
         attachments={[{ name: 'missing.bin', mimeType: 'application/octet-stream', type: 'file' }]}
+        onOpenAttachment={onOpenAttachment}
       />,
     );
     expect(container.querySelector('.msg-attachments')?.children.length).toBe(0);
   });
 
-  it('renders image attachments', () => {
+  it('renders image attachments as view buttons', () => {
     const { container } = render(
       <MessageAttachments
         attachments={[
@@ -29,6 +37,7 @@ describe('MessageAttachments', () => {
             data: 'aGVsbG8=',
           },
         ]}
+        onOpenAttachment={onOpenAttachment}
       />,
     );
     expect(container.querySelector('.msg-attachment-image img')).toHaveAttribute(
@@ -36,14 +45,12 @@ describe('MessageAttachments', () => {
       'data:image/png;base64,aGVsbG8=',
     );
     expect(container.querySelector('.msg-attachment-image img')).toHaveAttribute('alt', '');
-    const link = screen.getByRole('link', { name: 'Open photo.png in new tab' });
-    expect(link).toHaveAttribute('href', 'data:image/png;base64,aGVsbG8=');
-    expect(link).not.toHaveAttribute('target');
+    const button = screen.getByRole('button', { name: 'View photo.png' });
+    expect(button).toHaveClass('msg-attachment-image');
   });
 
-  it('opens image attachments via blob URL on click', () => {
-    const openSpy = vi.spyOn(attachments, 'openAttachmentInNewTab').mockReturnValue(true);
-    const preventDefaultSpy = vi.spyOn(Event.prototype, 'preventDefault');
+  it('opens image attachments in the drawer on click', () => {
+    const open = vi.fn();
     const { container } = render(
       <MessageAttachments
         attachments={[
@@ -54,39 +61,16 @@ describe('MessageAttachments', () => {
             data: 'aGVsbG8=',
           },
         ]}
+        onOpenAttachment={open}
       />,
     );
     fireEvent.click(container.querySelector('.msg-attachment-image')!);
-    expect(openSpy).toHaveBeenCalledWith(
+    expect(open).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'photo.png', mimeType: 'image/png', data: 'aGVsbG8=' }),
     );
-    expect(preventDefaultSpy).toHaveBeenCalled();
-    openSpy.mockRestore();
-    preventDefaultSpy.mockRestore();
   });
 
-  it('falls back to the href when opening in a new tab fails', () => {
-    const openSpy = vi.spyOn(attachments, 'openAttachmentInNewTab').mockReturnValue(false);
-    const preventDefaultSpy = vi.spyOn(Event.prototype, 'preventDefault');
-    const { container } = render(
-      <MessageAttachments
-        attachments={[
-          {
-            name: 'photo.png',
-            mimeType: 'image/png',
-            type: 'image',
-            data: 'aGVsbG8=',
-          },
-        ]}
-      />,
-    );
-    fireEvent.click(container.querySelector('.msg-attachment-image')!);
-    expect(preventDefaultSpy).not.toHaveBeenCalled();
-    openSpy.mockRestore();
-    preventDefaultSpy.mockRestore();
-  });
-
-  it('renders file attachments as download links', () => {
+  it('renders file attachments as view buttons', () => {
     render(
       <MessageAttachments
         attachments={[
@@ -97,13 +81,33 @@ describe('MessageAttachments', () => {
             data: 'aGVsbG8=',
           },
         ]}
+        onOpenAttachment={onOpenAttachment}
       />,
     );
-    const link = screen.getByRole('link', { name: 'report.pdf' });
-    expect(link).toHaveAttribute('download', 'report.pdf');
-    expect(link).toHaveAttribute('href', 'data:application/pdf;base64,aGVsbG8=');
-    expect(link).toHaveAttribute('target', '_blank');
-    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    const button = screen.getByRole('button', { name: 'report.pdf' });
+    expect(button).toHaveClass('msg-attachment-file');
+    expect(button).not.toHaveAttribute('download');
+  });
+
+  it('opens file attachments in the drawer on click', () => {
+    const open = vi.fn();
+    render(
+      <MessageAttachments
+        attachments={[
+          {
+            name: 'report.pdf',
+            mimeType: 'application/pdf',
+            type: 'file',
+            data: 'aGVsbG8=',
+          },
+        ]}
+        onOpenAttachment={open}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'report.pdf' }));
+    expect(open).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'report.pdf', mimeType: 'application/pdf' }),
+    );
   });
 
   it('renders mismatched server type using mimeType', () => {
@@ -117,6 +121,7 @@ describe('MessageAttachments', () => {
             data: 'aGVsbG8=',
           },
         ]}
+        onOpenAttachment={onOpenAttachment}
       />,
     );
     expect(container.querySelector('.msg-attachment-image img')).toBeInTheDocument();
@@ -127,7 +132,9 @@ describe('MessageAttachments', () => {
       { name: 'notes.md', mimeType: 'text/markdown', type: 'file' as const, size: 10, data: 'YQ==' },
       { name: 'notes.md', mimeType: 'text/markdown', type: 'file' as const, size: 10, data: 'Yg==' },
     ];
-    const { container } = render(<MessageAttachments attachments={attachmentList} />);
+    const { container } = render(
+      <MessageAttachments attachments={attachmentList} onOpenAttachment={onOpenAttachment} />,
+    );
     expect(container.querySelectorAll('.msg-attachment-file')).toHaveLength(2);
   });
 });

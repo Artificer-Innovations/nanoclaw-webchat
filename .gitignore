@@ -2,3 +2,5 @@ node_modules/
 dist/
 coverage/
 *.local
+.DS_Store
+**/.DS_Store

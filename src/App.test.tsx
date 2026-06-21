@@ -1918,12 +1918,14 @@ describe('App', () => {
     });
 
     const { container } = render(<App />);
-    const link = await screen.findByRole('link', { name: 'Open chart.png in new tab' });
-    expect(link).toHaveAttribute('href', 'data:image/png;base64,aGVsbG8=');
+    const button = await screen.findByRole('button', { name: 'View chart.png' });
+    expect(button).toHaveClass('msg-attachment-image');
     expect(container.querySelector('.msg-attachment-image img')).toHaveAttribute(
       'src',
       'data:image/png;base64,aGVsbG8=',
     );
+    fireEvent.click(button);
+    expect(screen.getByLabelText('Attachment preview: chart.png')).toBeInTheDocument();
   });
 
   it('deletes a thread from the sidebar and returns to main', async () => {
@@ -2313,5 +2315,81 @@ describe('App', () => {
     expect(document.documentElement.dataset.theme).toBeUndefined();
     expect(localStorage.getItem('webchat_theme')).toBe('system');
     expect(screen.getByRole('radio', { name: 'System' })).toHaveAttribute('aria-checked', 'true');
+  });
+
+  it('opens and closes the attachment drawer from message history', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          messages: [
+            {
+              ...messageFixture,
+              text: '',
+              attachments: [
+                {
+                  name: 'photo.png',
+                  mimeType: 'image/png',
+                  type: 'image',
+                  data: 'aGVsbG8=',
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+    render(<App />);
+    await screen.findByRole('heading', { name: 'NanoClaw' });
+
+    fireEvent.click(await screen.findByRole('button', { name: 'View photo.png' }));
+    expect(screen.getByLabelText('Attachment preview: photo.png')).toBeInTheDocument();
+    expect(document.querySelector('.main--drawer-open')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close attachment preview' }));
+    expect(screen.queryByLabelText('Attachment preview: photo.png')).not.toBeInTheDocument();
+    expect(document.querySelector('.main--drawer-open')).not.toBeInTheDocument();
+  });
+
+  it('closes the attachment drawer when switching rooms', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          messagesForThread: (platformId) => ({
+            messages:
+              platformId === 'lobby-1'
+                ? [
+                    {
+                      ...messageFixture,
+                      text: '',
+                      attachments: [
+                        {
+                          name: 'photo.png',
+                          mimeType: 'image/png',
+                          type: 'image',
+                          data: 'aGVsbG8=',
+                        },
+                      ],
+                    },
+                  ]
+                : [],
+          }),
+        }),
+      ),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    fireEvent.click(await screen.findByRole('button', { name: 'View photo.png' }));
+    expect(screen.getByLabelText('Attachment preview: photo.png')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Sarah' }));
+    expect(await screen.findByRole('heading', { name: 'Sarah' })).toBeInTheDocument();
+    expect(screen.queryByLabelText('Attachment preview: photo.png')).not.toBeInTheDocument();
+    expect(document.querySelector('.main--drawer-open')).not.toBeInTheDocument();
   });
 });
