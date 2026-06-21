@@ -47,6 +47,31 @@ export function attachmentTypeFromMime(mimeType: string): 'image' | 'file' {
   return mimeType.startsWith('image/') ? 'image' : 'file';
 }
 
+export type AttachmentPreviewMode = 'markdown' | 'embed' | 'metadata';
+
+export function attachmentPreviewMode(mimeType: string): AttachmentPreviewMode {
+  if (mimeType === 'text/plain' || mimeType === 'text/markdown') return 'markdown';
+  if (mimeType.startsWith('image/') || mimeType === 'application/pdf') return 'embed';
+  return 'metadata';
+}
+
+export function formatAttachmentSize(size?: number): string {
+  if (size == null) return 'Unknown';
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+export function decodeAttachmentTextFromData(data: string): string | null {
+  try {
+    const binary = atob(data);
+    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
 /** Align `type` with `mimeType` when server payloads disagree. */
 export function normalizeAttachment(att: WebChatAttachment): WebChatAttachment {
   const type = attachmentTypeFromMime(att.mimeType);
@@ -225,4 +250,82 @@ export function removePendingAtIndex(list: PendingAttachment[], index: number): 
 
 export function toSendAttachments(attachments: PendingAttachment[]): WebChatAttachment[] {
   return attachments.map(({ previewUrl: _previewUrl, ...rest }) => rest);
+}
+
+export async function fetchAttachmentText(att: WebChatAttachment, token?: string): Promise<string | null> {
+  if (att.data) {
+    return decodeAttachmentTextFromData(att.data);
+  }
+  if (att.url && isSafeAttachmentUrl(att.url)) {
+    const authToken = token ?? getStoredToken();
+    const url = attachmentUrlWithAuth(att.url, authToken);
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    return res.text();
+  }
+  return null;
+}
+
+export async function fetchAttachmentBlob(att: WebChatAttachment, token?: string): Promise<Blob | null> {
+  const fromData = attachmentToBlob(att);
+  if (fromData) return fromData;
+  if (att.url && isSafeAttachmentUrl(att.url)) {
+    const authToken = token ?? getStoredToken();
+    const url = attachmentUrlWithAuth(att.url, authToken);
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    return res.blob();
+  }
+  return null;
+}
+
+export async function downloadAttachment(att: WebChatAttachment, token?: string): Promise<boolean> {
+  const blob = await fetchAttachmentBlob(att, token);
+  if (!blob) return false;
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = objectUrl;
+  anchor.download = att.name;
+  anchor.rel = 'noopener noreferrer';
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(objectUrl);
+  return true;
+}
+
+export async function copyAttachmentLink(att: WebChatAttachment, token?: string): Promise<boolean> {
+  const url = attachmentDataUrl(att, token);
+  if (!url) return false;
+  const toCopy = url.startsWith('/') ? new URL(url, window.location.origin).href : url;
+  try {
+    await navigator.clipboard.writeText(toCopy);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function copyAttachmentContent(att: WebChatAttachment, token?: string): Promise<boolean> {
+  const text = await fetchAttachmentText(att, token);
+  if (text == null) return false;
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function copyAttachmentForPreview(
+  att: WebChatAttachment,
+  onSuccess: () => void,
+  token?: string,
+): Promise<void> {
+  const mode = attachmentPreviewMode(att.mimeType);
+  if (mode === 'markdown') {
+    if (await copyAttachmentContent(att, token)) onSuccess();
+    return;
+  }
+  if (await copyAttachmentLink(att, token)) onSuccess();
 }
