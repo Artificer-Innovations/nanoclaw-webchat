@@ -885,4 +885,28 @@ describe('AttachmentDrawer', () => {
     );
     expect(screen.getByText('File')).toBeInTheDocument();
   });
+
+  it('delegates width changes to onWidthChange when controlled', () => {
+    const onWidthChange = vi.fn();
+    const { container } = render(
+      <AttachmentDrawer
+        attachment={{
+          name: 'photo.png',
+          mimeType: 'image/png',
+          type: 'image',
+          data: 'aGVsbG8=',
+        }}
+        token="secret"
+        onClose={vi.fn()}
+        width={420}
+        onWidthChange={onWidthChange}
+      />,
+    );
+    const handle = container.querySelector('.attachment-drawer-resize-handle') as HTMLElement;
+    handle.setPointerCapture = vi.fn();
+    handle.releasePointerCapture = vi.fn();
+    fireEvent.pointerDown(handle, { clientX: 900, pointerId: 1, buttons: 1 });
+    handle.dispatchEvent(new PointerEvent('pointerup', { clientX: 850, pointerId: 1, bubbles: true }));
+    expect(onWidthChange).toHaveBeenCalled();
+  });
 });

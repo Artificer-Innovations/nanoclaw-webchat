@@ -8,6 +8,8 @@ import {
   PencilIcon,
   PlusIcon,
   SendArrowIcon,
+  SidebarHideIcon,
+  SidebarShowIcon,
   TrashIcon,
 } from './nav-icons';
 
@@ -23,8 +25,10 @@ describe('nav-icons', () => {
         <CaretRightIcon />
         <CaretDownIcon />
         <SendArrowIcon />
+        <SidebarHideIcon />
+        <SidebarShowIcon />
       </>,
     );
-    expect(container.querySelectorAll('svg')).toHaveLength(8);
+    expect(container.querySelectorAll('svg')).toHaveLength(10);
   });
 });

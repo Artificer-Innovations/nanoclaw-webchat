@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import {
   activeUnreadKey,
   applyLiveMessage,
   canSendMessage,
   clearUnread,
+  getUnreadCount,
   DEFAULT_ROOM_THREADS,
   incrementUnread,
   isActiveConversation,
@@ -34,15 +35,34 @@ import {
   toSendAttachments,
   type PendingAttachment,
 } from './attachments';
+import { isNearBottom, scrollToBottom, scrollToUnreadAnchor } from './chat-scroll';
 import { AttachmentDrawer } from './AttachmentDrawer';
 import { MessageAttachments } from './MessageAttachments';
 import { formatMessageTime } from './format-message-time';
 import { FormattedMessage } from './FormattedMessage';
 import { engagedStateAfterSend, messageSenderLabel } from './message-sender';
-import { SendArrowIcon, PlusIcon } from './nav-icons';
+import { SendArrowIcon, PlusIcon, SidebarHideIcon, SidebarShowIcon } from './nav-icons';
 import { senderColor } from './sender-color';
 import { SidebarSection } from './SidebarRoom';
 import { ThemeToggle } from './ThemeToggle';
+import {
+  getStoredAttachmentDrawerWidth,
+  setStoredAttachmentDrawerWidth,
+} from './attachment-drawer-layout';
+import {
+  clampDrawerWidthForLayout,
+  clampSidebarWidthForLayout,
+  maxDrawerWidthForLayout,
+  reconcilePanelWidths,
+} from './panel-layout';
+import {
+  getStoredSidebarCollapsed,
+  getStoredSidebarWidth,
+  setStoredSidebarCollapsed,
+  setStoredSidebarWidth,
+  sidebarWidthFromDrag,
+  sidebarWidthFromKeyboard,
+} from './sidebar-layout';
 import { defaultThreadTitle, isAutoThreadTitle, titleFromMessage } from './thread-names';
 import type { BootstrapPayload, ThreadMeta, WebChatAttachment, WebChatMessage, WebChatRoom } from './types';
 import {
@@ -83,6 +103,13 @@ export function App() {
   const [composerDragOver, setComposerDragOver] = useState(false);
   const [sending, setSending] = useState(false);
   const [selectedAttachment, setSelectedAttachment] = useState<WebChatAttachment | null>(null);
+  const [sidebarWidth, setSidebarWidth] = useState(getStoredSidebarWidth);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(getStoredSidebarCollapsed);
+  const [drawerWidth, setDrawerWidth] = useState(getStoredAttachmentDrawerWidth);
+  const messagesRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
+  const conversationKeyRef = useRef('');
+  const pendingScrollUnreadRef = useRef(0);
   const bottomRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -265,8 +292,158 @@ export function App() {
   }, [token, bootstrap, syncInactiveRooms]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    const key = room ? `${room.platformId}|${threadId}` : '';
+    if (key !== conversationKeyRef.current) {
+      conversationKeyRef.current = key;
+    }
+  }, [room?.platformId, threadId]);
+
+  const drawerOpen = selectedAttachment != null;
+
+  const applyPanelLayout = useCallback(() => {
+    const viewportWidth = window.innerWidth;
+    const result = reconcilePanelWidths({
+      viewportWidth,
+      sidebarWidth,
+      drawerWidth,
+      sidebarCollapsed,
+      drawerOpen,
+    });
+    if (!sidebarCollapsed && result.sidebarWidth !== sidebarWidth) {
+      setSidebarWidth(result.sidebarWidth);
+      setStoredSidebarWidth(result.sidebarWidth);
+    }
+    if (drawerOpen && result.drawerWidth !== drawerWidth) {
+      setDrawerWidth(result.drawerWidth);
+      setStoredAttachmentDrawerWidth(result.drawerWidth);
+    }
+  }, [sidebarWidth, drawerWidth, sidebarCollapsed, drawerOpen]);
+
+  useEffect(() => {
+    const onResize = () => {
+      applyPanelLayout();
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [applyPanelLayout]);
+
+  useEffect(() => {
+    applyPanelLayout();
+  }, [drawerOpen, sidebarCollapsed, applyPanelLayout]);
+
+  useLayoutEffect(() => {
+    const el = messagesRef.current;
+    if (!el || messages.length === 0) return;
+    const unread = pendingScrollUnreadRef.current;
+    if (unread > 0) {
+      scrollToUnreadAnchor(el, unread);
+      pendingScrollUnreadRef.current = 0;
+      stickToBottomRef.current = false;
+      return;
+    }
+    if (stickToBottomRef.current) {
+      scrollToBottom(el);
+    }
+  }, [messages, room?.platformId, threadId]);
+
+  const handleMessagesScroll = useCallback(() => {
+    stickToBottomRef.current = isNearBottom(messagesRef.current);
+  }, []);
+
+  const persistSidebarWidth = useCallback(
+    (nextWidth: number) => {
+      const clamped = clampSidebarWidthForLayout(
+        nextWidth,
+        window.innerWidth,
+        drawerWidth,
+        drawerOpen,
+      );
+      setSidebarWidth(clamped);
+      setStoredSidebarWidth(clamped);
+    },
+    [drawerWidth, drawerOpen],
+  );
+
+  const persistDrawerWidth = useCallback(
+    (nextWidth: number) => {
+      const clamped = clampDrawerWidthForLayout(
+        nextWidth,
+        window.innerWidth,
+        sidebarCollapsed ? 0 : sidebarWidth,
+        sidebarCollapsed,
+      );
+      setDrawerWidth(clamped);
+      setStoredAttachmentDrawerWidth(clamped);
+    },
+    [sidebarCollapsed, sidebarWidth],
+  );
+
+  const handleHideSidebar = useCallback(() => {
+    setSidebarCollapsed(true);
+    setStoredSidebarCollapsed(true);
+  }, []);
+
+  const handleShowSidebar = useCallback(() => {
+    setSidebarCollapsed(false);
+    setStoredSidebarCollapsed(false);
+  }, []);
+
+  const handleSidebarResizeKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      const nextWidth = sidebarWidthFromKeyboard(sidebarWidth, event.key);
+      if (nextWidth == null) return;
+      event.preventDefault();
+      persistSidebarWidth(nextWidth);
+    },
+    [persistSidebarWidth, sidebarWidth],
+  );
+
+  const clampSidebarDragWidth = useCallback(
+    (rawWidth: number) =>
+      clampSidebarWidthForLayout(rawWidth, window.innerWidth, drawerWidth, drawerOpen),
+    [drawerWidth, drawerOpen],
+  );
+
+  const handleSidebarResizePointerDown = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      const handle = event.currentTarget;
+      const startX = event.clientX;
+      const startWidth = sidebarWidth;
+      let lastClientX = startX;
+      handle.setPointerCapture(event.pointerId);
+      document.body.classList.add('sidebar-resizing');
+
+      const onPointerMove = (moveEvent: PointerEvent) => {
+        lastClientX = moveEvent.clientX;
+        setSidebarWidth(
+          clampSidebarDragWidth(sidebarWidthFromDrag(startWidth, startX, lastClientX)),
+        );
+      };
+
+      const finishResize = () => {
+        handle.releasePointerCapture(event.pointerId);
+        handle.removeEventListener('pointermove', onPointerMove);
+        handle.removeEventListener('pointerup', onPointerUp);
+        handle.removeEventListener('pointercancel', onPointerCancel);
+        document.body.classList.remove('sidebar-resizing');
+        persistSidebarWidth(sidebarWidthFromDrag(startWidth, startX, lastClientX));
+      };
+
+      const onPointerUp = () => {
+        finishResize();
+      };
+
+      const onPointerCancel = () => {
+        finishResize();
+      };
+
+      handle.addEventListener('pointermove', onPointerMove);
+      handle.addEventListener('pointerup', onPointerUp);
+      handle.addEventListener('pointercancel', onPointerCancel);
+    },
+    [clampSidebarDragWidth, persistSidebarWidth, sidebarWidth],
+  );
 
   const resizeComposer = useCallback(() => {
     const el = composerRef.current;
@@ -492,16 +669,22 @@ export function App() {
   };
 
   const handleSelectRoomMain = (targetRoom: WebChatRoom) => {
+    pendingScrollUnreadRef.current = getUnreadCount(unreadCounts, targetRoom.platformId, 'main');
+    stickToBottomRef.current = pendingScrollUnreadRef.current <= 0;
     roomRef.current = targetRoom;
     threadIdRef.current = 'main';
+    setMessages([]);
     setUnreadCounts((counts) => clearUnread(counts, targetRoom.platformId, 'main'));
     setRoom(targetRoom);
     setThreadId('main');
   };
 
   const handleSelectThread = (targetRoom: WebChatRoom, nextThreadId: string) => {
+    pendingScrollUnreadRef.current = getUnreadCount(unreadCounts, targetRoom.platformId, nextThreadId);
+    stickToBottomRef.current = pendingScrollUnreadRef.current <= 0;
     roomRef.current = targetRoom;
     threadIdRef.current = nextThreadId;
+    setMessages([]);
     setUnreadCounts((counts) => clearUnread(counts, targetRoom.platformId, nextThreadId));
     setRoom(targetRoom);
     setThreadId(nextThreadId);
@@ -614,11 +797,32 @@ export function App() {
 
   const lobbyRooms = bootstrap.rooms.filter((r) => r.kind === 'lobby');
   const dmRooms = bootstrap.rooms.filter((r) => r.kind === 'dm');
+  const drawerMaxWidth = maxDrawerWidthForLayout(
+    window.innerWidth,
+    sidebarCollapsed ? 0 : sidebarWidth,
+    sidebarCollapsed,
+  );
+  const layoutStyle = {
+    '--sidebar-width': sidebarCollapsed ? '0px' : `${sidebarWidth}px`,
+  } as CSSProperties;
 
   return (
-    <div className="layout">
-      <aside className="sidebar">
-        <h1>NanoClaw</h1>
+    <div
+      className={`layout${sidebarCollapsed ? ' layout--sidebar-collapsed' : ''}`}
+      style={layoutStyle}
+    >
+      <aside className={`sidebar${sidebarCollapsed ? ' sidebar--collapsed' : ''}`}>
+        <header className="sidebar-header">
+          <h1>NanoClaw</h1>
+          <button
+            type="button"
+            className="sidebar-hide-btn"
+            aria-label="Hide sidebar"
+            onClick={handleHideSidebar}
+          >
+            <SidebarHideIcon />
+          </button>
+        </header>
         <nav className="sidebar-nav">
           <SidebarSection label="Rooms" rooms={lobbyRooms} {...sidebarSectionProps} />
           <SidebarSection label="Direct messages" rooms={dmRooms} {...sidebarSectionProps} />
@@ -630,9 +834,33 @@ export function App() {
           )}
         </nav>
         <ThemeToggle />
+        {!sidebarCollapsed ? (
+          <div
+            className="sidebar-resize-handle"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize sidebar"
+            aria-valuemin={180}
+            aria-valuemax={Math.round(window.innerWidth * 0.5)}
+            aria-valuenow={sidebarWidth}
+            tabIndex={0}
+            onKeyDown={handleSidebarResizeKeyDown}
+            onPointerDown={handleSidebarResizePointerDown}
+          />
+        ) : null}
       </aside>
 
       <div className={`main${selectedAttachment ? ' main--drawer-open' : ''}`}>
+        {sidebarCollapsed ? (
+          <button
+            type="button"
+            className="sidebar-show-btn"
+            aria-label="Show sidebar"
+            onClick={handleShowSidebar}
+          >
+            <SidebarShowIcon />
+          </button>
+        ) : null}
         <div className="main-body">
           <div className="chat-column">
             <header className="header">
@@ -642,7 +870,7 @@ export function App() {
               </h2>
             </header>
 
-            <div className="messages">
+            <div className="messages" ref={messagesRef} onScroll={handleMessagesScroll}>
               {messages.map((m) => {
                 const sender = messageSenderLabel(m, messages, room, bootstrap.agents);
                 return (
@@ -779,6 +1007,9 @@ export function App() {
             <AttachmentDrawer
               attachment={selectedAttachment}
               token={token}
+              width={drawerWidth}
+              maxWidth={drawerMaxWidth}
+              onWidthChange={persistDrawerWidth}
               onClose={handleCloseAttachment}
             />
           ) : null}

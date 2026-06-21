@@ -68,7 +68,7 @@ function ThreadRow({
   const threadAriaLabel = formatUnreadAriaLabel(thread.title, unreadCount);
 
   return (
-    <li className="nav-thread-row">
+    <li className={`nav-thread-row${active ? ' active' : ''}`}>
       {editing ? (
         <input
           className="nav-thread-rename"
@@ -92,7 +92,7 @@ function ThreadRow({
         <button
           type="button"
           aria-label={threadAriaLabel}
-          className={`nav-thread-item${active ? ' active' : ''}`}
+          className="nav-thread-item"
           onClick={onSelect}
         >
           <span className="nav-thread-item-label">{thread.title}</span>
@@ -150,7 +150,7 @@ export function SidebarRoom({
 
   return (
     <div className="nav-room">
-      <div className="nav-room-header">
+      <div className={`nav-room-header${roomActive ? ' active' : ''}`}>
         {hasChildThreads ? (
           <button
             type="button"
@@ -167,7 +167,7 @@ export function SidebarRoom({
         <button
           type="button"
           aria-label={roomAriaLabel}
-          className={`nav-item nav-room-item${roomActive ? ' active' : ''}`}
+          className="nav-item nav-room-item"
           onClick={onSelectMain}
         >
           <span className="nav-item-icon">

@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import * as api from './api';
 import * as appHelpers from './app-helpers';
 import * as attachments from './attachments';
+import * as chatScroll from './chat-scroll';
 import { App } from './App';
 import type { BootstrapPayload, WebChatMessage } from './types';
 
@@ -623,7 +624,7 @@ describe('App', () => {
 
     expect(screen.getByRole('heading', { name: 'Lobby — Thread B' })).toBeInTheDocument();
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Thread B' })).toHaveClass('active');
+      expect(screen.getByRole('button', { name: 'Thread B' }).closest('.nav-thread-row')).toHaveClass('active');
     });
   });
 
@@ -1507,13 +1508,12 @@ describe('App', () => {
       vi.fn(createFetchMock({ messages: [messageFixture] })),
     );
     sessionStorage.setItem('webchat_token', 'secret');
-    const scrollIntoView = vi.fn();
-    Element.prototype.scrollIntoView = scrollIntoView;
+    const scrollToBottom = vi.spyOn(chatScroll, 'scrollToBottom');
 
     render(<App />);
     await screen.findByText('Agent reply');
 
-    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth' });
+    expect(scrollToBottom).toHaveBeenCalled();
   });
 
   it('highlights active room buttons in each section', async () => {
@@ -1524,7 +1524,7 @@ describe('App', () => {
     const roomsSection = screen.getByText('Rooms').closest('.nav-section');
     expect(roomsSection).not.toBeNull();
     const lobbyButton = within(roomsSection as HTMLElement).getByRole('button', { name: 'Lobby' });
-    expect(lobbyButton).toHaveClass('active');
+    expect(lobbyButton.closest('.nav-room-header')).toHaveClass('active');
   });
 
   it('switches between lobby rooms from the sidebar', async () => {
@@ -1535,11 +1535,11 @@ describe('App', () => {
 
     const roomsSection = screen.getByText('Rooms').closest('.nav-section');
     const otherLobby = within(roomsSection as HTMLElement).getByRole('button', { name: 'Other Lobby' });
-    expect(otherLobby).not.toHaveClass('active');
+    expect(otherLobby.closest('.nav-room-header')).not.toHaveClass('active');
 
     await user.click(otherLobby);
 
-    expect(otherLobby).toHaveClass('active');
+    expect(otherLobby.closest('.nav-room-header')).toHaveClass('active');
     expect(screen.getByRole('heading', { name: 'Other Lobby' })).toBeInTheDocument();
   });
 
@@ -1610,13 +1610,13 @@ describe('App', () => {
 
     const lobbyButton = screen.getByRole('button', { name: 'Lobby' });
     const threadBButton = screen.getByRole('button', { name: 'Thread B' });
-    expect(lobbyButton).toHaveClass('active');
-    expect(threadBButton).not.toHaveClass('active');
+    expect(lobbyButton.closest('.nav-room-header')).toHaveClass('active');
+    expect(threadBButton.closest('.nav-thread-row')).not.toHaveClass('active');
 
     await user.click(threadBButton);
 
-    expect(lobbyButton).not.toHaveClass('active');
-    expect(threadBButton).toHaveClass('active');
+    expect(lobbyButton.closest('.nav-room-header')).not.toHaveClass('active');
+    expect(threadBButton.closest('.nav-thread-row')).toHaveClass('active');
   });
 
   it('updates the token input while on the auth screen', async () => {
@@ -1949,7 +1949,7 @@ describe('App', () => {
     await user.click(screen.getByRole('button', { name: 'Delete Thread B' }));
 
     expect(screen.queryByRole('button', { name: 'Thread B' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Lobby' })).toHaveClass('active');
+    expect(screen.getByRole('button', { name: 'Lobby' }).closest('.nav-room-header')).toHaveClass('active');
     expect(vi.mocked(api.deleteThread)).toHaveBeenCalledWith('secret', 'lobby-1', 'thread_b');
   });
 
@@ -2070,7 +2070,7 @@ describe('App', () => {
     await user.click(screen.getByRole('button', { name: 'Delete Thread B' }));
 
     expect(screen.queryByRole('button', { name: 'Thread B' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Lobby' })).toHaveClass('active');
+    expect(screen.getByRole('button', { name: 'Lobby' }).closest('.nav-room-header')).toHaveClass('active');
     expect(screen.getByRole('heading', { name: 'Lobby' })).toBeInTheDocument();
   });
 
@@ -2391,5 +2391,244 @@ describe('App', () => {
     expect(await screen.findByRole('heading', { name: 'Sarah' })).toBeInTheDocument();
     expect(screen.queryByLabelText('Attachment preview: photo.png')).not.toBeInTheDocument();
     expect(document.querySelector('.main--drawer-open')).not.toBeInTheDocument();
+  });
+
+  it('hides and shows the sidebar', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'NanoClaw' });
+
+    await user.click(screen.getByRole('button', { name: 'Hide sidebar' }));
+    expect(document.querySelector('.layout--sidebar-collapsed')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Show sidebar' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Show sidebar' }));
+    expect(document.querySelector('.layout--sidebar-collapsed')).not.toBeInTheDocument();
+  });
+
+  it('resizes the sidebar with keyboard and pointer drag', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    render(<App />);
+    await screen.findByRole('heading', { name: 'NanoClaw' });
+
+    const handle = screen.getByRole('separator', { name: 'Resize sidebar' });
+    handle.setPointerCapture = vi.fn();
+    handle.releasePointerCapture = vi.fn();
+
+    fireEvent.keyDown(handle, { key: 'Enter' });
+    fireEvent.keyDown(handle, { key: 'ArrowRight' });
+    expect(localStorage.getItem('webchat_sidebar_width')).toBe('240');
+
+    fireEvent.pointerDown(handle, { clientX: 300, pointerId: 1, buttons: 1 });
+    handle.dispatchEvent(new PointerEvent('pointermove', { clientX: 350, pointerId: 1, bubbles: true }));
+    handle.dispatchEvent(new PointerEvent('pointerup', { clientX: 350, pointerId: 1, bubbles: true }));
+
+    expect(localStorage.getItem('webchat_sidebar_width')).toBe('290');
+    expect(document.body.classList.contains('sidebar-resizing')).toBe(false);
+
+    fireEvent.pointerDown(handle, { clientX: 300, pointerId: 2, buttons: 1 });
+    handle.dispatchEvent(new PointerEvent('pointercancel', { clientX: 300, pointerId: 2, bubbles: true }));
+    expect(document.body.classList.contains('sidebar-resizing')).toBe(false);
+  });
+
+  it('clamps sidebar width on window resize and tracks manual message scroll', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(createFetchMock({ messages: [messageFixture] })),
+    );
+    render(<App />);
+    await screen.findByText('Agent reply');
+
+    Object.defineProperty(window, 'innerWidth', { value: 400, configurable: true });
+    fireEvent(window, new Event('resize'));
+
+    const messages = document.querySelector('.messages') as HTMLDivElement;
+    Object.defineProperty(messages, 'scrollHeight', { value: 1000, configurable: true });
+    Object.defineProperty(messages, 'clientHeight', { value: 400, configurable: true });
+    messages.scrollTop = 0;
+    fireEvent.scroll(messages);
+    messages.scrollTop = 950;
+    fireEvent.scroll(messages);
+  });
+
+  it('does not auto-scroll when the user has scrolled away from the bottom', async () => {
+    const scrollToBottom = vi.spyOn(chatScroll, 'scrollToBottom');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(createFetchMock({ messages: [messageFixture] })),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+    const MockWebSocket = createWebSocketMock();
+    render(<App />);
+    await screen.findByText('Agent reply');
+    scrollToBottom.mockClear();
+
+    const messages = document.querySelector('.messages') as HTMLDivElement;
+    Object.defineProperty(messages, 'scrollHeight', { value: 1000, configurable: true });
+    Object.defineProperty(messages, 'clientHeight', { value: 400, configurable: true });
+    messages.scrollTop = 0;
+    fireEvent.scroll(messages);
+
+    const ws = latestWebSocket(MockWebSocket);
+    ws.onmessage?.({
+      data: JSON.stringify({
+        type: 'message',
+        message: { ...messageFixture, id: 'msg-2', text: 'another reply' },
+      }),
+    } as MessageEvent);
+
+    await screen.findByText('another reply');
+    expect(scrollToBottom).not.toHaveBeenCalled();
+  });
+
+  it('anchors scroll to unread messages when opening a channel with unread', async () => {
+    const scrollToUnreadAnchor = vi.spyOn(chatScroll, 'scrollToUnreadAnchor');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          messages: [
+            { ...messageFixture, id: 'msg-1', text: 'older' },
+            { ...messageFixture, id: 'msg-2', text: 'newer' },
+          ],
+        }),
+      ),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+    const MockWebSocket = createWebSocketMock();
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    MockWebSocket.instances[0]!.onmessage?.({
+      data: JSON.stringify({
+        type: 'message',
+        message: { ...messageFixture, id: 'msg-dm', platformId: 'dm-sarah', text: 'dm ping' },
+      }),
+    } as MessageEvent);
+
+    await user.click(screen.getByRole('button', { name: 'Sarah' }));
+    await screen.findByText('newer');
+
+    expect(scrollToUnreadAnchor).toHaveBeenCalled();
+  });
+
+  it('rebalances panel widths when the window narrows with all panels open', async () => {
+    localStorage.setItem('webchat_sidebar_width', '240');
+    localStorage.setItem('webchat_attachment_drawer_width', '480');
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1500, writable: true });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          messages: [
+            {
+              ...messageFixture,
+              text: '',
+              attachments: [
+                {
+                  name: 'photo.png',
+                  mimeType: 'image/png',
+                  type: 'image',
+                  data: 'aGVsbG8=',
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+    render(<App />);
+    await screen.findByRole('heading', { name: 'NanoClaw' });
+
+    fireEvent.click(await screen.findByRole('button', { name: 'View photo.png' }));
+
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 900, writable: true });
+    fireEvent(window, new Event('resize'));
+
+    const layout = document.querySelector('.layout') as HTMLElement;
+    const drawer = document.querySelector('.attachment-drawer') as HTMLElement;
+    expect(layout.style.getPropertyValue('--sidebar-width')).toBe('240px');
+    expect(drawer.style.width).toBe('268px');
+  });
+
+  it('clamps attachment drawer width from the main layout when resized', async () => {
+    localStorage.setItem('webchat_sidebar_width', '220');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          messages: [
+            {
+              ...messageFixture,
+              text: '',
+              attachments: [
+                {
+                  name: 'photo.png',
+                  mimeType: 'image/png',
+                  type: 'image',
+                  data: 'aGVsbG8=',
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+    render(<App />);
+    await screen.findByRole('heading', { name: 'NanoClaw' });
+
+    fireEvent.click(await screen.findByRole('button', { name: 'View photo.png' }));
+    const handle = screen.getByRole('separator', { name: 'Resize attachment preview' });
+    handle.setPointerCapture = vi.fn();
+    handle.releasePointerCapture = vi.fn();
+    fireEvent.pointerDown(handle, { clientX: 900, pointerId: 1, buttons: 1 });
+    handle.dispatchEvent(new PointerEvent('pointerup', { clientX: 100, pointerId: 1, bubbles: true }));
+
+    expect(localStorage.getItem('webchat_attachment_drawer_width')).not.toBe('900');
+  });
+
+  it('clamps attachment drawer width when the sidebar is collapsed', async () => {
+    localStorage.setItem('webchat_sidebar_collapsed', '1');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          messages: [
+            {
+              ...messageFixture,
+              text: '',
+              attachments: [
+                {
+                  name: 'photo.png',
+                  mimeType: 'image/png',
+                  type: 'image',
+                  data: 'aGVsbG8=',
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    fireEvent.click(await screen.findByRole('button', { name: 'View photo.png' }));
+    const handle = screen.getByRole('separator', { name: 'Resize attachment preview' });
+    handle.setPointerCapture = vi.fn();
+    handle.releasePointerCapture = vi.fn();
+    fireEvent.pointerDown(handle, { clientX: 900, pointerId: 2, buttons: 1 });
+    handle.dispatchEvent(new PointerEvent('pointerup', { clientX: 100, pointerId: 2, bubbles: true }));
+
+    expect(localStorage.getItem('webchat_attachment_drawer_width')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Show sidebar' }));
+    expect(document.querySelector('.layout--sidebar-collapsed')).not.toBeInTheDocument();
   });
 });
