@@ -189,3 +189,14 @@ Channel type is always `web` on the NanoClaw host side.
 ## Persistence
 
 Thread metadata and message history are stored in `data/webchat.db` on the host. Survives browser refresh and host restart. Attachment files live under `data/webchat/files/`.
+
+## MCP integration
+
+The [`mcp/`](../mcp/) package provides a stdio MCP server for external clients (Cursor, Claude Desktop, etc.).
+
+| Env var | Default | Purpose |
+|---------|---------|---------|
+| `WEBCHAT_API_BASE` | `http://127.0.0.1:3200` | REST base URL |
+| `WEBCHAT_SECRET` | *(required)* | Bearer token (same as browser UI) |
+
+Tools wrap the REST endpoints above: bootstrap for channel/agent discovery, thread CRUD via `POST/PATCH/DELETE .../threads`, messages via GET/POST `.../messages`. After sending, clients poll read endpoints with `since=<timestamp>` to collect agent replies (same pattern as Slack MCP).
