@@ -22,6 +22,7 @@ describe('AttachmentDrawer', () => {
           type: 'file',
           data: 'IyBIZWxsbw==',
         }}
+        token="secret"
         onClose={vi.fn()}
       />,
     );
@@ -39,6 +40,7 @@ describe('AttachmentDrawer', () => {
           type: 'file',
           url: '/api/attachments/msg-1/notes.md',
         }}
+        token="secret"
         onClose={vi.fn()}
       />,
     );
@@ -54,6 +56,7 @@ describe('AttachmentDrawer', () => {
           type: 'image',
           data: 'aGVsbG8=',
         }}
+        token="secret"
         onClose={vi.fn()}
       />,
     );
@@ -73,13 +76,32 @@ describe('AttachmentDrawer', () => {
           type: 'file',
           data: 'aGVsbG8=',
         }}
+        token="secret"
         onClose={vi.fn()}
       />,
     );
-    expect(container.querySelector('.attachment-drawer-embed')).toHaveAttribute(
-      'src',
-      'data:application/pdf;base64,aGVsbG8=',
+    const iframe = container.querySelector('.attachment-drawer-embed');
+    expect(iframe).toHaveAttribute('src', 'data:application/pdf;base64,aGVsbG8=');
+    expect(iframe).not.toHaveAttribute('sandbox');
+  });
+
+  it('renders html attachments in a sandboxed iframe with pop-out', () => {
+    const { container } = render(
+      <AttachmentDrawer
+        attachment={{
+          name: 'page.html',
+          mimeType: 'text/html',
+          type: 'file',
+          data: 'PGgxPkhlbGxvPC9oMT4=',
+        }}
+        token="secret"
+        onClose={vi.fn()}
+      />,
     );
+    const iframe = container.querySelector('.attachment-drawer-embed');
+    expect(iframe).toHaveAttribute('src', 'data:text/html;base64,PGgxPkhlbGxvPC9oMT4=');
+    expect(iframe).toHaveAttribute('sandbox', attachments.ATTACHMENT_HTML_IFRAME_SANDBOX);
+    expect(screen.getByRole('button', { name: 'Open page.html in new tab' })).toBeInTheDocument();
   });
 
   it('shows metadata for unsupported file types', () => {
@@ -91,6 +113,7 @@ describe('AttachmentDrawer', () => {
           type: 'file',
           size: 2048,
         }}
+        token="secret"
         onClose={vi.fn()}
       />,
     );
@@ -113,6 +136,7 @@ describe('AttachmentDrawer', () => {
           type: 'file',
           data: 'aGVsbG8=',
         }}
+        token="secret"
         onClose={vi.fn()}
       />,
     );
@@ -136,6 +160,7 @@ describe('AttachmentDrawer', () => {
           type: 'file',
           url: '/api/attachments/msg-1/archive.zip',
         }}
+        token="secret"
         onClose={vi.fn()}
       />,
     );
@@ -159,6 +184,7 @@ describe('AttachmentDrawer', () => {
           type: 'image',
           data: 'aGVsbG8=',
         }}
+        token="secret"
         onClose={onClose}
       />,
     );
@@ -179,6 +205,7 @@ describe('AttachmentDrawer', () => {
           mimeType: 'application/zip',
           type: 'file',
         }}
+        token="secret"
         onClose={onClose}
       />,
     );
@@ -194,6 +221,7 @@ describe('AttachmentDrawer', () => {
           mimeType: 'image/png',
           type: 'image',
         }}
+        token="secret"
         onClose={vi.fn()}
       />,
     );
@@ -209,6 +237,7 @@ describe('AttachmentDrawer', () => {
           mimeType: 'application/zip',
           type: 'file',
         }}
+        token="secret"
         onClose={onClose}
       />,
     );
@@ -228,6 +257,7 @@ describe('AttachmentDrawer', () => {
           type: 'file',
           data: 'aGVsbG8=',
         }}
+        token="secret"
         onClose={vi.fn()}
       />,
     );
@@ -252,6 +282,7 @@ describe('AttachmentDrawer', () => {
           type: 'file',
           data: 'aGVsbG8=',
         }}
+        token="secret"
         onClose={vi.fn()}
       />,
     );
@@ -273,6 +304,7 @@ describe('AttachmentDrawer', () => {
           type: 'file',
           url: '/api/attachments/msg-1/archive.zip',
         }}
+        token="secret"
         onClose={vi.fn()}
       />,
     );
@@ -293,6 +325,7 @@ describe('AttachmentDrawer', () => {
           type: 'file',
           size: 10,
         }}
+        token="secret"
         onClose={vi.fn()}
       />,
     );
@@ -305,6 +338,7 @@ describe('AttachmentDrawer', () => {
           type: 'file',
           data: 'IyBTd2l0Y2hlZA==',
         }}
+        token="secret"
         onClose={vi.fn()}
       />,
     );
@@ -327,6 +361,7 @@ describe('AttachmentDrawer', () => {
           type: 'file',
           url: '/api/attachments/msg-1/notes.md',
         }}
+        token="secret"
         onClose={vi.fn()}
       />,
     );
@@ -348,6 +383,7 @@ describe('AttachmentDrawer', () => {
           type: 'file',
           data: 'aGVsbG8=',
         }}
+        token="secret"
         onClose={vi.fn()}
       />,
     );
@@ -378,6 +414,7 @@ describe('AttachmentDrawer', () => {
           type: 'file',
           data: 'IyBGaXJzdA==',
         }}
+        token="secret"
         onClose={vi.fn()}
       />,
     );
@@ -392,6 +429,7 @@ describe('AttachmentDrawer', () => {
           type: 'file',
           data: 'IyBTZWNvbmQ=',
         }}
+        token="secret"
         onClose={vi.fn()}
       />,
     );
@@ -408,6 +446,7 @@ describe('AttachmentDrawer', () => {
           type: 'image',
           data: 'aGVsbG8=',
         }}
+        token="secret"
         onClose={vi.fn()}
       />,
     );
@@ -425,6 +464,7 @@ describe('AttachmentDrawer', () => {
           type: 'image',
           data: 'aGVsbG8=',
         }}
+        token="secret"
         onClose={vi.fn()}
       />,
     );
@@ -442,7 +482,123 @@ describe('AttachmentDrawer', () => {
     );
   });
 
-  it('shows image type in metadata when server type disagrees with mime', () => {
+  it('replaces copied feedback timeout when copy succeeds again', async () => {
+    vi.spyOn(attachments, 'fetchAttachmentText').mockResolvedValue('hello');
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
+    const clearTimeoutSpy = vi.spyOn(window, 'clearTimeout');
+    render(
+      <AttachmentDrawer
+        attachment={{
+          name: 'notes.txt',
+          mimeType: 'text/plain',
+          type: 'file',
+          data: 'aGVsbG8=',
+        }}
+        token="secret"
+        onClose={vi.fn()}
+      />,
+    );
+    await screen.findByText('hello');
+    fireEvent.click(screen.getByRole('button', { name: 'Copy content' }));
+    await waitFor(() => {
+      expect(screen.getByText('Copied')).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Copied' }));
+    expect(clearTimeoutSpy).toHaveBeenCalled();
+    clearTimeoutSpy.mockRestore();
+  });
+
+  it('clears copied feedback timeout on unmount', async () => {
+    vi.spyOn(attachments, 'fetchAttachmentText').mockResolvedValue('hello');
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
+    const clearTimeoutSpy = vi.spyOn(window, 'clearTimeout');
+    const { unmount } = render(
+      <AttachmentDrawer
+        attachment={{
+          name: 'notes.txt',
+          mimeType: 'text/plain',
+          type: 'file',
+          data: 'aGVsbG8=',
+        }}
+        token="secret"
+        onClose={vi.fn()}
+      />,
+    );
+    await screen.findByText('hello');
+    fireEvent.click(screen.getByRole('button', { name: 'Copy content' }));
+    await waitFor(() => {
+      expect(screen.getByText('Copied')).toBeInTheDocument();
+    });
+    unmount();
+    expect(clearTimeoutSpy).toHaveBeenCalled();
+    clearTimeoutSpy.mockRestore();
+  });
+
+  it('cleans up resize state when the pointer is cancelled', () => {
+    const { container } = render(
+      <AttachmentDrawer
+        attachment={{
+          name: 'photo.png',
+          mimeType: 'image/png',
+          type: 'image',
+          data: 'aGVsbG8=',
+        }}
+        token="secret"
+        onClose={vi.fn()}
+      />,
+    );
+    const handle = container.querySelector('.attachment-drawer-resize-handle') as HTMLElement;
+    handle.setPointerCapture = vi.fn();
+    handle.releasePointerCapture = vi.fn();
+    fireEvent.pointerDown(handle, { clientX: 900, pointerId: 1 });
+    fireEvent.pointerCancel(handle, { pointerId: 1 });
+    expect(document.body.classList.contains('attachment-drawer-resizing')).toBe(false);
+  });
+
+  it('resizes drawer width with keyboard arrows', () => {
+    const { container } = render(
+      <AttachmentDrawer
+        attachment={{
+          name: 'photo.png',
+          mimeType: 'image/png',
+          type: 'image',
+          data: 'aGVsbG8=',
+        }}
+        token="secret"
+        onClose={vi.fn()}
+      />,
+    );
+    const drawer = container.querySelector('.attachment-drawer') as HTMLElement;
+    const handle = container.querySelector('.attachment-drawer-resize-handle') as HTMLElement;
+    const initialWidth = Number.parseInt(drawer.style.width, 10);
+    fireEvent.keyDown(handle, { key: 'ArrowLeft' });
+    expect(drawer.style.width).toBe(`${initialWidth + 20}px`);
+    expect(localStorage.getItem('webchat_attachment_drawer_width')).toBe(String(initialWidth + 20));
+  });
+
+  it('ignores unrelated keys on the resize handle', () => {
+    const { container } = render(
+      <AttachmentDrawer
+        attachment={{
+          name: 'photo.png',
+          mimeType: 'image/png',
+          type: 'image',
+          data: 'aGVsbG8=',
+        }}
+        token="secret"
+        onClose={vi.fn()}
+      />,
+    );
+    const drawer = container.querySelector('.attachment-drawer') as HTMLElement;
+    const handle = container.querySelector('.attachment-drawer-resize-handle') as HTMLElement;
+    const initialWidth = drawer.style.width;
+    fireEvent.keyDown(handle, { key: 'Enter' });
+    expect(drawer.style.width).toBe(initialWidth);
+  });
+
+  it('shows normalized type in metadata when server type disagrees with mime', () => {
     render(
       <AttachmentDrawer
         attachment={{
@@ -451,9 +607,10 @@ describe('AttachmentDrawer', () => {
           type: 'image',
           size: 10,
         }}
+        token="secret"
         onClose={vi.fn()}
       />,
     );
-    expect(screen.getByText('Image')).toBeInTheDocument();
+    expect(screen.getByText('File')).toBeInTheDocument();
   });
 });

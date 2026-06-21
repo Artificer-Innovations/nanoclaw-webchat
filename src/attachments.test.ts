@@ -1,10 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   attachmentDataUrl,
+  ATTACHMENT_HTML_IFRAME_SANDBOX,
+  attachmentIframeSandbox,
   attachmentPreviewMode,
   attachmentPreviewUrl,
   attachmentToBlob,
   attachmentTypeFromMime,
+  attachmentTypeLabel,
+  attachmentUsesIframePreview,
   copyAttachmentContent,
   copyAttachmentForPreview,
   copyAttachmentLink,
@@ -40,12 +44,27 @@ describe('attachments', () => {
     expect(attachmentTypeFromMime('text/markdown')).toBe('file');
   });
 
+  it('labels attachment types for metadata display', () => {
+    expect(attachmentTypeLabel('image')).toBe('Image');
+    expect(attachmentTypeLabel('file')).toBe('File');
+  });
+
   it('classifies attachment preview modes', () => {
     expect(attachmentPreviewMode('text/plain')).toBe('markdown');
     expect(attachmentPreviewMode('text/markdown')).toBe('markdown');
     expect(attachmentPreviewMode('image/png')).toBe('embed');
     expect(attachmentPreviewMode('application/pdf')).toBe('embed');
+    expect(attachmentPreviewMode('text/html')).toBe('embed');
     expect(attachmentPreviewMode('application/zip')).toBe('metadata');
+  });
+
+  it('classifies iframe preview and sandbox settings', () => {
+    expect(attachmentUsesIframePreview('application/pdf')).toBe(true);
+    expect(attachmentUsesIframePreview('text/html')).toBe(true);
+    expect(attachmentUsesIframePreview('image/png')).toBe(false);
+    expect(attachmentIframeSandbox('text/html')).toBe(ATTACHMENT_HTML_IFRAME_SANDBOX);
+    expect(ATTACHMENT_HTML_IFRAME_SANDBOX).not.toContain('allow-same-origin');
+    expect(attachmentIframeSandbox('application/pdf')).toBeUndefined();
   });
 
   it('formats attachment sizes', () => {
@@ -53,6 +72,7 @@ describe('attachments', () => {
     expect(formatAttachmentSize(512)).toBe('512 B');
     expect(formatAttachmentSize(2048)).toBe('2.0 KB');
     expect(formatAttachmentSize(5 * 1024 * 1024)).toBe('5.0 MB');
+    expect(formatAttachmentSize(2 * 1024 * 1024 * 1024)).toBe('2.0 GB');
   });
 
   it('decodes attachment text from base64 data', () => {
@@ -551,6 +571,36 @@ describe('attachments', () => {
     vi.unstubAllGlobals();
   });
 
+  it('returns null when attachment text fetch fails on the network', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new Error('network');
+    }));
+    expect(
+      await fetchAttachmentText({
+        name: 'notes.md',
+        mimeType: 'text/markdown',
+        type: 'file',
+        url: '/api/attachments/msg-1/notes.md',
+      }, 'secret'),
+    ).toBeNull();
+    vi.unstubAllGlobals();
+  });
+
+  it('returns null when attachment blob fetch fails on the network', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new Error('network');
+    }));
+    expect(
+      await fetchAttachmentBlob({
+        name: 'photo.png',
+        mimeType: 'image/png',
+        type: 'image',
+        url: '/api/attachments/msg-1/photo.png',
+      }, 'secret'),
+    ).toBeNull();
+    vi.unstubAllGlobals();
+  });
+
   it('fetches attachment blobs from inline data and persisted urls', async () => {
     const fromData = await fetchAttachmentBlob({
       name: 'photo.png',
@@ -635,7 +685,7 @@ describe('attachments', () => {
       ),
     ).toBe(true);
     expect(writeText).toHaveBeenCalledWith(
-      new URL('/api/attachments/msg-1/photo.png?token=secret', window.location.origin).href,
+      new URL('/api/attachments/msg-1/photo.png', window.location.origin).href,
     );
 
     expect(

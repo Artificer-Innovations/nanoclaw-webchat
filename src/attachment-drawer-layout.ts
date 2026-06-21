@@ -48,6 +48,22 @@ export function attachmentDrawerWidthFromDrag(
   return clampAttachmentDrawerWidth(startWidth + (startClientX - clientX), viewportWidth);
 }
 
+export const ATTACHMENT_DRAWER_KEYBOARD_RESIZE_STEP = 20;
+
+export function attachmentDrawerWidthFromKeyboard(
+  currentWidth: number,
+  key: string,
+  viewportWidth = window.innerWidth,
+): number | null {
+  if (key === 'ArrowLeft') {
+    return clampAttachmentDrawerWidth(currentWidth + ATTACHMENT_DRAWER_KEYBOARD_RESIZE_STEP, viewportWidth);
+  }
+  if (key === 'ArrowRight') {
+    return clampAttachmentDrawerWidth(currentWidth - ATTACHMENT_DRAWER_KEYBOARD_RESIZE_STEP, viewportWidth);
+  }
+  return null;
+}
+
 export function resetDrawerBodyScroll(body: HTMLDivElement | null): void {
   if (body) body.scrollTop = 0;
 }

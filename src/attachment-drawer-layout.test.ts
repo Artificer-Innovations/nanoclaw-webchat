@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   ATTACHMENT_DRAWER_WIDTH_STORAGE_KEY,
   attachmentDrawerWidthFromDrag,
+  attachmentDrawerWidthFromKeyboard,
   clampAttachmentDrawerWidth,
   defaultAttachmentDrawerWidth,
   getStoredAttachmentDrawerWidth,
@@ -39,6 +40,12 @@ describe('attachment-drawer-layout', () => {
   it('computes resized width from drag delta', () => {
     expect(attachmentDrawerWidthFromDrag(400, 900, 850, 1200)).toBe(450);
     expect(attachmentDrawerWidthFromDrag(400, 900, 950, 1200)).toBe(350);
+  });
+
+  it('computes resized width from keyboard arrows', () => {
+    expect(attachmentDrawerWidthFromKeyboard(400, 'ArrowLeft', 1200)).toBe(420);
+    expect(attachmentDrawerWidthFromKeyboard(400, 'ArrowRight', 1200)).toBe(380);
+    expect(attachmentDrawerWidthFromKeyboard(400, 'Enter', 1200)).toBeNull();
   });
 
   it('resets drawer body scroll position', () => {

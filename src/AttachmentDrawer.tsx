@@ -1,17 +1,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ATTACHMENT_DRAWER_MIN_WIDTH,
   attachmentDrawerWidthFromDrag,
+  attachmentDrawerWidthFromKeyboard,
   getStoredAttachmentDrawerWidth,
   clampAttachmentDrawerWidth,
+  maxAttachmentDrawerWidth,
   resetDrawerBodyScroll,
   setStoredAttachmentDrawerWidth,
 } from './attachment-drawer-layout';
 import {
   attachmentDataUrl,
+  attachmentIframeSandbox,
   attachmentPreviewMode,
+  attachmentUsesIframePreview,
   copyAttachmentForPreview,
   downloadAttachment,
   formatAttachmentSize,
+  attachmentTypeLabel,
   normalizeAttachment,
   openAttachmentInNewTab,
   fetchAttachmentText,
@@ -22,16 +28,19 @@ import type { WebChatAttachment } from './types';
 
 export function AttachmentDrawer({
   attachment,
+  token,
   onClose,
 }: {
   attachment: WebChatAttachment;
+  token: string;
   onClose: () => void;
 }) {
   const att = useMemo(() => normalizeAttachment(attachment), [attachment]);
   const mode = attachmentPreviewMode(att.mimeType);
-  const embedUrl = mode === 'embed' ? attachmentDataUrl(att) : null;
+  const embedUrl = mode === 'embed' ? attachmentDataUrl(att, token) : null;
 
   const bodyRef = useRef<HTMLDivElement>(null);
+  const copiedTimeoutRef = useRef<number | null>(null);
   const [width, setWidth] = useState(getStoredAttachmentDrawerWidth);
   const [markdownText, setMarkdownText] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -56,20 +65,14 @@ export function AttachmentDrawer({
       setLoading(false);
       setLoadError(null);
       setMarkdownText(null);
-    } else {
-      setLoading(true);
-      setLoadError(null);
-      setMarkdownText(null);
+      return;
     }
-  }, [att.name, att.mimeType, att.data, att.url, mode]);
 
-  useEffect(() => {
-    if (mode !== 'markdown') return;
     let cancelled = false;
     setLoading(true);
     setLoadError(null);
     setMarkdownText(null);
-    void fetchAttachmentText(att).then((text) => {
+    void fetchAttachmentText(att, token).then((text) => {
       if (cancelled) return;
       setLoading(false);
       if (text == null) {
@@ -81,7 +84,7 @@ export function AttachmentDrawer({
     return () => {
       cancelled = true;
     };
-  }, [att.data, att.mimeType, att.name, att.url, mode]);
+  }, [att.data, att.mimeType, att.name, att.url, mode, token]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -91,20 +94,52 @@ export function AttachmentDrawer({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [onClose]);
 
+  useEffect(
+    () => () => {
+      if (copiedTimeoutRef.current != null) {
+        window.clearTimeout(copiedTimeoutRef.current);
+      }
+    },
+    [],
+  );
+
+  const showCopiedFeedback = useCallback(() => {
+    setCopied(true);
+    if (copiedTimeoutRef.current != null) {
+      window.clearTimeout(copiedTimeoutRef.current);
+    }
+    copiedTimeoutRef.current = window.setTimeout(() => {
+      copiedTimeoutRef.current = null;
+      setCopied(false);
+    }, 2000);
+  }, []);
+
   const handleCopy = useCallback(() => {
-    void copyAttachmentForPreview(att, () => {
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 2000);
-    });
-  }, [att]);
+    void copyAttachmentForPreview(att, showCopiedFeedback, token);
+  }, [att, showCopiedFeedback, token]);
 
   const handleDownload = useCallback(() => {
-    void downloadAttachment(att);
-  }, [att]);
+    void downloadAttachment(att, token);
+  }, [att, token]);
 
   const handlePopOut = useCallback(() => {
-    openAttachmentInNewTab(att);
-  }, [att]);
+    openAttachmentInNewTab(att, token);
+  }, [att, token]);
+
+  const persistWidth = useCallback((nextWidth: number) => {
+    setWidth(nextWidth);
+    setStoredAttachmentDrawerWidth(nextWidth);
+  }, []);
+
+  const handleResizeKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      const nextWidth = attachmentDrawerWidthFromKeyboard(width, event.key);
+      if (nextWidth == null) return;
+      event.preventDefault();
+      persistWidth(nextWidth);
+    },
+    [persistWidth, width],
+  );
 
   const handleResizePointerDown = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
@@ -112,27 +147,37 @@ export function AttachmentDrawer({
       const handle = event.currentTarget;
       const startX = event.clientX;
       const startWidth = width;
+      let lastClientX = startX;
       handle.setPointerCapture(event.pointerId);
       document.body.classList.add('attachment-drawer-resizing');
 
       const onPointerMove = (moveEvent: PointerEvent) => {
-        setWidth(attachmentDrawerWidthFromDrag(startWidth, startX, moveEvent.clientX));
+        lastClientX = moveEvent.clientX;
+        setWidth(attachmentDrawerWidthFromDrag(startWidth, startX, lastClientX));
       };
 
-      const onPointerUp = (upEvent: PointerEvent) => {
+      const finishResize = () => {
         handle.releasePointerCapture(event.pointerId);
         handle.removeEventListener('pointermove', onPointerMove);
         handle.removeEventListener('pointerup', onPointerUp);
+        handle.removeEventListener('pointercancel', onPointerCancel);
         document.body.classList.remove('attachment-drawer-resizing');
-        const finalWidth = attachmentDrawerWidthFromDrag(startWidth, startX, upEvent.clientX);
-        setWidth(finalWidth);
-        setStoredAttachmentDrawerWidth(finalWidth);
+        persistWidth(attachmentDrawerWidthFromDrag(startWidth, startX, lastClientX));
+      };
+
+      const onPointerUp = () => {
+        finishResize();
+      };
+
+      const onPointerCancel = () => {
+        finishResize();
       };
 
       handle.addEventListener('pointermove', onPointerMove);
       handle.addEventListener('pointerup', onPointerUp);
+      handle.addEventListener('pointercancel', onPointerCancel);
     },
-    [width],
+    [persistWidth, width],
   );
 
   return (
@@ -146,6 +191,11 @@ export function AttachmentDrawer({
         role="separator"
         aria-orientation="vertical"
         aria-label="Resize attachment preview"
+        aria-valuemin={ATTACHMENT_DRAWER_MIN_WIDTH}
+        aria-valuemax={Math.round(maxAttachmentDrawerWidth())}
+        aria-valuenow={width}
+        tabIndex={0}
+        onKeyDown={handleResizeKeyDown}
         onPointerDown={handleResizePointerDown}
       />
       <header className="attachment-drawer-header">
@@ -201,8 +251,13 @@ export function AttachmentDrawer({
           <FormattedMessage text={markdownText ?? ''} />
         ) : null}
         {mode === 'embed' && embedUrl ? (
-          att.mimeType === 'application/pdf' ? (
-            <iframe className="attachment-drawer-embed" title={att.name} src={embedUrl} />
+          attachmentUsesIframePreview(att.mimeType) ? (
+            <iframe
+              className="attachment-drawer-embed"
+              title={att.name}
+              src={embedUrl}
+              sandbox={attachmentIframeSandbox(att.mimeType)}
+            />
           ) : (
             <img className="attachment-drawer-image" src={embedUrl} alt={att.name} />
           )
@@ -226,7 +281,7 @@ export function AttachmentDrawer({
             </div>
             <div>
               <dt>Type</dt>
-              <dd>{attachment.type === 'image' ? 'Image' : 'File'}</dd>
+              <dd>{attachmentTypeLabel(att.type)}</dd>
             </div>
           </dl>
         ) : null}

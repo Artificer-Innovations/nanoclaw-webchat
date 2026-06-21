@@ -50,16 +50,36 @@ export function attachmentTypeFromMime(mimeType: string): 'image' | 'file' {
 export type AttachmentPreviewMode = 'markdown' | 'embed' | 'metadata';
 
 export function attachmentPreviewMode(mimeType: string): AttachmentPreviewMode {
+  // Plain text uses FormattedMessage (code blocks, links); markdown syntax is intentional there too.
   if (mimeType === 'text/plain' || mimeType === 'text/markdown') return 'markdown';
-  if (mimeType.startsWith('image/') || mimeType === 'application/pdf') return 'embed';
+  if (mimeType.startsWith('image/') || mimeType === 'application/pdf' || mimeType === 'text/html') {
+    return 'embed';
+  }
   return 'metadata';
+}
+
+export function attachmentUsesIframePreview(mimeType: string): boolean {
+  return mimeType === 'application/pdf' || mimeType === 'text/html';
+}
+
+/** HTML previews: run JS in an isolated origin; never add allow-same-origin (parent/token access). */
+export const ATTACHMENT_HTML_IFRAME_SANDBOX = 'allow-scripts allow-popups allow-modals';
+
+/** Sandbox for untrusted HTML previews; omitted for PDFs (browser viewer). */
+export function attachmentIframeSandbox(mimeType: string): string | undefined {
+  return mimeType === 'text/html' ? ATTACHMENT_HTML_IFRAME_SANDBOX : undefined;
+}
+
+export function attachmentTypeLabel(type: 'image' | 'file'): string {
+  return type === 'image' ? 'Image' : 'File';
 }
 
 export function formatAttachmentSize(size?: number): string {
   if (size == null) return 'Unknown';
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  if (size < 1024 * 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
 export function decodeAttachmentTextFromData(data: string): string | null {
@@ -200,6 +220,17 @@ export function attachmentDataUrl(att: WebChatAttachment, token?: string): strin
   return null;
 }
 
+/** Shareable attachment URL without auth token (for clipboard). */
+export function attachmentShareUrl(att: WebChatAttachment): string | null {
+  if (att.url && isSafeAttachmentUrl(att.url)) {
+    return new URL(att.url, window.location.origin).href;
+  }
+  if (att.data) {
+    return `data:${att.mimeType};base64,${att.data}`;
+  }
+  return null;
+}
+
 export function attachmentToBlob(att: WebChatAttachment): Blob | null {
   if (!att.data) return null;
   try {
@@ -259,9 +290,13 @@ export async function fetchAttachmentText(att: WebChatAttachment, token?: string
   if (att.url && isSafeAttachmentUrl(att.url)) {
     const authToken = token ?? getStoredToken();
     const url = attachmentUrlWithAuth(att.url, authToken);
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    return res.text();
+    try {
+      const res = await fetch(url);
+      if (!res.ok) return null;
+      return res.text();
+    } catch {
+      return null;
+    }
   }
   return null;
 }
@@ -272,9 +307,13 @@ export async function fetchAttachmentBlob(att: WebChatAttachment, token?: string
   if (att.url && isSafeAttachmentUrl(att.url)) {
     const authToken = token ?? getStoredToken();
     const url = attachmentUrlWithAuth(att.url, authToken);
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    return res.blob();
+    try {
+      const res = await fetch(url);
+      if (!res.ok) return null;
+      return res.blob();
+    } catch {
+      return null;
+    }
   }
   return null;
 }
@@ -294,12 +333,11 @@ export async function downloadAttachment(att: WebChatAttachment, token?: string)
   return true;
 }
 
-export async function copyAttachmentLink(att: WebChatAttachment, token?: string): Promise<boolean> {
-  const url = attachmentDataUrl(att, token);
+export async function copyAttachmentLink(att: WebChatAttachment, _token?: string): Promise<boolean> {
+  const url = attachmentShareUrl(att);
   if (!url) return false;
-  const toCopy = url.startsWith('/') ? new URL(url, window.location.origin).href : url;
   try {
-    await navigator.clipboard.writeText(toCopy);
+    await navigator.clipboard.writeText(url);
     return true;
   } catch {
     return false;

@@ -2351,4 +2351,45 @@ describe('App', () => {
     expect(screen.queryByLabelText('Attachment preview: photo.png')).not.toBeInTheDocument();
     expect(document.querySelector('.main--drawer-open')).not.toBeInTheDocument();
   });
+
+  it('closes the attachment drawer when switching rooms', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          messagesForThread: (platformId) => ({
+            messages:
+              platformId === 'lobby-1'
+                ? [
+                    {
+                      ...messageFixture,
+                      text: '',
+                      attachments: [
+                        {
+                          name: 'photo.png',
+                          mimeType: 'image/png',
+                          type: 'image',
+                          data: 'aGVsbG8=',
+                        },
+                      ],
+                    },
+                  ]
+                : [],
+          }),
+        }),
+      ),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    fireEvent.click(await screen.findByRole('button', { name: 'View photo.png' }));
+    expect(screen.getByLabelText('Attachment preview: photo.png')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Sarah' }));
+    expect(await screen.findByRole('heading', { name: 'Sarah' })).toBeInTheDocument();
+    expect(screen.queryByLabelText('Attachment preview: photo.png')).not.toBeInTheDocument();
+    expect(document.querySelector('.main--drawer-open')).not.toBeInTheDocument();
+  });
 });

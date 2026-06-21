@@ -280,6 +280,14 @@ export function App() {
   }, [draft, pendingAttachments.length, resizeComposer]);
 
   useEffect(() => {
+    setSelectedAttachment(null);
+  }, [room?.platformId, threadId]);
+
+  const handleCloseAttachment = useCallback(() => {
+    setSelectedAttachment(null);
+  }, []);
+
+  useEffect(() => {
     return () => {
       revokeAttachmentPreviews(pendingAttachmentsRef.current);
     };
@@ -770,7 +778,8 @@ export function App() {
           {selectedAttachment ? (
             <AttachmentDrawer
               attachment={selectedAttachment}
-              onClose={() => setSelectedAttachment(null)}
+              token={token}
+              onClose={handleCloseAttachment}
             />
           ) : null}
         </div>
