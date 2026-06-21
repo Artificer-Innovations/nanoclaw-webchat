@@ -214,21 +214,22 @@ export function AttachmentDrawer({
         persistWidth(attachmentDrawerWidthFromDrag(startWidth, startX, lastClientX));
       };
 
-      const finishResize = () => {
+      const cleanupResize = () => {
         handle.releasePointerCapture(event.pointerId);
         handle.removeEventListener('pointermove', onPointerMove);
         handle.removeEventListener('pointerup', onPointerUp);
         handle.removeEventListener('pointercancel', onPointerCancel);
         document.body.classList.remove('attachment-drawer-resizing');
-        persistWidth(attachmentDrawerWidthFromDrag(startWidth, startX, lastClientX));
       };
 
       const onPointerUp = () => {
-        finishResize();
+        cleanupResize();
+        persistWidth(attachmentDrawerWidthFromDrag(startWidth, startX, lastClientX));
       };
 
       const onPointerCancel = () => {
-        finishResize();
+        cleanupResize();
+        persistWidth(startWidth);
       };
 
       handle.addEventListener('pointermove', onPointerMove);

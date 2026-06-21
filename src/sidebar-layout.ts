@@ -19,7 +19,12 @@ export function clampSidebarWidth(
 }
 
 export function getStoredSidebarWidth(viewportWidth = window.innerWidth): number {
-  const raw = localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY);
+  let raw: string | null = null;
+  try {
+    raw = localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY);
+  } catch {
+    raw = null;
+  }
   if (raw != null) {
     const parsed = Number.parseInt(raw, 10);
     if (Number.isFinite(parsed)) {
@@ -30,7 +35,11 @@ export function getStoredSidebarWidth(viewportWidth = window.innerWidth): number
 }
 
 export function setStoredSidebarWidth(width: number): void {
-  localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(Math.round(width)));
+  try {
+    localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(Math.round(width)));
+  } catch {
+    // ignore write failures in sandboxed or restricted storage contexts
+  }
 }
 
 export function sidebarWidthFromDrag(
@@ -57,9 +66,17 @@ export function sidebarWidthFromKeyboard(
 }
 
 export function getStoredSidebarCollapsed(): boolean {
-  return localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === '1';
+  try {
+    return localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
 }
 
 export function setStoredSidebarCollapsed(collapsed: boolean): void {
-  localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, collapsed ? '1' : '0');
+  try {
+    localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, collapsed ? '1' : '0');
+  } catch {
+    // ignore write failures in sandboxed or restricted storage contexts
+  }
 }

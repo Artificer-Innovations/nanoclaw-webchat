@@ -1310,6 +1310,7 @@ body.attachment-drawer-resizing * {
   word-break: break-word;
 }
 
+/* Touch-only fullscreen drawer; 481px+ uses inline shrink-only panel balancing instead. */
 @media (max-width: 480px) and (hover: none) {
   .attachment-drawer {
     position: fixed;

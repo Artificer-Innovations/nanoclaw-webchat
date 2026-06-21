@@ -808,7 +808,8 @@ describe('AttachmentDrawer', () => {
     clearTimeoutSpy.mockRestore();
   });
 
-  it('cleans up resize state when the pointer is cancelled', () => {
+  it('cleans up resize state and reverts width when the pointer is cancelled', () => {
+    localStorage.setItem('webchat_attachment_drawer_width', '400');
     const { container } = render(
       <AttachmentDrawer
         attachment={{
@@ -821,12 +822,21 @@ describe('AttachmentDrawer', () => {
         onClose={vi.fn()}
       />,
     );
+    const drawer = container.querySelector('.attachment-drawer') as HTMLElement;
     const handle = container.querySelector('.attachment-drawer-resize-handle') as HTMLElement;
     handle.setPointerCapture = vi.fn();
     handle.releasePointerCapture = vi.fn();
     fireEvent.pointerDown(handle, { clientX: 900, pointerId: 1 });
-    fireEvent.pointerCancel(handle, { pointerId: 1 });
+    act(() => {
+      handle.dispatchEvent(new PointerEvent('pointermove', { clientX: 800, pointerId: 1, bubbles: true }));
+    });
+    expect(drawer.style.width).toBe('500px');
+    act(() => {
+      handle.dispatchEvent(new PointerEvent('pointercancel', { clientX: 800, pointerId: 1, bubbles: true }));
+    });
     expect(document.body.classList.contains('attachment-drawer-resizing')).toBe(false);
+    expect(drawer.style.width).toBe('400px');
+    expect(localStorage.getItem('webchat_attachment_drawer_width')).toBe('400');
   });
 
   it('resizes drawer width with keyboard arrows', () => {

@@ -108,8 +108,8 @@ export function App() {
   const [drawerWidth, setDrawerWidth] = useState(getStoredAttachmentDrawerWidth);
   const messagesRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
-  const conversationKeyRef = useRef('');
   const pendingScrollUnreadRef = useRef(0);
+  const resizeFrameRef = useRef<number | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -291,13 +291,6 @@ export function App() {
     return () => clearInterval(id);
   }, [token, bootstrap, syncInactiveRooms]);
 
-  useEffect(() => {
-    const key = room ? `${room.platformId}|${threadId}` : '';
-    if (key !== conversationKeyRef.current) {
-      conversationKeyRef.current = key;
-    }
-  }, [room?.platformId, threadId]);
-
   const drawerOpen = selectedAttachment != null;
 
   const applyPanelLayout = useCallback(() => {
@@ -321,10 +314,21 @@ export function App() {
 
   useEffect(() => {
     const onResize = () => {
-      applyPanelLayout();
+      if (resizeFrameRef.current != null) {
+        cancelAnimationFrame(resizeFrameRef.current);
+      }
+      resizeFrameRef.current = requestAnimationFrame(() => {
+        resizeFrameRef.current = null;
+        applyPanelLayout();
+      });
     };
     window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      if (resizeFrameRef.current != null) {
+        cancelAnimationFrame(resizeFrameRef.current);
+      }
+    };
   }, [applyPanelLayout]);
 
   useEffect(() => {
@@ -421,21 +425,23 @@ export function App() {
         );
       };
 
-      const finishResize = () => {
+      const cleanupResize = () => {
         handle.releasePointerCapture(event.pointerId);
         handle.removeEventListener('pointermove', onPointerMove);
         handle.removeEventListener('pointerup', onPointerUp);
         handle.removeEventListener('pointercancel', onPointerCancel);
         document.body.classList.remove('sidebar-resizing');
-        persistSidebarWidth(sidebarWidthFromDrag(startWidth, startX, lastClientX));
       };
 
       const onPointerUp = () => {
-        finishResize();
+        cleanupResize();
+        persistSidebarWidth(sidebarWidthFromDrag(startWidth, startX, lastClientX));
       };
 
       const onPointerCancel = () => {
-        finishResize();
+        cleanupResize();
+        setSidebarWidth(startWidth);
+        persistSidebarWidth(startWidth);
       };
 
       handle.addEventListener('pointermove', onPointerMove);

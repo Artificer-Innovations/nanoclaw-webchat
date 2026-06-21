@@ -98,6 +98,7 @@ function reconcileThreePanels(
   inputSidebar: number,
   inputDrawer: number,
 ): PanelLayoutResult {
+  // Shrink-only: never widen stored widths; sub-minimum results are intentional on narrow viewports.
   let sidebar = Math.min(clampSidebarWidth(inputSidebar, viewportWidth), inputSidebar);
   let drawer = Math.min(clampAttachmentDrawerWidth(inputDrawer, viewportWidth), inputDrawer);
 

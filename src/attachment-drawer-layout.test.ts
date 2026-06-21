@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ATTACHMENT_DRAWER_WIDTH_STORAGE_KEY,
   attachmentDrawerWidthFromDrag,
@@ -46,6 +46,22 @@ describe('attachment-drawer-layout', () => {
     expect(attachmentDrawerWidthFromKeyboard(400, 'ArrowLeft', 1200)).toBe(420);
     expect(attachmentDrawerWidthFromKeyboard(400, 'ArrowRight', 1200)).toBe(380);
     expect(attachmentDrawerWidthFromKeyboard(400, 'Enter', 1200)).toBeNull();
+  });
+
+  it('falls back when localStorage read throws', () => {
+    const getItem = vi.spyOn(localStorage, 'getItem').mockImplementation(() => {
+      throw new DOMException('denied', 'SecurityError');
+    });
+    expect(getStoredAttachmentDrawerWidth(1200)).toBe(480);
+    getItem.mockRestore();
+  });
+
+  it('ignores localStorage write failures', () => {
+    const setItem = vi.spyOn(localStorage, 'setItem').mockImplementation(() => {
+      throw new DOMException('denied', 'SecurityError');
+    });
+    expect(() => setStoredAttachmentDrawerWidth(520)).not.toThrow();
+    setItem.mockRestore();
   });
 
   it('resets drawer body scroll position', () => {

@@ -25,7 +25,12 @@ export function clampAttachmentDrawerWidth(
 }
 
 export function getStoredAttachmentDrawerWidth(viewportWidth = window.innerWidth): number {
-  const raw = localStorage.getItem(ATTACHMENT_DRAWER_WIDTH_STORAGE_KEY);
+  let raw: string | null = null;
+  try {
+    raw = localStorage.getItem(ATTACHMENT_DRAWER_WIDTH_STORAGE_KEY);
+  } catch {
+    raw = null;
+  }
   if (raw != null) {
     const parsed = Number.parseInt(raw, 10);
     if (Number.isFinite(parsed)) {
@@ -36,7 +41,11 @@ export function getStoredAttachmentDrawerWidth(viewportWidth = window.innerWidth
 }
 
 export function setStoredAttachmentDrawerWidth(width: number): void {
-  localStorage.setItem(ATTACHMENT_DRAWER_WIDTH_STORAGE_KEY, String(Math.round(width)));
+  try {
+    localStorage.setItem(ATTACHMENT_DRAWER_WIDTH_STORAGE_KEY, String(Math.round(width)));
+  } catch {
+    // ignore write failures in sandboxed or restricted storage contexts
+  }
 }
 
 export function attachmentDrawerWidthFromDrag(

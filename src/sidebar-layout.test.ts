@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   SIDEBAR_COLLAPSED_STORAGE_KEY,
   SIDEBAR_WIDTH_STORAGE_KEY,
@@ -42,6 +42,31 @@ describe('sidebar-layout', () => {
     expect(sidebarWidthFromKeyboard(220, 'ArrowRight', 1200)).toBe(240);
     expect(sidebarWidthFromKeyboard(220, 'ArrowLeft', 1200)).toBe(200);
     expect(sidebarWidthFromKeyboard(220, 'Enter', 1200)).toBeNull();
+  });
+
+  it('falls back when sidebar width read throws', () => {
+    const getItem = vi.spyOn(localStorage, 'getItem').mockImplementation(() => {
+      throw new DOMException('denied', 'SecurityError');
+    });
+    expect(getStoredSidebarWidth(1200)).toBe(220);
+    getItem.mockRestore();
+  });
+
+  it('falls back when collapsed read throws', () => {
+    const getItem = vi.spyOn(localStorage, 'getItem').mockImplementation(() => {
+      throw new DOMException('denied', 'SecurityError');
+    });
+    expect(getStoredSidebarCollapsed()).toBe(false);
+    getItem.mockRestore();
+  });
+
+  it('ignores localStorage write failures', () => {
+    const setItem = vi.spyOn(localStorage, 'setItem').mockImplementation(() => {
+      throw new DOMException('denied', 'SecurityError');
+    });
+    expect(() => setStoredSidebarWidth(240)).not.toThrow();
+    expect(() => setStoredSidebarCollapsed(true)).not.toThrow();
+    setItem.mockRestore();
   });
 
   it('reads and writes collapsed state', () => {

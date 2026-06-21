@@ -2426,23 +2426,80 @@ describe('App', () => {
 
     expect(localStorage.getItem('webchat_sidebar_width')).toBe('290');
     expect(document.body.classList.contains('sidebar-resizing')).toBe(false);
+  });
+
+  it('coalesces resize layout updates with requestAnimationFrame', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    const cancelSpy = vi.spyOn(window, 'cancelAnimationFrame');
+    const rafSpy = vi.spyOn(window, 'requestAnimationFrame').mockReturnValue(42);
+    render(<App />);
+    await screen.findByRole('heading', { name: 'NanoClaw' });
+
+    fireEvent(window, new Event('resize'));
+    fireEvent(window, new Event('resize'));
+    expect(cancelSpy).toHaveBeenCalledWith(42);
+
+    rafSpy.mockRestore();
+    cancelSpy.mockRestore();
+  });
+
+  it('cancels pending resize frame on unmount', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    const cancelSpy = vi.spyOn(window, 'cancelAnimationFrame');
+    vi.spyOn(window, 'requestAnimationFrame').mockReturnValue(99);
+    const { unmount } = render(<App />);
+    await screen.findByRole('heading', { name: 'NanoClaw' });
+    fireEvent(window, new Event('resize'));
+    unmount();
+    expect(cancelSpy).toHaveBeenCalledWith(99);
+    cancelSpy.mockRestore();
+  });
+
+  it('reverts sidebar width when a drag is cancelled after movement', async () => {
+    localStorage.setItem('webchat_sidebar_width', '290');
+    sessionStorage.setItem('webchat_token', 'secret');
+    render(<App />);
+    await screen.findByRole('heading', { name: 'NanoClaw' });
+
+    const layout = document.querySelector('.layout') as HTMLElement;
+    await waitFor(() => {
+      expect(layout.style.getPropertyValue('--sidebar-width')).toBe('290px');
+    });
+
+    const handle = screen.getByRole('separator', { name: 'Resize sidebar' });
+    handle.setPointerCapture = vi.fn();
+    handle.releasePointerCapture = vi.fn();
 
     fireEvent.pointerDown(handle, { clientX: 300, pointerId: 2, buttons: 1 });
-    handle.dispatchEvent(new PointerEvent('pointercancel', { clientX: 300, pointerId: 2, bubbles: true }));
+    await act(async () => {
+      handle.dispatchEvent(new PointerEvent('pointermove', { clientX: 350, pointerId: 2, bubbles: true }));
+    });
+    expect(layout.style.getPropertyValue('--sidebar-width')).toBe('340px');
+    await act(async () => {
+      handle.dispatchEvent(new PointerEvent('pointercancel', { clientX: 350, pointerId: 2, bubbles: true }));
+    });
     expect(document.body.classList.contains('sidebar-resizing')).toBe(false);
+    expect(localStorage.getItem('webchat_sidebar_width')).toBe('290');
+    expect(layout.style.getPropertyValue('--sidebar-width')).toBe('290px');
   });
 
   it('clamps sidebar width on window resize and tracks manual message scroll', async () => {
+    localStorage.setItem('webchat_sidebar_width', '400');
     sessionStorage.setItem('webchat_token', 'secret');
     vi.stubGlobal(
       'fetch',
       vi.fn(createFetchMock({ messages: [messageFixture] })),
     );
+    Object.defineProperty(window, 'innerWidth', { value: 1200, configurable: true });
     render(<App />);
     await screen.findByText('Agent reply');
 
+    const layout = document.querySelector('.layout') as HTMLElement;
     Object.defineProperty(window, 'innerWidth', { value: 400, configurable: true });
     fireEvent(window, new Event('resize'));
+    await waitFor(() => {
+      expect(layout.style.getPropertyValue('--sidebar-width')).toBe('200px');
+    });
 
     const messages = document.querySelector('.messages') as HTMLDivElement;
     Object.defineProperty(messages, 'scrollHeight', { value: 1000, configurable: true });
@@ -2551,8 +2608,10 @@ describe('App', () => {
 
     const layout = document.querySelector('.layout') as HTMLElement;
     const drawer = document.querySelector('.attachment-drawer') as HTMLElement;
-    expect(layout.style.getPropertyValue('--sidebar-width')).toBe('240px');
-    expect(drawer.style.width).toBe('268px');
+    await waitFor(() => {
+      expect(layout.style.getPropertyValue('--sidebar-width')).toBe('240px');
+      expect(drawer.style.width).toBe('268px');
+    });
   });
 
   it('clamps attachment drawer width from the main layout when resized', async () => {
