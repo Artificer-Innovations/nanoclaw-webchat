@@ -99,13 +99,26 @@ function bootstrapWithLobbyThreads(
   };
 }
 
+function messagesResponse(
+  messages: WebChatMessage[],
+  engagedAgents: string[] = [],
+): { messages: WebChatMessage[]; engagedAgents: string[] } {
+  return { messages, engagedAgents };
+}
+
 function createFetchMock(handlers: {
   bootstrap?: BootstrapPayload;
   messages?: WebChatMessage[];
-  messagesForThread?: (platformId: string, threadId: string) => WebChatMessage[];
+  engagedAgents?: string[];
+  disengageResult?: string[];
+  messagesForThread?: (
+    platformId: string,
+    threadId: string,
+  ) => { messages: WebChatMessage[]; engagedAgents?: string[] };
   bootstrapError?: number;
   messagesError?: number;
   sendError?: number;
+  disengageError?: number;
 }): FetchHandler {
   return async (input, init) => {
     const url = String(input);
@@ -114,6 +127,12 @@ function createFetchMock(handlers: {
         return jsonResponse(null, false, handlers.bootstrapError);
       }
       return jsonResponse(handlers.bootstrap ?? bootstrapFixture);
+    }
+    if (url.includes('/engaged/') && init?.method === 'DELETE') {
+      if (handlers.disengageError) {
+        return jsonResponse(null, false, handlers.disengageError);
+      }
+      return jsonResponse({ agents: handlers.disengageResult ?? [] });
     }
     if (url.includes('/messages') && init?.method === 'POST') {
       if (handlers.sendError) {
@@ -127,9 +146,12 @@ function createFetchMock(handlers: {
       }
       const path = parseMessagePath(url);
       if (handlers.messagesForThread && path) {
-        return jsonResponse({ messages: handlers.messagesForThread(path.platformId, path.threadId) });
+        const payload = handlers.messagesForThread(path.platformId, path.threadId);
+        return jsonResponse(messagesResponse(payload.messages, payload.engagedAgents ?? []));
       }
-      return jsonResponse({ messages: handlers.messages ?? [] });
+      return jsonResponse(
+        messagesResponse(handlers.messages ?? [], handlers.engagedAgents ?? []),
+      );
     }
     throw new Error(`Unhandled fetch: ${url}`);
   };
@@ -332,6 +354,209 @@ describe('App', () => {
     expect(await screen.findByText('Agent reply')).toBeInTheDocument();
     const replyRow = screen.getByText('Agent reply').closest('.msg');
     expect(replyRow?.querySelector('.msg-sender')?.textContent).toBe('Sarah');
+  });
+
+  it('shows engaged agents listening in the lobby composer', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          messages: [],
+          engagedAgents: ['sarah', 'team'],
+        }),
+      ),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+
+    render(<App />);
+
+    expect(await screen.findByRole('button', { name: 'Stop Sarah from listening' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Stop Team from listening' })).toBeInTheDocument();
+    expect(
+      screen.getByPlaceholderText("Message… agents you've @'d keep listening in this thread"),
+    ).toBeInTheDocument();
+  });
+
+  it('falls back to folder names for unknown engaged agents', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          messages: [],
+          engagedAgents: ['unknown-agent'],
+        }),
+      ),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+
+    render(<App />);
+
+    expect(await screen.findByRole('button', { name: 'Stop unknown-agent from listening' })).toBeInTheDocument();
+  });
+
+  it('optimistically adds mentioned agents to engaged state on send', async () => {
+    vi.stubGlobal('fetch', vi.fn(createFetchMock({ messages: [] })));
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    await user.type(screen.getByRole('textbox'), '@sarah hello');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+
+    expect(await screen.findByRole('button', { name: 'Stop Sarah from listening' })).toBeInTheDocument();
+
+    await user.type(screen.getByRole('textbox'), '@team join us');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+
+    expect(await screen.findByRole('button', { name: 'Stop Team from listening' })).toBeInTheDocument();
+  });
+
+  it('does not track engaged agents when sending in a DM', async () => {
+    vi.stubGlobal('fetch', vi.fn(createFetchMock({ messages: [] })));
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    await user.click(screen.getByRole('button', { name: 'Sarah' }));
+    await user.type(screen.getByRole('textbox'), 'direct hello');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+
+    expect(screen.queryByRole('button', { name: /Stop .* from listening/i })).not.toBeInTheDocument();
+  });
+
+  it('merges new mentions into existing engaged state on send', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(createFetchMock({ messages: [], engagedAgents: ['sarah'] })),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('button', { name: 'Stop Sarah from listening' });
+
+    await user.type(screen.getByRole('textbox'), '@team join us');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+
+    expect(await screen.findByRole('button', { name: 'Stop Team from listening' })).toBeInTheDocument();
+  });
+
+  it('keeps engaged state when sending a follow-up without new mentions', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(createFetchMock({ messages: [], engagedAgents: ['sarah'] })),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('button', { name: 'Stop Sarah from listening' });
+
+    await user.type(screen.getByRole('textbox'), 'thanks');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+
+    expect(screen.getByRole('button', { name: 'Stop Sarah from listening' })).toBeInTheDocument();
+  });
+
+  it('removes engaged agent when chip dismiss is clicked', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(createFetchMock({ messages: [], engagedAgents: ['sarah', 'team'], disengageResult: ['team'] })),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('button', { name: 'Stop Sarah from listening' });
+
+    await user.click(screen.getByRole('button', { name: 'Stop Sarah from listening' }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: 'Stop Sarah from listening' })).not.toBeInTheDocument();
+    });
+    expect(screen.getByRole('button', { name: 'Stop Team from listening' })).toBeInTheDocument();
+  });
+
+  it('restores engaged agents when disengage request fails', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          messages: [],
+          engagedAgents: ['sarah', 'team'],
+          disengageError: 500,
+        }),
+      ),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('button', { name: 'Stop Sarah from listening' });
+
+    await user.click(screen.getByRole('button', { name: 'Stop Sarah from listening' }));
+
+    expect(await screen.findByText('disengage failed: 500')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Stop Sarah from listening' })).toBeInTheDocument();
+  });
+
+  it('shows generic error when disengage throws a non-Error', async () => {
+    vi.spyOn(api, 'disengageAgent').mockRejectedValue('nope');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(createFetchMock({ messages: [], engagedAgents: ['sarah'] })),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('button', { name: 'Stop Sarah from listening' });
+
+    await user.click(screen.getByRole('button', { name: 'Stop Sarah from listening' }));
+
+    expect(await screen.findByText('Failed to remove agent')).toBeInTheDocument();
+    vi.mocked(api.disengageAgent).mockRestore();
+  });
+
+  it('skips engaged tracking when bootstrap lists no agents', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          bootstrap: { ...bootstrapFixture, agents: [] },
+          messages: [],
+        }),
+      ),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    await user.type(screen.getByRole('textbox'), '@sarah hello');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+
+    expect(screen.queryByRole('button', { name: /Stop .* from listening/i })).not.toBeInTheDocument();
+  });
+
+  it('updates engaged agents from websocket events', async () => {
+    vi.stubGlobal('fetch', vi.fn(createFetchMock({ messages: [] })));
+    const MockWebSocket = createWebSocketMock();
+    sessionStorage.setItem('webchat_token', 'secret');
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const ws = MockWebSocket.instances[0]!;
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: 'engaged',
+          platformId: 'lobby-1',
+          threadId: 'main',
+          agents: ['sarah'],
+        }),
+      } as MessageEvent);
+    });
+
+    expect(await screen.findByRole('button', { name: 'Stop Sarah from listening' })).toBeInTheDocument();
   });
 
   it('renders inline code and fenced blocks in chat messages', async () => {
@@ -621,8 +846,9 @@ describe('App', () => {
       'fetch',
       vi.fn(
         createFetchMock({
-          messagesForThread: (_platformId, threadId) =>
-            threadId === 'main' ? [messageFixture] : [],
+          messagesForThread: (_platformId, threadId) => ({
+            messages: threadId === 'main' ? [messageFixture] : [],
+          }),
         }),
       ),
     );
@@ -860,28 +1086,34 @@ describe('App', () => {
   it('syncs unread for inactive rooms when the socket opens and on interval', async () => {
     const fetchMessagesSpy = vi.spyOn(api, 'fetchMessages');
     fetchMessagesSpy.mockImplementation(async (_token, platformId, threadId, since = 0) => {
-      if (platformId === 'lobby-1' && threadId === 'main' && since === 0) return [];
+      if (platformId === 'lobby-1' && threadId === 'main' && since === 0) {
+        return { messages: [], engagedAgents: [] };
+      }
       if (platformId === 'dm-sarah' && threadId === 'main') {
-        return [
-          {
-            ...messageFixture,
-            id: 'sync-msg',
-            platformId: 'dm-sarah',
-            timestamp: since + 1000,
-          },
-        ];
+        return {
+          messages: [
+            {
+              ...messageFixture,
+              id: 'sync-msg',
+              platformId: 'dm-sarah',
+              timestamp: since + 1000,
+            },
+          ],
+        };
       }
       if (platformId === 'lobby-2' && threadId === 'main') {
-        return [
-          {
-            ...messageFixture,
-            id: 'sync-lobby-2',
-            platformId: 'lobby-2',
-            timestamp: since + 1000,
-          },
-        ];
+        return {
+          messages: [
+            {
+              ...messageFixture,
+              id: 'sync-lobby-2',
+              platformId: 'lobby-2',
+              timestamp: since + 1000,
+            },
+          ],
+        };
       }
-      return [];
+      return { messages: [], engagedAgents: [] };
     });
 
     sessionStorage.setItem('webchat_token', 'secret');
@@ -905,8 +1137,10 @@ describe('App', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const fetchMessagesSpy = vi.spyOn(api, 'fetchMessages');
     fetchMessagesSpy.mockImplementation(async (_token, platformId, threadId, since = 0) => {
-      if (platformId === 'lobby-1' && threadId === 'main' && since === 0) return [];
-      return [];
+      if (platformId === 'lobby-1' && threadId === 'main' && since === 0) {
+        return { messages: [], engagedAgents: [] };
+      }
+      return { messages: [], engagedAgents: [] };
     });
 
     sessionStorage.setItem('webchat_token', 'secret');
@@ -928,8 +1162,10 @@ describe('App', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const fetchMessagesSpy = vi.spyOn(api, 'fetchMessages');
     fetchMessagesSpy.mockImplementation(async (_token, platformId, threadId, since = 0) => {
-      if (platformId === 'lobby-1' && threadId === 'main' && since === 0) return [];
-      return [];
+      if (platformId === 'lobby-1' && threadId === 'main' && since === 0) {
+        return { messages: [], engagedAgents: [] };
+      }
+      return { messages: [], engagedAgents: [] };
     });
 
     sessionStorage.setItem('webchat_token', 'secret');
@@ -963,9 +1199,11 @@ describe('App', () => {
     });
     const fetchMessagesSpy = vi.spyOn(api, 'fetchMessages');
     fetchMessagesSpy.mockImplementation(async (_token, platformId, threadId, since = 0) => {
-      if (platformId === 'lobby-1' && threadId === 'main' && since === 0) return [];
+      if (platformId === 'lobby-1' && threadId === 'main' && since === 0) {
+        return { messages: [], engagedAgents: [] };
+      }
       await fetchGate;
-      return [];
+      return { messages: [], engagedAgents: [] };
     });
 
     vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -1020,9 +1258,11 @@ describe('App', () => {
   it('ignores background sync errors for inactive rooms', async () => {
     const fetchMessagesSpy = vi.spyOn(api, 'fetchMessages');
     fetchMessagesSpy.mockImplementation(async (_token, platformId, threadId, since = 0) => {
-      if (platformId === 'lobby-1' && threadId === 'main' && since === 0) return [];
+      if (platformId === 'lobby-1' && threadId === 'main' && since === 0) {
+        return { messages: [], engagedAgents: [] };
+      }
       if (platformId === 'dm-sarah') throw new Error('network');
-      return [];
+      return { messages: [], engagedAgents: [] };
     });
 
     sessionStorage.setItem('webchat_token', 'secret');

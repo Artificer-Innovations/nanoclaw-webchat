@@ -5,6 +5,7 @@ import {
   canSendMessage,
   clearUnread,
   DEFAULT_ROOM_THREADS,
+  engagedThreadKey,
   incrementUnread,
   isActiveConversation,
   markMessagesSeen,
@@ -37,7 +38,7 @@ import {
 import { MessageAttachments } from './MessageAttachments';
 import { formatMessageTime } from './format-message-time';
 import { FormattedMessage } from './FormattedMessage';
-import { messageSenderLabel } from './message-sender';
+import { engagedStateAfterSend, messageSenderLabel } from './message-sender';
 import { SendArrowIcon, PlusIcon } from './nav-icons';
 import { senderColor } from './sender-color';
 import { SidebarSection } from './SidebarRoom';
@@ -48,6 +49,7 @@ import {
   connectWebSocket,
   createThread,
   deleteThread,
+  disengageAgent,
   fetchBootstrap,
   fetchMessages,
   getStoredToken,
@@ -75,6 +77,7 @@ export function App() {
   const [threadId, setThreadId] = useState('main');
   const [messages, setMessages] = useState<WebChatMessage[]>([]);
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
+  const [engagedAgentsByThread, setEngagedAgentsByThread] = useState<Record<string, string[]>>({});
   const [draft, setDraft] = useState('');
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   const [composerDragOver, setComposerDragOver] = useState(false);
@@ -159,9 +162,15 @@ export function App() {
     if (!token || !room) return;
     let cancelled = false;
     fetchMessages(token, room.platformId, threadId)
-      .then((msgs) => {
+      .then(({ messages: msgs, engagedAgents }) => {
         if (!cancelled) {
           setMessages(msgs);
+          if (room.kind === 'lobby') {
+            setEngagedAgentsByThread((prev) => ({
+              ...prev,
+              [engagedThreadKey(room.platformId, threadId)]: engagedAgents,
+            }));
+          }
           const maxTs = markMessagesSeen(msgs, seenMessageIdsRef.current);
           syncCursorRef.current = updateSyncCursor(
             syncCursorRef.current,
@@ -183,6 +192,13 @@ export function App() {
     const connection = connectWebSocket(
       token,
       (event) => {
+        if (event.type === 'engaged') {
+          setEngagedAgentsByThread((prev) => ({
+            ...prev,
+            [engagedThreadKey(event.platformId, event.threadId)]: event.agents,
+          }));
+          return;
+        }
         if (event.type !== 'message') return;
         const msg = event.message;
         const seenIds = seenMessageIdsRef.current;
@@ -276,6 +292,13 @@ export function App() {
     return resolveActiveThreadTitle(threadsByRoom[room.platformId], threadId);
   }, [room, threadId, threadsByRoom]);
 
+  const engagedFolders = useMemo(() => {
+    if (!room || room.kind !== 'lobby') return [];
+    return engagedAgentsByThread[engagedThreadKey(room.platformId, threadId)] ?? [];
+  }, [room, threadId, engagedAgentsByThread]);
+
+  const hasEngagedAgents = engagedFolders.length > 0;
+
   const handleAuth = () => {
     const nextToken = tokenInput.trim();
     if (!nextToken) {
@@ -296,6 +319,23 @@ export function App() {
     },
     [],
   );
+
+  const handleDisengageAgent = async (agentFolder: string) => {
+    const activeRoom = room!;
+    const key = engagedThreadKey(activeRoom.platformId, threadId);
+    const prior = engagedFolders;
+    setEngagedAgentsByThread((prev) => ({
+      ...prev,
+      [key]: prior.filter((folder) => folder !== agentFolder),
+    }));
+    try {
+      const agents = await disengageAgent(token, activeRoom.platformId, threadId, agentFolder);
+      setEngagedAgentsByThread((prev) => ({ ...prev, [key]: agents }));
+    } catch (err) {
+      setEngagedAgentsByThread((prev) => ({ ...prev, [key]: prior }));
+      setError(err instanceof Error ? err.message : 'Failed to remove agent');
+    }
+  };
 
   const handleSend = async () => {
     if (!canSendMessage(token, room, draft, sending, pendingAttachments.length)) return;
@@ -321,6 +361,12 @@ export function App() {
       ...(attachments.length > 0 ? { attachments } : {}),
     };
     setMessages((prev) => [...prev, optimistic]);
+    if (activeRoom.kind === 'lobby' && bootstrap?.agents.length) {
+      const engagedKey = engagedThreadKey(activeRoom.platformId, activeThread);
+      setEngagedAgentsByThread((prev) =>
+        engagedStateAfterSend(prev, engagedKey, text, bootstrap.agents),
+      );
+    }
     const threadKey = unreadKey(activeRoom.platformId, activeThread);
     pendingOptimisticByThreadRef.current[threadKey] = [
       ...(pendingOptimisticByThreadRef.current[threadKey] ?? []),
@@ -601,6 +647,27 @@ export function App() {
             onDragLeave={handleComposerDragLeave}
             onDrop={handleComposerDrop}
           >
+            {hasEngagedAgents && (
+              <div className="composer-engaged-chips">
+                {engagedFolders.map((folder) => {
+                  const name =
+                    bootstrap?.agents.find((a) => a.folder === folder)?.name ?? folder;
+                  return (
+                    <span key={folder} className="composer-engaged-chip">
+                      {name}
+                      <button
+                        type="button"
+                        className="composer-engaged-chip-remove"
+                        aria-label={`Stop ${name} from listening`}
+                        onClick={() => void handleDisengageAgent(folder)}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  );
+                })}
+              </div>
+            )}
             {pendingAttachments.length > 0 && (
               <div className="composer-previews">
                 {pendingAttachments.map((att, index) => (
@@ -654,7 +721,9 @@ export function App() {
                 onChange={(e) => setDraft(e.target.value)}
                 placeholder={
                   room.kind === 'lobby'
-                    ? 'Message… use @folder to reach an agent (e.g. @sarah hello)'
+                    ? hasEngagedAgents
+                      ? "Message… agents you've @'d keep listening in this thread"
+                      : 'Message… use @folder to reach an agent (e.g. @sarah hello)'
                     : 'Message…'
                 }
                 onKeyDown={(e) => {

@@ -81,9 +81,12 @@ Returns persisted history for a thread from `data/webchat.db` (newest last).
         }
       ]
     }
-  ]
+  ],
+  "engagedAgents": ["sarah", "diego"]
 }
 ```
+
+- `engagedAgents`: agent **folder** strings for agents previously @'d in this lobby thread. Omitted or `[]` when none. DM rooms may omit or return `[]`.
 
 ### `POST /api/rooms/:platformId/threads/:threadId/messages`
 
@@ -152,6 +155,21 @@ Optional typing events:
 ```json
 { "type": "typing", "platformId": "lobby", "threadId": "thread_abc" }
 ```
+
+Engaged-agent updates (lobby threads — when agents are @'d or removed via UI):
+
+```json
+{
+  "type": "engaged",
+  "platformId": "lobby",
+  "threadId": "thread_abc",
+  "agents": ["sarah", "diego"]
+}
+```
+
+### `DELETE /api/rooms/:platformId/threads/:threadId/engaged/:agentFolder`
+
+Lobby only. Removes one agent from the thread engaged set (UI × chip). Response: `{ "agents": ["diego"] }`. Broadcasts the same `engaged` WebSocket event.
 
 ## Thread IDs
 

@@ -71,4 +71,16 @@ export interface WsTypingEvent {
   threadId: string;
 }
 
-export type WsEvent = WsMessageEvent | WsTypingEvent;
+export interface ThreadMessagesPayload {
+  messages: WebChatMessage[];
+  engagedAgents: string[];
+}
+
+export interface WsEngagedEvent {
+  type: 'engaged';
+  platformId: string;
+  threadId: string;
+  agents: string[];
+}
+
+export type WsEvent = WsMessageEvent | WsTypingEvent | WsEngagedEvent;

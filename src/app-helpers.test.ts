@@ -301,9 +301,9 @@ describe('app-helpers', () => {
       const seenIds = new Set<string>();
       const fetchMessagesFn = vi.fn(async (_token, platformId: string) => {
         if (platformId === 'dm-sarah') {
-          return [{ ...message, id: 'sync-1', platformId: 'dm-sarah', timestamp: 100 }];
+          return { messages: [{ ...message, id: 'sync-1', platformId: 'dm-sarah', timestamp: 100 }] };
         }
-        return [];
+        return { messages: [] };
       });
 
       const result = await syncInactiveUnread(
@@ -330,8 +330,10 @@ describe('app-helpers', () => {
         agents: [],
       };
       const fetchMessagesFn = vi.fn(async (_token, _platformId, _threadId, since = 0) => {
-        if (since < 5000) return [{ ...message, id: 'old-1', platformId: 'dm-mei', timestamp: 1 }];
-        return [];
+        if (since < 5000) {
+          return { messages: [{ ...message, id: 'old-1', platformId: 'dm-mei', timestamp: 1 }] };
+        }
+        return { messages: [] };
       });
 
       const result = await syncInactiveUnread(
@@ -372,7 +374,7 @@ describe('app-helpers', () => {
       };
       const fetchMessagesFn = vi.fn(async (_token, platformId: string) => {
         if (platformId === 'dm-sarah') throw new Error('network');
-        return [];
+        return { messages: [] };
       });
 
       await expect(
