@@ -1,17 +1,10 @@
 import { highlightCodeHtml } from './code-highlight';
 import { CODE_HIGHLIGHT_STYLES } from './code-highlight-styles';
 import { csvDelimiterFromAttachment, limitCsvPreviewRows, parseCsv, renderCsvTableHtml } from './csv-preview';
+import { escapeHtml } from './html-escape';
 
 /** HTML previews: run JS in an isolated origin; never add allow-same-origin (parent/token access). */
 export const ATTACHMENT_HTML_IFRAME_SANDBOX = 'allow-scripts allow-popups allow-modals';
-
-export function escapeHtml(text: string): string {
-  return text
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;');
-}
 
 const POPOUT_STYLES = `
 :root {

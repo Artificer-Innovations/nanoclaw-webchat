@@ -10,7 +10,10 @@ import {
 export function CsvPreview({ text, name }: { text: string; name: string }) {
   const delimiter = csvDelimiterFromAttachment(name);
   const parsed = useMemo(() => parseCsv(text, delimiter), [delimiter, text]);
-  const { rows, truncated } = useMemo(() => limitCsvPreviewRows(parsed), [parsed]);
+  const { rows, truncated, previewDataRowCount } = useMemo(
+    () => limitCsvPreviewRows(parsed),
+    [parsed],
+  );
   const columnCount = useMemo(() => csvColumnCount(rows), [rows]);
 
   if (rows.length === 0) {
@@ -24,7 +27,7 @@ export function CsvPreview({ text, name }: { text: string; name: string }) {
     <div className="attachment-drawer-csv-wrap">
       {truncated ? (
         <p className="attachment-drawer-csv-truncated">
-          Showing first {rows.length.toLocaleString()} rows.
+          Showing first {previewDataRowCount.toLocaleString()} data rows.
         </p>
       ) : null}
       <table className="attachment-drawer-csv">

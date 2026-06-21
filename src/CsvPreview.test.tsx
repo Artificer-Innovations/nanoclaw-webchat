@@ -19,6 +19,6 @@ describe('CsvPreview', () => {
   it('shows a truncation notice for large csv files', () => {
     const rows = Array.from({ length: 1001 }, (_, index) => String(index)).join('\n');
     render(<CsvPreview name="large.csv" text={`h\n${rows}`} />);
-    expect(screen.getByText('Showing first 1,000 rows.')).toBeInTheDocument();
+    expect(screen.getByText('Showing first 1,000 data rows.')).toBeInTheDocument();
   });
 });

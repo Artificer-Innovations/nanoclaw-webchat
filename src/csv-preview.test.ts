@@ -57,12 +57,17 @@ describe('csv-preview', () => {
     expect(csvColumnCount([['a', 'b'], ['c']])).toBe(2);
   });
 
-  it('limits csv preview rows and shows a truncation notice', () => {
-    const rows = Array.from({ length: 1001 }, (_, index) => [`row-${index}`]);
+  it('limits csv preview data rows and shows a truncation notice', () => {
+    const rows = [
+      ['header'],
+      ...Array.from({ length: 1001 }, (_, index) => [`row-${index}`]),
+    ];
     const limited = limitCsvPreviewRows(rows);
     expect(limited.truncated).toBe(true);
-    expect(limited.rows).toHaveLength(1000);
-    expect(renderCsvTableHtml(limited.rows, true)).toContain('Showing first 1,000 rows.');
+    expect(limited.previewDataRowCount).toBe(1000);
+    expect(limited.rows).toHaveLength(1001);
+    expect(limited.rows[0]).toEqual(['header']);
+    expect(renderCsvTableHtml(limited.rows, true)).toContain('Showing first 1,000 data rows.');
   });
 
   it('renders csv tables with escaped html', () => {

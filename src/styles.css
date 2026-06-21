@@ -857,8 +857,8 @@ body {
   background: var(--panel);
   color: var(--accent);
   text-decoration: none;
+  font-family: inherit;
   font-size: 0.875rem;
-  font: inherit;
 }
 
 .msg-attachment-file:hover {

@@ -1,5 +1,5 @@
 import { attachmentExtension } from './attachment-code';
-import { escapeHtml } from './attachment-text-popout';
+import { escapeHtml } from './html-escape';
 
 export function isCsvAttachment(mimeType: string, name = ''): boolean {
   if (
@@ -17,13 +17,27 @@ export function csvDelimiterFromAttachment(name: string): string {
   return attachmentExtension(name) === '.tsv' ? '\t' : ',';
 }
 
-export const CSV_MAX_PREVIEW_ROWS = 1000;
+export const CSV_MAX_PREVIEW_DATA_ROWS = 1000;
 
-export function limitCsvPreviewRows(rows: string[][]): { rows: string[][]; truncated: boolean } {
-  if (rows.length <= CSV_MAX_PREVIEW_ROWS) {
-    return { rows, truncated: false };
+export function limitCsvPreviewRows(rows: string[][]): {
+  rows: string[][];
+  truncated: boolean;
+  previewDataRowCount: number;
+} {
+  if (rows.length === 0) {
+    return { rows, truncated: false, previewDataRowCount: 0 };
   }
-  return { rows: rows.slice(0, CSV_MAX_PREVIEW_ROWS), truncated: true };
+
+  const [header, ...body] = rows;
+  if (body.length <= CSV_MAX_PREVIEW_DATA_ROWS) {
+    return { rows, truncated: false, previewDataRowCount: body.length };
+  }
+
+  return {
+    rows: [header, ...body.slice(0, CSV_MAX_PREVIEW_DATA_ROWS)],
+    truncated: true,
+    previewDataRowCount: CSV_MAX_PREVIEW_DATA_ROWS,
+  };
 }
 
 /** Parse RFC 4180-style CSV/TSV into rows of fields. */
@@ -110,7 +124,7 @@ export function renderCsvTableHtml(rows: string[][], truncated = false): string 
     .join('');
 
   const truncatedNotice = truncated
-    ? `<p class="csv-truncated">Showing first ${CSV_MAX_PREVIEW_ROWS.toLocaleString()} rows.</p>`
+    ? `<p class="csv-truncated">Showing first ${CSV_MAX_PREVIEW_DATA_ROWS.toLocaleString()} data rows.</p>`
     : '';
 
   return `${truncatedNotice}<div class="csv-table-wrap"><table class="csv-table"><thead><tr>${headHtml}</tr></thead><tbody>${bodyHtml}</tbody></table></div>`;

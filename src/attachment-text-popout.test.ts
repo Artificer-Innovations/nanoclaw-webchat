@@ -6,19 +6,12 @@ import {
   buildHtmlPopoutDocument,
   buildMarkdownPopoutDocument,
   buildPlainTextPopoutDocument,
-  escapeHtml,
   openHtmlDocumentInNewTab,
 } from './attachment-text-popout';
 
 describe('attachment-text-popout', () => {
   afterEach(() => {
     vi.restoreAllMocks();
-  });
-
-  it('escapes html in popout documents', () => {
-    expect(escapeHtml(`<script>"x"&</script>`)).toBe(
-      '&lt;script&gt;&quot;x&quot;&amp;&lt;/script&gt;',
-    );
   });
 
   it('builds a markdown popout document with preview and raw views', async () => {
