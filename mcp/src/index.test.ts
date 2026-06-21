@@ -4,6 +4,7 @@ vi.mock('./config.js', () => ({
   loadConfig: vi.fn(() => ({
     apiBase: 'http://127.0.0.1:3200',
     secret: 'secret',
+    requestTimeoutMs: 30_000,
   })),
 }));
 
@@ -33,7 +34,7 @@ describe('index entry', () => {
     await import('./index.js');
     expect(loadConfig).toHaveBeenCalled();
     expect(createWebchatMcpServer).toHaveBeenCalledWith({
-      config: { apiBase: 'http://127.0.0.1:3200', secret: 'secret' },
+      config: { apiBase: 'http://127.0.0.1:3200', secret: 'secret', requestTimeoutMs: 30_000 },
     });
     expect(StdioServerTransport).toHaveBeenCalled();
     expect(connect).toHaveBeenCalled();

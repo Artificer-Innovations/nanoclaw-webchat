@@ -192,11 +192,12 @@ Thread metadata and message history are stored in `data/webchat.db` on the host.
 
 ## MCP integration
 
-The [`mcp/`](../mcp/) package provides a stdio MCP server for external clients (Cursor, Claude Desktop, etc.).
+The [`mcp/`](./mcp/) package provides a stdio MCP server for external clients (Cursor, Claude Desktop, etc.).
 
 | Env var | Default | Purpose |
 |---------|---------|---------|
 | `WEBCHAT_API_BASE` | `http://127.0.0.1:3200` | REST base URL |
 | `WEBCHAT_SECRET` | *(required)* | Bearer token (same as browser UI) |
+| `WEBCHAT_REQUEST_TIMEOUT_MS` | `30000` | Per-request fetch timeout in milliseconds |
 
-Tools wrap the REST endpoints above: bootstrap for channel/agent discovery, thread CRUD via `POST/PATCH/DELETE .../threads`, messages via GET/POST `.../messages`. After sending, clients poll read endpoints with `since=<timestamp>` to collect agent replies (same pattern as Slack MCP).
+MCP tools wrap a subset of the REST endpoints above: bootstrap for channel/agent/thread discovery, `POST .../threads` to create threads, and GET/POST `.../messages` for reads and sends. After sending, clients poll read endpoints with `since=<timestamp>` every 2–5 seconds to collect agent replies (same pattern as Slack MCP).

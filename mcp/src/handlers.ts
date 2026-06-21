@@ -109,15 +109,15 @@ export interface SendMessageArgs {
   platformId: string;
   message: string;
   threadId?: string;
-  attachment_paths?: string[];
+  attachmentPaths?: string[];
 }
 
 export async function handleSendMessage(deps: ToolDeps, args: SendMessageArgs) {
   const threadId = args.threadId ?? 'main';
   try {
     let attachments;
-    if (args.attachment_paths?.length) {
-      const result = readAttachmentPaths(args.attachment_paths);
+    if (args.attachmentPaths?.length) {
+      const result = readAttachmentPaths(args.attachmentPaths);
       if (result.errors.length > 0) {
         return errorResult(result.errors.join('; '));
       }
@@ -178,7 +178,10 @@ export async function handleListThreads(deps: ToolDeps, platformId: string) {
   try {
     const bootstrap = await deps.client.fetchBootstrap();
     const room = bootstrap.rooms.find((r) => r.platformId === platformId);
-    const threads = room?.threads ?? [{ id: 'main', title: 'Main' }];
+    if (!room) {
+      return errorResult(`No channel found with platformId: ${platformId}`);
+    }
+    const threads = room.threads ?? [{ id: 'main', title: 'Main' }];
     const lines = threads.map((t) => `- ${t.title} (threadId: ${t.id})`);
     return textResult(`Threads in ${platformId}:\n${lines.join('\n')}`);
   } catch (err) {
@@ -191,20 +194,45 @@ export const toolSchemas = {
   listAgents: { query: z.string().optional() },
   readChannel: {
     platformId: z.string(),
-    limit: z.number().int().min(1).max(500).optional(),
-    since: z.number().int().nonnegative().optional(),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(500)
+      .optional()
+      .describe('Client-side display cap after full fetch (default 50). Does not limit server transfer.'),
+    since: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .describe('Unix timestamp in milliseconds. Bounds server response; prefer for polling large channels.'),
   },
   readThread: {
     platformId: z.string(),
     threadId: z.string(),
-    limit: z.number().int().min(1).max(500).optional(),
-    since: z.number().int().nonnegative().optional(),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(500)
+      .optional()
+      .describe('Client-side display cap after full fetch (default 50). Does not limit server transfer.'),
+    since: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .describe('Unix timestamp in milliseconds. Bounds server response; prefer for polling large threads.'),
   },
   sendMessage: {
     platformId: z.string(),
-    message: z.string(),
+    message: z.string().describe('Message text (required unless attachmentPaths provided)'),
     threadId: z.string().optional(),
-    attachment_paths: z.array(z.string()).optional(),
+    attachmentPaths: z
+      .array(z.string())
+      .optional()
+      .describe('Local file paths on the host running the MCP server (max 4, 5 MB each)'),
   },
   createThread: {
     platformId: z.string(),

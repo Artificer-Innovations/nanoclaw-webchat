@@ -30,37 +30,39 @@ function mockClient(): WebchatClient {
 }
 
 describe('wireWebchatTools', () => {
-  let handlers: Array<(args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }>>;
+  let handlerMap: Record<string, (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }>>;
   let deps: ToolDeps;
 
   beforeEach(() => {
-    handlers = [];
+    handlerMap = {};
     deps = { client: mockClient(), log: vi.fn() };
     const server = {
-      tool: vi.fn((_name, _desc, _schema, handler) => {
-        handlers.push(handler);
+      tool: vi.fn((name, _desc, _schema, handler) => {
+        handlerMap[name] = handler;
       }),
     };
     wireWebchatTools(server as unknown as McpServer, deps);
-    expect(handlers).toHaveLength(7);
+    expect(Object.keys(handlerMap)).toHaveLength(7);
   });
 
   it('invokes all registered tool handlers', async () => {
-    expect((await handlers[0]!({ query: 'lobby' })).content[0]!.text).toContain('Lobby');
-    expect((await handlers[1]!({ query: 'sarah' })).content[0]!.text).toContain('Sarah');
-    expect((await handlers[2]!({ platformId: 'lobby', limit: 10, since: 1000 })).content[0]!.text).toContain(
-      'Reply',
-    );
+    expect((await handlerMap.webchat_list_channels!({ query: 'lobby' })).content[0]!.text).toContain('Lobby');
+    expect((await handlerMap.webchat_list_agents!({ query: 'sarah' })).content[0]!.text).toContain('Sarah');
     expect(
-      (await handlers[3]!({ platformId: 'lobby', threadId: 'main', limit: 10, since: 1000 })).content[0]!.text,
+      (await handlerMap.webchat_read_channel!({ platformId: 'lobby', limit: 10, since: 1000 })).content[0]!.text,
     ).toContain('Reply');
     expect(
-      (await handlers[4]!({ platformId: 'lobby', message: 'hi', threadId: 'main' })).content[0]!.text,
+      (await handlerMap.webchat_read_thread!({ platformId: 'lobby', threadId: 'main', limit: 10, since: 1000 }))
+        .content[0]!.text,
+    ).toContain('Reply');
+    expect(
+      (await handlerMap.webchat_send_message!({ platformId: 'lobby', message: 'hi', threadId: 'main' })).content[0]!
+        .text,
     ).toContain('web-99');
-    expect((await handlers[5]!({ platformId: 'lobby', title: 'Task' })).content[0]!.text).toContain(
+    expect((await handlerMap.webchat_create_thread!({ platformId: 'lobby', title: 'Task' })).content[0]!.text).toContain(
       'thread_new',
     );
-    expect((await handlers[6]!({ platformId: 'lobby' })).content[0]!.text).toContain('Main');
+    expect((await handlerMap.webchat_list_threads!({ platformId: 'lobby' })).content[0]!.text).toContain('Main');
   });
 });
 
@@ -70,6 +72,7 @@ describe('createWebchatMcpServer', () => {
       config: {
         apiBase: 'http://127.0.0.1:3200',
         secret: 'secret',
+        requestTimeoutMs: 30_000,
       },
     });
     expect(server).toBeDefined();

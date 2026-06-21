@@ -97,7 +97,7 @@ See [`mcp/mcp.example.json`](./mcp/mcp.example.json) for a template.
 1. `webchat_list_agents` — pick an agent or use `lobby`
 2. `webchat_create_thread` — optional, for an isolated session
 3. `webchat_send_message` — e.g. `@sarah review this diff`
-4. `webchat_read_thread` with `since=<timestamp from send>` — poll until agent replies appear
+4. `webchat_read_thread` with `since=<timestamp from send>` — poll every **2–5 seconds** until agent replies appear (avoid tight loops)
 
 ## License
 

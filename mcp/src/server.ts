@@ -39,7 +39,7 @@ export function wireWebchatTools(server: McpServer, deps: ToolDeps): void {
 
   server.tool(
     'webchat_read_channel',
-    'Read messages from a channel main thread (threadId=main). Read-only. Use since (ms epoch) for incremental reads after sending a message. Poll repeatedly until outbound agent messages appear.',
+    'Read messages from a channel main thread (threadId=main). Read-only. Fetches full channel history and truncates client-side; for large channels or polling, use since (Unix ms timestamp) to bound the server response. limit is a client-side display cap only (default 50), not server pagination. After sending, poll with since=timestamp every 2–5 seconds until outbound agent messages appear.',
     toolSchemas.readChannel,
     async ({ platformId, limit, since }) =>
       handleReadChannel(deps, platformId, limit, since),
@@ -47,7 +47,7 @@ export function wireWebchatTools(server: McpServer, deps: ToolDeps): void {
 
   server.tool(
     'webchat_read_thread',
-    'Read messages from a specific thread. Read-only. Use since (ms epoch) for incremental reads after webchat_send_message.',
+    'Read messages from a specific thread. Read-only. Fetches full thread history and truncates client-side; for large threads or polling, use since (Unix ms timestamp) to bound the server response. limit is a client-side display cap only (default 50), not server pagination. Poll with since=timestamp every 2–5 seconds after webchat_send_message.',
     toolSchemas.readThread,
     async ({ platformId, threadId, limit, since }) =>
       handleReadThread(deps, platformId, threadId, limit, since),
@@ -55,7 +55,7 @@ export function wireWebchatTools(server: McpServer, deps: ToolDeps): void {
 
   server.tool(
     'webchat_send_message',
-    'Send a message to a web chat channel or thread. In lobby, include @mention to route to an agent. After sending, call webchat_read_channel or webchat_read_thread with since=timestamp to collect agent replies.',
+    'Send a message to a web chat channel or thread. In lobby, include @mention to route to an agent. attachmentPaths are local file paths on the host running this MCP server (max 4, 5 MB each). After sending, call webchat_read_channel or webchat_read_thread with since=timestamp to collect agent replies; wait 2–5 seconds between polls.',
     toolSchemas.sendMessage,
     async (args) => handleSendMessage(deps, args),
   );
@@ -69,7 +69,7 @@ export function wireWebchatTools(server: McpServer, deps: ToolDeps): void {
 
   server.tool(
     'webchat_list_threads',
-    'List threads for a channel from server state (includes main and server-created threads).',
+    'List threads for a channel by fetching bootstrap and extracting that channel thread list (includes main and server-created threads).',
     toolSchemas.listThreads,
     async ({ platformId }) => handleListThreads(deps, platformId),
   );
@@ -79,7 +79,11 @@ export function createWebchatMcpServer(options: CreateWebchatMcpServerOptions): 
   const { config } = options;
   const client =
     options.client ??
-    new WebchatClient({ apiBase: config.apiBase, secret: config.secret });
+    new WebchatClient({
+      apiBase: config.apiBase,
+      secret: config.secret,
+      timeoutMs: config.requestTimeoutMs,
+    });
 
   const deps: ToolDeps = { client, log: webchatLog };
 

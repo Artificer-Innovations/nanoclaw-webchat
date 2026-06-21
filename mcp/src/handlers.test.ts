@@ -215,7 +215,7 @@ describe('handlers', () => {
     const result = await handleSendMessage(deps, {
       platformId: 'lobby',
       message: 'see file',
-      attachment_paths: ['/missing.txt'],
+      attachmentPaths: ['/missing.txt'],
     });
     expect(result.isError).toBe(true);
   });
@@ -226,7 +226,7 @@ describe('handlers', () => {
     const result = await handleSendMessage(deps, {
       platformId: 'lobby',
       message: '',
-      attachment_paths: [filePath],
+      attachmentPaths: [filePath],
     });
     expect(result.isError).toBeUndefined();
     expect(deps.client.sendMessage).toHaveBeenCalled();
@@ -274,9 +274,10 @@ describe('handlers', () => {
     expect(listed.content[0]!.text).toContain('Main');
   });
 
-  it('handleListThreads falls back to main for unknown room', async () => {
+  it('handleListThreads errors for unknown room', async () => {
     const listed = await handleListThreads(deps, 'unknown');
-    expect(listed.content[0]!.text).toContain('Main');
+    expect(listed.isError).toBe(true);
+    expect(listed.content[0]!.text).toContain('No channel found with platformId: unknown');
   });
 
   it('handleListThreads falls back when room has no threads array', async () => {
