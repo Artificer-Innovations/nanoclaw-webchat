@@ -28,6 +28,121 @@ describe('AttachmentDrawer', () => {
     );
     expect(screen.getByText('Loading…')).toBeInTheDocument();
     expect(await screen.findByRole('heading', { level: 1, name: 'Hello' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'View mode' })).toBeInTheDocument();
+  });
+
+  it('toggles markdown attachments between preview and raw views', async () => {
+    vi.spyOn(attachments, 'fetchAttachmentText').mockResolvedValue('# Hello');
+    render(
+      <AttachmentDrawer
+        attachment={{
+          name: 'notes.md',
+          mimeType: 'text/markdown',
+          type: 'file',
+          data: 'IyBIZWxsbw==',
+        }}
+        token="secret"
+        onClose={vi.fn()}
+      />,
+    );
+    await screen.findByRole('heading', { level: 1, name: 'Hello' });
+    fireEvent.click(screen.getByRole('button', { name: 'Raw' }));
+    expect(screen.getByText('# Hello')).toHaveClass('attachment-drawer-raw');
+    expect(screen.queryByRole('heading', { level: 1, name: 'Hello' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+    expect(await screen.findByRole('heading', { level: 1, name: 'Hello' })).toBeInTheDocument();
+  });
+
+  it('shows pop-out for plain text attachments', async () => {
+    vi.spyOn(attachments, 'fetchAttachmentText').mockResolvedValue('hello');
+    const openSpy = vi.spyOn(attachments, 'openPlainTextAttachmentInNewTab').mockResolvedValue(true);
+    render(
+      <AttachmentDrawer
+        attachment={{
+          name: 'notes.txt',
+          mimeType: 'text/plain',
+          type: 'file',
+          data: 'aGVsbG8=',
+        }}
+        token="secret"
+        onClose={vi.fn()}
+      />,
+    );
+    expect(await screen.findByText('hello')).toHaveClass('attachment-drawer-text');
+    fireEvent.click(screen.getByRole('button', { name: 'Open notes.txt in new tab' }));
+    expect(openSpy).toHaveBeenCalled();
+    expect(screen.queryByRole('group', { name: 'View mode' })).not.toBeInTheDocument();
+  });
+
+  it('preserves blank lines in plain text previews', async () => {
+    vi.spyOn(attachments, 'fetchAttachmentText').mockResolvedValue('first\n\nsecond');
+    render(
+      <AttachmentDrawer
+        attachment={{
+          name: 'notes.txt',
+          mimeType: 'text/plain',
+          type: 'file',
+          data: btoa('first\n\nsecond'),
+        }}
+        token="secret"
+        onClose={vi.fn()}
+      />,
+    );
+    const preview = await screen.findByText(/first/);
+    expect(preview).toHaveClass('attachment-drawer-text');
+    expect(preview.textContent).toBe('first\n\nsecond');
+  });
+
+  it('opens markdown attachments in a rendered pop-out tab', async () => {
+    vi.spyOn(attachments, 'fetchAttachmentText').mockResolvedValue('# Popout');
+    const openSpy = vi.spyOn(attachments, 'openMarkdownAttachmentInNewTab').mockResolvedValue(true);
+    render(
+      <AttachmentDrawer
+        attachment={{
+          name: 'notes.md',
+          mimeType: 'text/markdown',
+          type: 'file',
+          data: 'IyBIZWxsbw==',
+        }}
+        token="secret"
+        onClose={vi.fn()}
+      />,
+    );
+    await screen.findByRole('heading', { level: 1, name: 'Popout' });
+    fireEvent.click(screen.getByRole('button', { name: 'Open notes.md in new tab' }));
+    expect(openSpy).toHaveBeenCalled();
+  });
+
+  it('resets text view to preview when switching attachments', async () => {
+    const { rerender } = render(
+      <AttachmentDrawer
+        attachment={{
+          name: 'first.md',
+          mimeType: 'text/markdown',
+          type: 'file',
+          data: 'IyBGaXJzdA==',
+        }}
+        token="secret"
+        onClose={vi.fn()}
+      />,
+    );
+    await screen.findByRole('heading', { level: 1, name: 'First' });
+    fireEvent.click(screen.getByRole('button', { name: 'Raw' }));
+    expect(screen.getByText('# First')).toBeInTheDocument();
+    rerender(
+      <AttachmentDrawer
+        attachment={{
+          name: 'second.md',
+          mimeType: 'text/markdown',
+          type: 'file',
+          data: 'IyBTZWNvbmQ=',
+        }}
+        token="secret"
+        onClose={vi.fn()}
+      />,
+    );
+    expect(await screen.findByRole('heading', { level: 1, name: 'Second' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Preview' })).toHaveAttribute('aria-pressed', 'true');
   });
 
   it('shows an error when markdown content cannot load', async () => {
@@ -85,7 +200,8 @@ describe('AttachmentDrawer', () => {
     expect(iframe).not.toHaveAttribute('sandbox');
   });
 
-  it('renders html attachments in a sandboxed iframe with pop-out', () => {
+  it('renders html attachments in a sandboxed iframe with preview/raw toggle', async () => {
+    vi.spyOn(attachments, 'fetchAttachmentText').mockResolvedValue('<h1>Hello</h1>');
     const { container } = render(
       <AttachmentDrawer
         attachment={{
@@ -101,7 +217,142 @@ describe('AttachmentDrawer', () => {
     const iframe = container.querySelector('.attachment-drawer-embed');
     expect(iframe).toHaveAttribute('src', 'data:text/html;base64,PGgxPkhlbGxvPC9oMT4=');
     expect(iframe).toHaveAttribute('sandbox', attachments.ATTACHMENT_HTML_IFRAME_SANDBOX);
+    expect(screen.getByRole('group', { name: 'View mode' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Raw' }));
+    expect(await screen.findByText('<h1>Hello</h1>')).toHaveClass('attachment-drawer-raw');
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+    expect(container.querySelector('.attachment-drawer-embed')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Open page.html in new tab' })).toBeInTheDocument();
+  });
+
+  it('opens html attachments in a preview/raw pop-out tab', async () => {
+    vi.spyOn(attachments, 'fetchAttachmentText').mockResolvedValue('<h1>Popout</h1>');
+    const openSpy = vi.spyOn(attachments, 'openHtmlAttachmentInNewTab').mockResolvedValue(true);
+    render(
+      <AttachmentDrawer
+        attachment={{
+          name: 'page.html',
+          mimeType: 'text/html',
+          type: 'file',
+          data: 'PGgxPkhlbGxvPC9oMT4=',
+        }}
+        token="secret"
+        onClose={vi.fn()}
+      />,
+    );
+    await screen.findByRole('group', { name: 'View mode' });
+    fireEvent.click(screen.getByRole('button', { name: 'Open page.html in new tab' }));
+    expect(openSpy).toHaveBeenCalled();
+  });
+
+  it('keeps html preview visible when raw content fails to load', async () => {
+    vi.spyOn(attachments, 'fetchAttachmentText').mockResolvedValue(null);
+    const { container } = render(
+      <AttachmentDrawer
+        attachment={{
+          name: 'page.html',
+          mimeType: 'text/html',
+          type: 'file',
+          data: 'PGgxPkhlbGxvPC9oMT4=',
+        }}
+        token="secret"
+        onClose={vi.fn()}
+      />,
+    );
+    expect(container.querySelector('.attachment-drawer-embed')).toBeTruthy();
+    expect(screen.queryByText('Could not load attachment content.')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Raw' }));
+    expect(await screen.findByText('Could not load attachment content.')).toBeInTheDocument();
+  });
+
+  it('shows loading for html raw view while content is fetched', async () => {
+    let resolveText: (value: string | null) => void = () => {};
+    vi.spyOn(attachments, 'fetchAttachmentText').mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveText = resolve;
+        }),
+    );
+    render(
+      <AttachmentDrawer
+        attachment={{
+          name: 'page.html',
+          mimeType: 'text/html',
+          type: 'file',
+          url: '/api/attachments/msg-1/page.html',
+        }}
+        token="secret"
+        onClose={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Raw' }));
+    expect(screen.getByText('Loading…')).toBeInTheDocument();
+    await act(async () => {
+      resolveText('<p>Loaded</p>');
+    });
+    expect(await screen.findByText('<p>Loaded</p>')).toBeInTheDocument();
+  });
+
+  it('shows an error for html attachments without a preview url', async () => {
+    vi.spyOn(attachments, 'fetchAttachmentText').mockResolvedValue(null);
+    render(
+      <AttachmentDrawer
+        attachment={{
+          name: 'page.html',
+          mimeType: 'text/html',
+          type: 'file',
+        }}
+        token="secret"
+        onClose={vi.fn()}
+      />,
+    );
+    expect(await screen.findByText('Could not load attachment content.')).toBeInTheDocument();
+  });
+
+  it('renders csv attachments as a table with preview/raw toggle', async () => {
+    vi.spyOn(attachments, 'fetchAttachmentText').mockResolvedValue('Name,Count\nAlpha,1');
+    const openSpy = vi.spyOn(attachments, 'openCsvAttachmentInNewTab').mockResolvedValue(true);
+    render(
+      <AttachmentDrawer
+        attachment={{
+          name: 'data.csv',
+          mimeType: 'text/csv',
+          type: 'file',
+          data: btoa('Name,Count\nAlpha,1'),
+        }}
+        token="secret"
+        onClose={vi.fn()}
+      />,
+    );
+    expect(await screen.findByRole('columnheader', { name: 'Name' })).toBeInTheDocument();
+    expect(screen.getByRole('cell', { name: 'Alpha' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Raw' }));
+    expect(screen.getByText(/Name,Count/)).toHaveClass('attachment-drawer-raw');
+    fireEvent.click(screen.getByRole('button', { name: 'Open data.csv in new tab' }));
+    expect(openSpy).toHaveBeenCalled();
+  });
+
+  it('renders syntax-highlighted code with preview/raw toggle', async () => {
+    vi.spyOn(attachments, 'fetchAttachmentText').mockResolvedValue('const x = 1;');
+    const openSpy = vi.spyOn(attachments, 'openCodeAttachmentInNewTab').mockResolvedValue(true);
+    const { container } = render(
+      <AttachmentDrawer
+        attachment={{
+          name: 'app.ts',
+          mimeType: 'text/typescript',
+          type: 'file',
+          data: btoa('const x = 1;'),
+        }}
+        token="secret"
+        onClose={vi.fn()}
+      />,
+    );
+    expect(await screen.findByRole('group', { name: 'View mode' })).toBeInTheDocument();
+    expect(container.querySelector('.attachment-drawer-code .hljs')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Raw' }));
+    expect(screen.getByText('const x = 1;')).toHaveClass('attachment-drawer-raw');
+    fireEvent.click(screen.getByRole('button', { name: 'Open app.ts in new tab' }));
+    expect(openSpy).toHaveBeenCalled();
   });
 
   it('shows metadata for unsupported file types', () => {

@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import * as attachmentsModule from './attachments';
+import * as popoutModule from './attachment-text-popout';
 import {
   attachmentDataUrl,
   ATTACHMENT_HTML_IFRAME_SANDBOX,
@@ -8,6 +10,13 @@ import {
   attachmentToBlob,
   attachmentTypeFromMime,
   attachmentTypeLabel,
+  attachmentSupportsPopOut,
+  attachmentSupportsPreviewToggle,
+  attachmentTextCategory,
+  attachmentUsesCodePreview,
+  attachmentUsesCsvPreview,
+  attachmentUsesFormattedMessagePreview,
+  attachmentUsesHtmlPreview,
   attachmentUsesIframePreview,
   copyAttachmentContent,
   copyAttachmentForPreview,
@@ -25,6 +34,11 @@ import {
   mergePendingAttachments,
   normalizeAttachment,
   openAttachmentInNewTab,
+  openMarkdownAttachmentInNewTab,
+  openCodeAttachmentInNewTab,
+  openCsvAttachmentInNewTab,
+  openHtmlAttachmentInNewTab,
+  openPlainTextAttachmentInNewTab,
   readAttachmentFiles,
   removePendingAtIndex,
   revokeAttachmentPreviews,
@@ -32,8 +46,22 @@ import {
 } from './attachments';
 
 describe('attachments', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
   it('infers MIME types from filenames', () => {
     expect(inferMimeType('notes.md')).toBe('text/markdown');
+    expect(inferMimeType('app.ts')).toBe('text/typescript');
+    expect(inferMimeType('Main.java')).toBe('text/x-java-source');
+    expect(inferMimeType('styles.css')).toBe('text/css');
+    expect(inferMimeType('script.py')).toBe('text/x-python');
+    expect(inferMimeType('index.php')).toBe('text/x-php');
+    expect(inferMimeType('main.c')).toBe('text/x-c');
+    expect(inferMimeType('header.h')).toBe('text/x-c');
+    expect(inferMimeType('lib.cpp')).toBe('text/x-c++');
+    expect(inferMimeType('types.hpp')).toBe('text/x-c++');
     expect(inferMimeType('doc.pdf', 'application/pdf')).toBe('application/pdf');
     expect(inferMimeType('unknown.xyz')).toBe('application/octet-stream');
     expect(inferMimeType('README')).toBe('application/octet-stream');
@@ -50,21 +78,54 @@ describe('attachments', () => {
   });
 
   it('classifies attachment preview modes', () => {
-    expect(attachmentPreviewMode('text/plain')).toBe('markdown');
-    expect(attachmentPreviewMode('text/markdown')).toBe('markdown');
+    expect(attachmentPreviewMode('text/plain')).toBe('text');
+    expect(attachmentPreviewMode('text/markdown')).toBe('text');
+    expect(attachmentPreviewMode('text/javascript', 'app.js')).toBe('text');
+    expect(attachmentPreviewMode('application/octet-stream', 'app.js')).toBe('text');
     expect(attachmentPreviewMode('image/png')).toBe('embed');
     expect(attachmentPreviewMode('application/pdf')).toBe('embed');
-    expect(attachmentPreviewMode('text/html')).toBe('embed');
+    expect(attachmentPreviewMode('text/html')).toBe('text');
+    expect(attachmentPreviewMode('text/csv')).toBe('text');
     expect(attachmentPreviewMode('application/zip')).toBe('metadata');
+  });
+
+  it('classifies text attachment categories', () => {
+    expect(attachmentTextCategory('text/markdown', 'notes.md')).toBe('markdown');
+    expect(attachmentTextCategory('text/plain', 'notes.txt')).toBe('plain');
+    expect(attachmentTextCategory('text/html', 'page.html')).toBe('html');
+    expect(attachmentTextCategory('text/csv', 'data.csv')).toBe('csv');
+    expect(attachmentTextCategory('application/octet-stream', 'data.csv')).toBe('csv');
+    expect(attachmentTextCategory('text/javascript', 'app.js')).toBe('code');
+    expect(attachmentTextCategory('application/octet-stream', 'app.ts')).toBe('code');
+    expect(attachmentTextCategory('application/zip', 'archive.zip')).toBeNull();
   });
 
   it('classifies iframe preview and sandbox settings', () => {
     expect(attachmentUsesIframePreview('application/pdf')).toBe(true);
-    expect(attachmentUsesIframePreview('text/html')).toBe(true);
+    expect(attachmentUsesIframePreview('text/html')).toBe(false);
     expect(attachmentUsesIframePreview('image/png')).toBe(false);
     expect(attachmentIframeSandbox('text/html')).toBe(ATTACHMENT_HTML_IFRAME_SANDBOX);
     expect(ATTACHMENT_HTML_IFRAME_SANDBOX).not.toContain('allow-same-origin');
     expect(attachmentIframeSandbox('application/pdf')).toBeUndefined();
+  });
+
+  it('classifies pop-out and preview toggle support', () => {
+    expect(attachmentSupportsPopOut('text/plain')).toBe(true);
+    expect(attachmentSupportsPopOut('text/markdown')).toBe(true);
+    expect(attachmentSupportsPopOut('text/javascript', 'app.js')).toBe(true);
+    expect(attachmentSupportsPopOut('text/html', 'page.html')).toBe(true);
+    expect(attachmentSupportsPopOut('image/png')).toBe(true);
+    expect(attachmentSupportsPopOut('application/zip')).toBe(false);
+    expect(attachmentSupportsPreviewToggle('text/markdown')).toBe(true);
+    expect(attachmentSupportsPreviewToggle('text/plain')).toBe(false);
+    expect(attachmentSupportsPreviewToggle('text/javascript', 'app.js')).toBe(true);
+    expect(attachmentSupportsPreviewToggle('text/html', 'page.html')).toBe(true);
+    expect(attachmentSupportsPreviewToggle('text/csv', 'data.csv')).toBe(true);
+    expect(attachmentUsesFormattedMessagePreview('text/markdown')).toBe(true);
+    expect(attachmentUsesFormattedMessagePreview('text/plain')).toBe(false);
+    expect(attachmentUsesCsvPreview('text/csv', 'data.csv')).toBe(true);
+    expect(attachmentUsesCodePreview('text/javascript', 'app.js')).toBe(true);
+    expect(attachmentUsesHtmlPreview('text/html', 'page.html')).toBe(true);
   });
 
   it('formats attachment sizes', () => {
@@ -367,6 +428,169 @@ describe('attachments', () => {
     expect(open).toHaveBeenCalledWith('blob:opened', '_blank', 'noopener,noreferrer');
     createObjectURL.mockRestore();
     open.mockRestore();
+  });
+
+  it('opens markdown attachments in a rendered popout document', async () => {
+    const openDoc = vi.spyOn(popoutModule, 'openHtmlDocumentInNewTab').mockReturnValue(true);
+    expect(
+      await openMarkdownAttachmentInNewTab({
+        name: 'notes.md',
+        mimeType: 'text/markdown',
+        type: 'file',
+        data: 'IyBQb3BvdXQ=',
+      }),
+    ).toBe(true);
+    expect(openDoc).toHaveBeenCalled();
+    const html = openDoc.mock.calls[0]![0] as string;
+    expect(html).toContain('Popout');
+    expect(html).toContain('Preview</button>');
+  });
+
+  it('opens plain text attachments in a pre-wrap popout document', async () => {
+    const openDoc = vi.spyOn(popoutModule, 'openHtmlDocumentInNewTab').mockReturnValue(true);
+    expect(
+      await openPlainTextAttachmentInNewTab({
+        name: 'notes.txt',
+        mimeType: 'text/plain',
+        type: 'file',
+        data: btoa('line one\n\nline two'),
+      }),
+    ).toBe(true);
+    const html = openDoc.mock.calls[0]![0] as string;
+    expect(html).toContain('line one');
+    expect(html).toContain('line two');
+    expect(html).not.toContain('Preview</button>');
+  });
+
+  it('returns false when plain text popout text cannot load', async () => {
+    vi.spyOn(attachmentsModule, 'fetchAttachmentText').mockResolvedValue(null);
+    expect(
+      await openPlainTextAttachmentInNewTab({
+        name: 'notes.txt',
+        mimeType: 'text/plain',
+        type: 'file',
+        url: '/api/attachments/msg-1/notes.txt',
+      }),
+    ).toBe(false);
+  });
+
+  it('opens code attachments in a syntax-highlighted popout document', async () => {
+    const openDoc = vi.spyOn(popoutModule, 'openHtmlDocumentInNewTab').mockReturnValue(true);
+    expect(
+      await openCodeAttachmentInNewTab({
+        name: 'app.ts',
+        mimeType: 'text/typescript',
+        type: 'file',
+        data: btoa('const x = 1;'),
+      }),
+    ).toBe(true);
+    const html = openDoc.mock.calls[0]![0] as string;
+    expect(html).toContain('const x = 1;');
+    expect(html).toContain('Preview</button>');
+    expect(html).toContain('language-typescript');
+  });
+
+  it('returns false when code popout text cannot load', async () => {
+    vi.spyOn(attachmentsModule, 'fetchAttachmentText').mockResolvedValue(null);
+    expect(
+      await openCodeAttachmentInNewTab({
+        name: 'app.ts',
+        mimeType: 'text/typescript',
+        type: 'file',
+        url: '/api/attachments/msg-1/app.ts',
+      }),
+    ).toBe(false);
+  });
+
+  it('returns false when code language cannot be inferred', async () => {
+    vi.spyOn(attachmentsModule, 'fetchAttachmentText').mockResolvedValue('hello');
+    expect(
+      await openCodeAttachmentInNewTab({
+        name: 'unknown.xyz',
+        mimeType: 'application/octet-stream',
+        type: 'file',
+        data: btoa('hello'),
+      }),
+    ).toBe(false);
+  });
+
+  it('opens html attachments in a preview/raw popout document', async () => {
+    const openDoc = vi.spyOn(popoutModule, 'openHtmlDocumentInNewTab').mockReturnValue(true);
+    expect(
+      await openHtmlAttachmentInNewTab({
+        name: 'page.html',
+        mimeType: 'text/html',
+        type: 'file',
+        data: btoa('<h1>Hello</h1>'),
+      }),
+    ).toBe(true);
+    const html = openDoc.mock.calls[0]![0] as string;
+    expect(html).toContain('srcdoc="&lt;h1&gt;Hello&lt;/h1&gt;"');
+    expect(html).toContain('Preview</button>');
+  });
+
+  it('returns false when html popout text cannot load', async () => {
+    vi.spyOn(attachmentsModule, 'fetchAttachmentText').mockResolvedValue(null);
+    expect(
+      await openHtmlAttachmentInNewTab({
+        name: 'page.html',
+        mimeType: 'text/html',
+        type: 'file',
+        url: '/api/attachments/msg-1/page.html',
+      }),
+    ).toBe(false);
+  });
+
+  it('opens csv attachments in a table popout document', async () => {
+    const openDoc = vi.spyOn(popoutModule, 'openHtmlDocumentInNewTab').mockReturnValue(true);
+    expect(
+      await openCsvAttachmentInNewTab({
+        name: 'data.csv',
+        mimeType: 'text/csv',
+        type: 'file',
+        data: btoa('Name,Count\nAlpha,1'),
+      }),
+    ).toBe(true);
+    const html = openDoc.mock.calls[0]![0] as string;
+    expect(html).toContain('<table class="csv-table">');
+    expect(html).toContain('Alpha');
+    expect(html).toContain('Preview</button>');
+  });
+
+  it('returns false when csv popout text cannot load', async () => {
+    vi.spyOn(attachmentsModule, 'fetchAttachmentText').mockResolvedValue(null);
+    expect(
+      await openCsvAttachmentInNewTab({
+        name: 'data.csv',
+        mimeType: 'text/csv',
+        type: 'file',
+        url: '/api/attachments/msg-1/data.csv',
+      }),
+    ).toBe(false);
+  });
+
+  it('returns false when markdown popout text cannot load', async () => {
+    vi.spyOn(attachmentsModule, 'fetchAttachmentText').mockResolvedValue(null);
+    expect(
+      await openMarkdownAttachmentInNewTab({
+        name: 'notes.md',
+        mimeType: 'text/markdown',
+        type: 'file',
+        url: '/api/attachments/msg-1/notes.md',
+      }),
+    ).toBe(false);
+  });
+
+  it('returns false when markdown popout tab cannot be opened', async () => {
+    vi.spyOn(popoutModule, 'openHtmlDocumentInNewTab').mockReturnValue(false);
+    expect(
+      await openMarkdownAttachmentInNewTab({
+        name: 'notes.md',
+        mimeType: 'text/markdown',
+        type: 'file',
+        data: 'IyBQb3BvdXQ=',
+      }),
+    ).toBe(false);
   });
 
   it('returns false when a new tab cannot be opened', () => {

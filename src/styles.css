@@ -920,6 +920,164 @@ body.attachment-drawer-resizing * {
   border-bottom: 1px solid var(--border);
 }
 
+.attachment-drawer-view-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.attachment-drawer-view-toggle-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.attachment-drawer-view-toggle-btn[aria-pressed='true'] {
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+  color: var(--text);
+}
+
+.attachment-drawer-raw,
+.attachment-drawer-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+
+.attachment-drawer-text {
+  font-family: inherit;
+  font-size: 0.9375rem;
+}
+
+.attachment-drawer-formatted.formatted-message p + p {
+  margin-top: 1em;
+}
+
+.attachment-drawer-code {
+  margin: 0;
+  padding: 0.75rem;
+  overflow: auto;
+  background: var(--code-bg);
+  border: 1px solid var(--code-border);
+  border-radius: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+
+.attachment-drawer-code code {
+  font-family: inherit;
+  white-space: pre;
+}
+
+.attachment-drawer-code .hljs {
+  display: block;
+  overflow-x: auto;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.attachment-drawer-code .hljs-comment,
+.attachment-drawer-code .hljs-quote {
+  color: #7a8490;
+  font-style: italic;
+}
+
+.attachment-drawer-code .hljs-keyword,
+.attachment-drawer-code .hljs-selector-tag,
+.attachment-drawer-code .hljs-subst {
+  color: #c678dd;
+}
+
+.attachment-drawer-code .hljs-number,
+.attachment-drawer-code .hljs-literal,
+.attachment-drawer-code .hljs-variable,
+.attachment-drawer-code .hljs-template-variable,
+.attachment-drawer-code .hljs-tag .hljs-attr {
+  color: #d19a66;
+}
+
+.attachment-drawer-code .hljs-string,
+.attachment-drawer-code .hljs-doctag,
+.attachment-drawer-code .hljs-regexp {
+  color: #98c379;
+}
+
+.attachment-drawer-code .hljs-title,
+.attachment-drawer-code .hljs-section,
+.attachment-drawer-code .hljs-selector-id,
+.attachment-drawer-code .hljs-selector-class {
+  color: #61afef;
+}
+
+.attachment-drawer-code .hljs-type,
+.attachment-drawer-code .hljs-class .hljs-title {
+  color: #e5c07b;
+}
+
+.attachment-drawer-code .hljs-symbol,
+.attachment-drawer-code .hljs-bullet,
+.attachment-drawer-code .hljs-link {
+  color: #56b6c2;
+}
+
+.attachment-drawer-code .hljs-meta {
+  color: #abb2bf;
+}
+
+.attachment-drawer-code .hljs-built_in,
+.attachment-drawer-code .hljs-builtin-name {
+  color: #e06c75;
+}
+
+.attachment-drawer-csv-wrap {
+  overflow: auto;
+  max-width: 100%;
+}
+
+.attachment-drawer-csv {
+  border-collapse: collapse;
+  width: max-content;
+  min-width: 100%;
+  font-size: 0.8125rem;
+}
+
+.attachment-drawer-csv th,
+.attachment-drawer-csv td {
+  border: 1px solid var(--border);
+  padding: 0.35rem 0.55rem;
+  text-align: left;
+  vertical-align: top;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.attachment-drawer-csv th {
+  position: sticky;
+  top: 0;
+  background: color-mix(in srgb, var(--border) 35%, var(--panel));
+  font-weight: 600;
+}
+
+.attachment-drawer-csv tbody tr:nth-child(even) {
+  background: color-mix(in srgb, var(--border) 18%, transparent);
+}
+
+.attachment-drawer-csv-empty {
+  margin: 0;
+  color: var(--muted);
+}
+
 .attachment-drawer-title {
   margin: 0;
   font-size: 0.9375rem;
