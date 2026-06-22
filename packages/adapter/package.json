@@ -1,0 +1,11 @@
+{
+  "name": "@nanoclaw-webchat/adapter",
+  "version": "0.1.0",
+  "private": true,
+  "description": "NanoClaw web channel adapter source (installed into host forks at runtime)",
+  "type": "module",
+  "scripts": {
+    "test:unit": "node ../../scripts/run-adapter-coverage.mjs",
+    "test:coverage": "node ../../scripts/run-adapter-coverage.mjs --coverage"
+  }
+}

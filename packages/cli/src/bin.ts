@@ -56,7 +56,7 @@ export function runCommand(argv: string[]): number {
         const result = runUninstall(path);
         console.log(`Removed adapter from ${result.root}`);
         console.log(`Deleted ${result.removedFiles.length} files.`);
-        console.log('\nOptional: pnpm remove @artificer-innovations/nanoclaw-webchat ws');
+        console.log('\nOptional: pnpm remove nanoclaw-webchat ws');
         console.log('Optional: pnpm remove -D @types/ws');
         console.log('Then: pnpm run build && restart host');
         return 0;

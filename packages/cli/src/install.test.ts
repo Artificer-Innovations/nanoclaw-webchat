@@ -95,7 +95,7 @@ describe('install', () => {
       barrelPatched: false,
       bootPatched: false,
       env: { created: [], skipped: ['WEBCHAT_ENABLED'] },
-      version: '0.2.0',
+      version: '0.1.0',
     });
     expect(log.mock.calls.some((call) => String(call[0]).includes('Added .env'))).toBe(false);
     log.mockRestore();
@@ -106,7 +106,7 @@ describe('install', () => {
     fs.writeFileSync(
       path.join(root, 'package.json'),
       JSON.stringify({
-        dependencies: { '@artificer-innovations/nanoclaw-webchat': 'file:../nanoclaw-webchat' },
+        dependencies: { 'nanoclaw-webchat': 'file:../nanoclaw-webchat' },
       }),
     );
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -116,7 +116,7 @@ describe('install', () => {
       barrelPatched: true,
       bootPatched: true,
       env: { created: [], skipped: [] },
-      version: '0.2.0',
+      version: '0.1.0',
     });
     expect(log.mock.calls.some((call) => String(call[0]).includes('file: link'))).toBe(true);
     log.mockRestore();
@@ -130,7 +130,7 @@ describe('install', () => {
       barrelPatched: true,
       bootPatched: true,
       env: { created: [], skipped: [] },
-      version: '0.2.0',
+      version: '0.1.0',
     });
     expect(log.mock.calls.some((call) => String(call[0]).includes('file: link'))).toBe(false);
     log.mockRestore();

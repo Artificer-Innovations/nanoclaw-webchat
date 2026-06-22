@@ -194,7 +194,7 @@ Thread metadata and message history are stored in `data/webchat.db` on the host.
 
 ## MCP integration
 
-The [`packages/mcp/`](./packages/mcp/) package provides a stdio MCP server for external clients (Cursor, Claude Desktop, etc.).
+The MCP server lives in [`packages/mcp/`](./packages/mcp/) and ships in the **`nanoclaw-webchat`** npm package as the `nanoclaw-webchat-mcp` bin.
 
 | Env var | Default | Purpose |
 |---------|---------|---------|

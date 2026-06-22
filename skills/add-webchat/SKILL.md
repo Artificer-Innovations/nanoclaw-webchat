@@ -1,6 +1,6 @@
 ---
 name: add-webchat
-description: Add a local browser web chat channel to NanoClaw. Lobby with @agent patterns, per-agent DMs, and threading. Installs @artificer-innovations/nanoclaw-webchat and a native web channel adapter.
+description: Add a local browser web chat channel to NanoClaw. Lobby with @agent patterns, per-agent DMs, and threading. Installs nanoclaw-webchat and a native web channel adapter.
 ---
 
 # /add-webchat — Web Chat Channel
@@ -12,13 +12,13 @@ See also: [QUICKSTART.md](../../QUICKSTART.md) in the npm package for a human-re
 ## Architecture
 
 ```
-Browser (@artificer-innovations/nanoclaw-webchat)  ←HTTP/WS→  web.ts adapter  →  router  →  agents
-                                              webchat-sync.ts  →  DB wirings
+Browser (nanoclaw-webchat)  ←HTTP/WS→  web.ts adapter  →  router  →  agents
+                              webchat-sync.ts  →  DB wirings
 ```
 
 ## Install
 
-NanoClaw does not ship webchat in trunk. This skill copies the adapter from the installed `@artificer-innovations/nanoclaw-webchat` npm package.
+NanoClaw does not ship webchat in trunk. This skill copies the adapter from the installed `nanoclaw-webchat` npm package.
 
 ### Pre-flight (idempotent)
 
@@ -27,7 +27,7 @@ Skip to **Credentials** if all of these are already in place:
 - `src/channels/web.ts` and `src/webchat-store.ts` exist
 - `src/channels/index.ts` contains `import './web.js';`
 - `src/index.ts` contains `await startWebChat()` before `initChannelAdapters(`
-- `@artificer-innovations/nanoclaw-webchat` and `ws` are listed in `package.json`
+- `nanoclaw-webchat` and `ws` are listed in `package.json`
 
 Otherwise continue. Every step below is safe to re-run.
 
@@ -42,7 +42,7 @@ pnpm exec nanoclaw-webchat sync-skill
 ### 1. Install npm packages
 
 ```bash
-pnpm add @artificer-innovations/nanoclaw-webchat@0.2.0 ws@8.18.3
+pnpm add nanoclaw-webchat@0.1.0 ws@8.18.3
 pnpm add -D @types/ws@8.18.1
 ```
 
@@ -56,10 +56,10 @@ pnpm add file:../nanoclaw-webchat
 
 Adapter source lives in `packages/adapter/src` in the monorepo; the npm package ships a synced copy at `skills/add-webchat/resources/`. Copy from either path in your install:
 
-Copy from `node_modules/@artificer-innovations/nanoclaw-webchat/skills/add-webchat/resources/`:
+Copy from `node_modules/nanoclaw-webchat/skills/add-webchat/resources/`:
 
 ```bash
-PKG=node_modules/@artificer-innovations/nanoclaw-webchat/skills/add-webchat/resources
+PKG=node_modules/nanoclaw-webchat/skills/add-webchat/resources
 cp "$PKG/web.ts" src/channels/web.ts
 cp "$PKG/web.test.ts" src/channels/web.test.ts
 cp "$PKG/web-registration.test.ts" src/channels/web-registration.test.ts
@@ -150,7 +150,7 @@ Open `http://127.0.0.1:3200` — auth token is injected by the host (no paste st
 ## Upgrading
 
 ```bash
-pnpm update @artificer-innovations/nanoclaw-webchat
+pnpm update nanoclaw-webchat
 pnpm exec nanoclaw-webchat upgrade
 pnpm run build
 # restart host

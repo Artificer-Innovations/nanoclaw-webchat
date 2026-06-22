@@ -26,7 +26,7 @@ describe('readPackageVersion', () => {
     const read = vi.spyOn(fs, 'readFileSync').mockImplementation((target, encoding) => {
       const p = String(target);
       if (p.endsWith('package.json') && p.includes('nanoclaw-webchat')) {
-        return JSON.stringify({ name: '@artificer-innovations/nanoclaw-webchat' });
+        return JSON.stringify({ name: 'nanoclaw-webchat' });
       }
       return originalRead(target, encoding as BufferEncoding);
     });
@@ -49,7 +49,7 @@ describe('resourcesDir', () => {
     tempDirs.push(temp);
     fs.writeFileSync(
       path.join(temp, 'package.json'),
-      JSON.stringify({ name: '@artificer-innovations/nanoclaw-webchat' }),
+      JSON.stringify({ name: 'nanoclaw-webchat' }),
     );
     fs.mkdirSync(path.join(temp, 'skills/add-webchat/resources'), { recursive: true });
     fs.writeFileSync(path.join(temp, 'skills/add-webchat/resources/web.ts'), 'export {};\n');
@@ -61,7 +61,7 @@ describe('resourcesDir', () => {
     tempDirs.push(temp);
     fs.writeFileSync(
       path.join(temp, 'package.json'),
-      JSON.stringify({ name: '@artificer-innovations/nanoclaw-webchat' }),
+      JSON.stringify({ name: 'nanoclaw-webchat' }),
     );
     fs.mkdirSync(path.join(temp, 'packages/adapter/src'), { recursive: true });
     fs.mkdirSync(path.join(temp, 'skills/add-webchat/resources'), { recursive: true });

@@ -45,7 +45,7 @@ Delete the colocated block from `main()` in `src/index.ts`:
 ## 4. Uninstall packages
 
 ```bash
-pnpm remove @artificer-innovations/nanoclaw-webchat ws
+pnpm remove nanoclaw-webchat ws
 pnpm remove -D @types/ws
 ```
 

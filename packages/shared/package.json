@@ -1,6 +1,6 @@
 {
   "name": "@nanoclaw-webchat/shared",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "exports": {
@@ -16,7 +16,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test:unit": "vitest run",
+    "test:unit": "vitest run --passWithNoTests",
     "test:coverage": "vitest run --coverage"
   },
   "devDependencies": {

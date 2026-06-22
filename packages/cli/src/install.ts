@@ -72,7 +72,7 @@ export function runVerify(root?: string): { root: string; ok: boolean; output: s
 }
 
 export function printInstallNextSteps(result: InstallResult): void {
-  console.log(`Installed @artificer-innovations/nanoclaw-webchat@${result.version} adapter into ${result.root}`);
+  console.log(`Installed nanoclaw-webchat@${result.version} adapter into ${result.root}`);
   console.log(`Copied ${result.copied.length} files.`);
   if (result.env.created.length > 0) {
     console.log(`Added .env: ${result.env.created.join(', ')}`);
@@ -94,5 +94,5 @@ function readHostWebchatDependency(nanoclawRoot: string): string | undefined {
   const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as {
     dependencies?: Record<string, string>;
   };
-  return pkg.dependencies?.['@artificer-innovations/nanoclaw-webchat'];
+  return pkg.dependencies?.['nanoclaw-webchat'];
 }

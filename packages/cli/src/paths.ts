@@ -4,14 +4,14 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-/** Root of the published @artificer-innovations/nanoclaw-webchat package. */
+/** Root of the published nanoclaw-webchat package. */
 export function packageRoot(startDir: string = __dirname): string {
   let dir = startDir;
   for (;;) {
     const pkgPath = path.join(dir, 'package.json');
     if (fs.existsSync(pkgPath)) {
       const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { name?: string };
-      if (pkg.name === '@artificer-innovations/nanoclaw-webchat') {
+      if (pkg.name === 'nanoclaw-webchat') {
         return dir;
       }
     }
@@ -19,7 +19,7 @@ export function packageRoot(startDir: string = __dirname): string {
     if (parent === dir) break;
     dir = parent;
   }
-  throw new Error('Could not locate @artificer-innovations/nanoclaw-webchat package root');
+  throw new Error('Could not locate nanoclaw-webchat package root');
 }
 
 export function skillDir(startDir: string = __dirname): string {

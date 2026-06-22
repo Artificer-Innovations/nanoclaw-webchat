@@ -232,7 +232,7 @@ import path from 'path';
 
 async function main(): Promise<void> {
   const dbPath = path.join(DATA_DIR, 'v2.db');
-  initDb(dbPath);
+  const db = initDb(dbPath);
   runMigrations(db);
 
   await initChannelAdapters((adapter: ChannelAdapter): ChannelSetup => {

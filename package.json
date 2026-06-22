@@ -1,20 +1,29 @@
 {
-  "name": "@artificer-innovations/nanoclaw-webchat",
-  "version": "0.2.0",
-  "description": "Browser UI, NanoClaw web channel adapter, and /add-webchat skill for NanoClaw web chat",
+  "name": "nanoclaw-webchat",
+  "version": "0.1.0",
+  "description": "Web chat interface for NanoClaw AI agent framework",
   "type": "module",
   "license": "MIT",
   "author": "Artificer Innovations, LLC",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Artificer-Innovations/nanoclaw-webchat.git"
+    "url": "https://github.com/Artificer-Innovations/nanoclaw-webchat"
   },
   "homepage": "https://github.com/Artificer-Innovations/nanoclaw-webchat",
   "bugs": {
     "url": "https://github.com/Artificer-Innovations/nanoclaw-webchat/issues"
   },
+  "keywords": [
+    "nanoclaw",
+    "ai-agent",
+    "chat",
+    "websocket"
+  ],
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "bin": {
-    "nanoclaw-webchat": "./dist/cli/bin.js"
+    "nanoclaw-webchat": "./dist/cli/bin.js",
+    "nanoclaw-webchat-mcp": "./dist/mcp/index.js"
   },
   "files": [
     "dist",
@@ -36,15 +45,27 @@
     }
   },
   "scripts": {
-    "build": "pnpm --filter @nanoclaw-webchat/shared build && node scripts/sync-adapter-resources.mjs && pnpm --filter @nanoclaw-webchat/client build && pnpm --filter @nanoclaw-webchat/cli build && pnpm --filter @artificer-innovations/nanoclaw-webchat-mcp build",
+    "build": "pnpm --filter @nanoclaw-webchat/shared build && node scripts/copy-shared-types.mjs && node scripts/sync-adapter-resources.mjs && pnpm --filter @nanoclaw-webchat/client build && pnpm --filter @nanoclaw-webchat/cli build && pnpm --filter @nanoclaw-webchat/mcp build && node scripts/copy-shared-types.mjs",
     "typecheck": "pnpm --filter @nanoclaw-webchat/shared build && pnpm -r typecheck",
     "dev": "pnpm --filter @nanoclaw-webchat/client dev",
     "test:unit": "pnpm -r test:unit",
-    "test:coverage": "pnpm --filter @nanoclaw-webchat/client test:coverage && pnpm --filter @nanoclaw-webchat/cli test:coverage && pnpm --filter @artificer-innovations/nanoclaw-webchat-mcp test:coverage",
+    "test:coverage": "pnpm --filter @nanoclaw-webchat/client test:coverage && pnpm --filter @nanoclaw-webchat/cli test:coverage && pnpm --filter @nanoclaw-webchat/mcp test:coverage && pnpm --filter @nanoclaw-webchat/adapter test:coverage",
     "test:integration": "node scripts/run-integration.mjs",
+    "changeset": "changeset",
+    "version": "changeset version",
+    "release:publish": "changeset publish",
     "prepublishOnly": "pnpm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "zod": "^3.25.67"
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "@changesets/changelog-github": "^0.5.1",
+    "@changesets/cli": "^2.29.4",
+    "playwright": "^1.61.0"
   }
 }

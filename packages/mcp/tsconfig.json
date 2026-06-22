@@ -6,7 +6,7 @@
     "moduleResolution": "NodeNext",
     "strict": true,
     "skipLibCheck": true,
-    "outDir": "dist",
+    "outDir": "../../dist/mcp",
     "rootDir": "src",
     "noEmit": false,
     "declaration": true,
