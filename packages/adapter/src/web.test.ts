@@ -1701,10 +1701,13 @@ describe('web channel adapter', () => {
     await adapter.setup(setup);
     const origFrom = Buffer.from;
     // Only intercept base64 decodes in validateInboundAttachments, not other Buffer.from callers.
-    const fromSpy = vi.spyOn(Buffer, 'from').mockImplementation((input, encoding) => {
+    const fromSpy = vi.spyOn(Buffer, 'from').mockImplementation(((
+      input: Parameters<typeof Buffer.from>[0],
+      encoding?: BufferEncoding,
+    ) => {
       if (encoding === 'base64') throw new Error('invalid base64');
-      return origFrom(input as Parameters<typeof Buffer.from>[0], encoding as BufferEncoding);
-    });
+      return origFrom(input, encoding as BufferEncoding);
+    }) as typeof Buffer.from);
     try {
       const status = await httpPost('/api/rooms/lobby/threads/main/messages', {
         text: '@sarah',

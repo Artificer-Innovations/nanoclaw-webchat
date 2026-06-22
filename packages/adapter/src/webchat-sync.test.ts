@@ -1,19 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-const readEnvFileMock = vi.fn<(keys: string[]) => Record<string, string>>(() => ({
-  WEBCHAT_ENABLED: 'true',
-  WEBCHAT_USER_ID: 'web:local',
-  WEBCHAT_DISPLAY_NAME: 'Local',
-}));
-
 vi.mock('./env.js', () => ({
-  readEnvFile: (keys: string[]) => readEnvFileMock(keys),
+  readEnvFile: vi.fn(() => ({
+    WEBCHAT_ENABLED: 'true',
+    WEBCHAT_USER_ID: 'web:local',
+    WEBCHAT_DISPLAY_NAME: 'Local',
+  })),
 }));
 
 vi.mock('./log.js', () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
+import { readEnvFile } from './env.js';
 import { initTestDb, closeDb, runMigrations, createAgentGroup } from './db/index.js';
 import {
   createMessagingGroup,
@@ -30,6 +29,8 @@ import {
   WEB_LOBBY_PLATFORM_ID,
 } from './webchat-sync.js';
 import { appendMessage, createThread, ensureWebchatSchema, MAIN_THREAD } from './webchat-store.js';
+
+const readEnvFileMock = vi.mocked(readEnvFile);
 
 function now(): string {
   return new Date().toISOString();
