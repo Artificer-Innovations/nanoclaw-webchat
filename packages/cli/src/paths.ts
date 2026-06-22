@@ -8,10 +8,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export function packageRoot(startDir: string = __dirname): string {
   let dir = startDir;
   for (;;) {
-    const resources = path.join(dir, 'skills/add-webchat/resources');
-    if (fs.existsSync(resources)) {
-      return dir;
-    }
     const pkgPath = path.join(dir, 'package.json');
     if (fs.existsSync(pkgPath)) {
       const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { name?: string };
@@ -26,12 +22,26 @@ export function packageRoot(startDir: string = __dirname): string {
   throw new Error('Could not locate @artificer-innovations/nanoclaw-webchat package root');
 }
 
-export function skillDir(): string {
-  return path.join(packageRoot(), 'skills/add-webchat');
+export function skillDir(startDir: string = __dirname): string {
+  return path.join(packageRoot(startDir), 'skills/add-webchat');
 }
 
-export function resourcesDir(): string {
-  return path.join(skillDir(), 'resources');
+/** Canonical adapter source in the monorepo. */
+export function adapterSrcDir(startDir: string = __dirname): string {
+  return path.join(packageRoot(startDir), 'packages/adapter/src');
+}
+
+/**
+ * Directory to copy adapter files from.
+ * Monorepo: packages/adapter/src (source of truth).
+ * Published npm package: skills/add-webchat/resources (synced at build time).
+ */
+export function resourcesDir(startDir: string = __dirname): string {
+  const adapterSrc = adapterSrcDir(startDir);
+  if (fs.existsSync(adapterSrc)) {
+    return adapterSrc;
+  }
+  return path.join(skillDir(startDir), 'resources');
 }
 
 export interface AdapterCopyRule {

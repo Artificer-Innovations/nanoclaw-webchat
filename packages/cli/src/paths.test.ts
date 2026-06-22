@@ -1,7 +1,8 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { packageRoot, readPackageVersion } from './paths.js';
+import { adapterSrcDir, packageRoot, readPackageVersion, resourcesDir } from './paths.js';
 
 describe('packageRoot failure', () => {
   afterEach(() => {
@@ -29,5 +30,24 @@ describe('readPackageVersion', () => {
     } finally {
       read.mockRestore();
     }
+  });
+});
+
+describe('resourcesDir', () => {
+  it('falls back to skill resources when adapter src is absent', () => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'resources-dir-'));
+    fs.writeFileSync(
+      path.join(temp, 'package.json'),
+      JSON.stringify({ name: '@artificer-innovations/nanoclaw-webchat' }),
+    );
+    fs.mkdirSync(path.join(temp, 'skills/add-webchat/resources'), { recursive: true });
+    fs.writeFileSync(path.join(temp, 'skills/add-webchat/resources/web.ts'), 'export {};\n');
+    expect(resourcesDir()).toBe(path.join(packageRoot(), 'packages/adapter/src'));
+    expect(resourcesDir(temp)).toBe(path.join(temp, 'skills/add-webchat/resources'));
+    fs.rmSync(temp, { recursive: true, force: true });
+  });
+
+  it('adapterSrcDir resolves under package root', () => {
+    expect(adapterSrcDir()).toBe(path.join(packageRoot(), 'packages/adapter/src'));
   });
 });
