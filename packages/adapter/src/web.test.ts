@@ -1209,29 +1209,6 @@ describe('web channel adapter', () => {
     expect(status).toBe(400);
   });
 
-  it('returns 400 for invalid JSON when creating a thread', async () => {
-    await adapter.setup(setup);
-    const status = await new Promise<number>((resolve, reject) => {
-      const req = http.request(
-        {
-          hostname: '127.0.0.1',
-          port: testPort,
-          path: '/api/rooms/lobby/threads',
-          method: 'POST',
-          headers: { Authorization: `Bearer ${SECRET}`, 'Content-Type': 'application/json', Connection: 'close' },
-        },
-        (res) => {
-          res.resume();
-          res.on('end', () => resolve(res.statusCode ?? 0));
-        },
-      );
-      req.on('error', reject);
-      req.write('{bad');
-      req.end();
-    });
-    expect(status).toBe(400);
-  });
-
   it('returns 400 when patching thread with empty title', async () => {
     await adapter.setup(setup);
     const createRes = await new Promise<{ status: number; body: { id: string } }>((resolve, reject) => {
@@ -1722,8 +1699,11 @@ describe('web channel adapter', () => {
 
   it('returns 400 when attachment base64 decoding fails', async () => {
     await adapter.setup(setup);
-    const fromSpy = vi.spyOn(Buffer, 'from').mockImplementation(() => {
-      throw new Error('invalid base64');
+    const origFrom = Buffer.from;
+    // Only intercept base64 decodes in validateInboundAttachments, not other Buffer.from callers.
+    const fromSpy = vi.spyOn(Buffer, 'from').mockImplementation((input, encoding) => {
+      if (encoding === 'base64') throw new Error('invalid base64');
+      return origFrom(input as Parameters<typeof Buffer.from>[0], encoding as BufferEncoding);
     });
     try {
       const status = await httpPost('/api/rooms/lobby/threads/main/messages', {

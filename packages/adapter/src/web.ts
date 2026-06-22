@@ -668,6 +668,8 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
     return html;
   }
 
+  // serveIndexHtml/isUnderAssetDir are only called from serveStatic after setup()
+  // assigns assetDir and serveStatic's falsy assetDir guard returns early.
   function serveIndexHtml(res: http.ServerResponse): boolean {
     const indexPath = path.join(assetDir!, 'index.html');
     if (!fs.existsSync(indexPath)) return false;
@@ -898,6 +900,8 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
 
       try {
         const pkg = await import('nanoclaw-webchat');
+        // Must be set before the HTTP server accepts requests; setup() throws if missing.
+        // serveStatic guards falsy assetDir; serveIndexHtml/isUnderAssetDir rely on this.
         assetDir = pkg.getAssetDir();
       } catch (err) {
         log.error('Web channel: nanoclaw-webchat not installed', { err });

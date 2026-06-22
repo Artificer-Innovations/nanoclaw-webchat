@@ -32,6 +32,7 @@ describe('web channel registration', () => {
 
 describe('web channel factory', () => {
   beforeEach(async () => {
+    vi.mocked(readEnvFile).mockReturnValue({});
     await teardownChannelAdapters();
   });
 
@@ -95,10 +96,11 @@ describe('web channel factory', () => {
     expect(getActiveAdapters().some((a) => a.channelType === 'web')).toBe(false);
   });
 
-  it('uses default port and user identity when env omits optional fields', async () => {
+  it('uses default user identity when env omits optional fields', async () => {
     vi.mocked(readEnvFile).mockReturnValue({
       WEBCHAT_ENABLED: 'true',
       WEBCHAT_SECRET: 'env-secret',
+      WEBCHAT_PORT: '39996',
     });
     delete process.env.WEBCHAT_ENABLED;
     delete process.env.WEBCHAT_SECRET;

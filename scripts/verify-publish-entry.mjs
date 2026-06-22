@@ -6,7 +6,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const entryPath = path.join(root, 'dist/index.js');
@@ -16,7 +16,7 @@ if (!fs.existsSync(entryPath)) {
   process.exit(1);
 }
 
-const mod = await import(pathToFileUrl(entryPath));
+const mod = await import(pathToFileURL(entryPath).href);
 if (typeof mod.getAssetDir !== 'function') {
   console.error(
     'verify-publish-entry: dist/index.js does not export getAssetDir() — root entry was overwritten',
@@ -34,7 +34,3 @@ if (!fs.existsSync(indexHtml)) {
 }
 
 console.log('verify-publish-entry: ok', assetDir);
-
-function pathToFileUrl(filePath) {
-  return new URL(`file://${filePath.split(path.sep).join('/')}`).href;
-}
