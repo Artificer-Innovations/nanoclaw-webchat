@@ -1699,14 +1699,14 @@ describe('web channel adapter', () => {
 
   it('returns 400 when attachment base64 decoding fails', async () => {
     await adapter.setup(setup);
-    const origFrom = Buffer.from;
+    const origFrom = Buffer.from.bind(Buffer);
     // Only intercept base64 decodes in validateInboundAttachments, not other Buffer.from callers.
     const fromSpy = vi.spyOn(Buffer, 'from').mockImplementation(((
-      input: Parameters<typeof Buffer.from>[0],
-      encoding?: BufferEncoding,
+      input: unknown,
+      encoding?: unknown,
     ) => {
       if (encoding === 'base64') throw new Error('invalid base64');
-      return origFrom(input, encoding as BufferEncoding);
+      return (origFrom as (i: unknown, e?: unknown) => Buffer)(input, encoding);
     }) as typeof Buffer.from);
     try {
       const status = await httpPost('/api/rooms/lobby/threads/main/messages', {
