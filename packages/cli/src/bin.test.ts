@@ -358,12 +358,11 @@ describe('paths edge cases', () => {
   });
 
   it('packageRoot resolves monorepo root', () => {
-    expect(fs.existsSync(path.join(packageRoot(), 'skills/add-webchat/resources/web.ts'))).toBe(
-      true,
-    );
+    expect(fs.existsSync(path.join(packageRoot(), 'packages/adapter/src/web.ts'))).toBe(true);
   });
 
-  it('resourcesDir points at synced adapter files', () => {
+  it('resourcesDir points at adapter source in monorepo', () => {
+    expect(resourcesDir()).toMatch(/packages[/\\]adapter[/\\]src$/);
     expect(fs.existsSync(path.join(resourcesDir(), 'web.ts'))).toBe(true);
   });
 

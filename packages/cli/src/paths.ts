@@ -8,10 +8,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export function packageRoot(startDir: string = __dirname): string {
   let dir = startDir;
   for (;;) {
-    const resources = path.join(dir, 'skills/add-webchat/resources');
-    if (fs.existsSync(resources)) {
-      return dir;
-    }
     const pkgPath = path.join(dir, 'package.json');
     if (fs.existsSync(pkgPath)) {
       const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { name?: string };
@@ -26,12 +22,30 @@ export function packageRoot(startDir: string = __dirname): string {
   throw new Error('Could not locate @artificer-innovations/nanoclaw-webchat package root');
 }
 
-export function skillDir(): string {
-  return path.join(packageRoot(), 'skills/add-webchat');
+export function skillDir(startDir: string = __dirname): string {
+  return path.join(packageRoot(startDir), 'skills/add-webchat');
 }
 
-export function resourcesDir(): string {
-  return path.join(skillDir(), 'resources');
+/** Canonical adapter source in the monorepo. */
+export function adapterSrcDir(startDir: string = __dirname): string {
+  return path.join(packageRoot(startDir), 'packages/adapter/src');
+}
+
+/**
+ * Directory to copy adapter files from.
+ * Monorepo: packages/adapter/src (source of truth).
+ * Published npm package: skills/add-webchat/resources (synced at build time).
+ *
+ * Detection is implicit: the published tarball excludes `packages/` (see root
+ * package.json `files`), so `packages/adapter/src` is absent there and we fall
+ * back to build-synced skill resources. No separate isMonorepo flag needed.
+ */
+export function resourcesDir(startDir: string = __dirname): string {
+  const adapterSrc = adapterSrcDir(startDir);
+  if (fs.existsSync(path.join(adapterSrc, 'web.ts'))) {
+    return adapterSrc;
+  }
+  return path.join(skillDir(startDir), 'resources');
 }
 
 export interface AdapterCopyRule {

@@ -54,6 +54,8 @@ pnpm add file:../nanoclaw-webchat
 
 ### 2. Copy adapter resources into `src/`
 
+Adapter source lives in `packages/adapter/src` in the monorepo; the npm package ships a synced copy at `skills/add-webchat/resources/`. Copy from either path in your install:
+
 Copy from `node_modules/@artificer-innovations/nanoclaw-webchat/skills/add-webchat/resources/`:
 
 ```bash
