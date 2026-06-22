@@ -1,7 +1,7 @@
 {
   "name": "@artificer-innovations/nanoclaw-webchat",
-  "version": "0.1.0",
-  "description": "Browser UI for NanoClaw web chat channel",
+  "version": "0.2.0",
+  "description": "Browser UI, NanoClaw web channel adapter, and /add-webchat skill for NanoClaw web chat",
   "type": "module",
   "license": "MIT",
   "author": "Artificer Innovations, LLC",
@@ -13,10 +13,16 @@
   "bugs": {
     "url": "https://github.com/Artificer-Innovations/nanoclaw-webchat/issues"
   },
+  "bin": {
+    "nanoclaw-webchat": "./dist/cli/bin.js"
+  },
   "files": [
     "dist",
+    "skills",
     "api-contract.md",
     "README.md",
+    "QUICKSTART.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "exports": {
@@ -30,38 +36,15 @@
     }
   },
   "scripts": {
-    "build": "vite build && tsc -p tsconfig.build.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit && pnpm --filter @artificer-innovations/nanoclaw-webchat-mcp typecheck",
-    "dev": "vite",
-    "test:unit": "vitest run && pnpm --filter @artificer-innovations/nanoclaw-webchat-mcp test:unit",
-    "test:coverage": "vitest run --coverage && pnpm --filter @artificer-innovations/nanoclaw-webchat-mcp test:coverage",
+    "build": "pnpm --filter @nanoclaw-webchat/shared build && node scripts/sync-adapter-resources.mjs && pnpm --filter @nanoclaw-webchat/client build && pnpm --filter @nanoclaw-webchat/cli build && pnpm --filter @artificer-innovations/nanoclaw-webchat-mcp build",
+    "typecheck": "pnpm --filter @nanoclaw-webchat/shared build && pnpm -r typecheck",
+    "dev": "pnpm --filter @nanoclaw-webchat/client dev",
+    "test:unit": "pnpm -r test:unit",
+    "test:coverage": "pnpm --filter @nanoclaw-webchat/client test:coverage && pnpm --filter @nanoclaw-webchat/cli test:coverage && pnpm --filter @artificer-innovations/nanoclaw-webchat-mcp test:coverage",
+    "test:integration": "node scripts/run-integration.mjs",
     "prepublishOnly": "pnpm run build"
-  },
-  "devDependencies": {
-    "@testing-library/jest-dom": "^6.9.1",
-    "@testing-library/react": "^16.3.2",
-    "@testing-library/user-event": "^14.6.1",
-    "@types/mdast": "^4.0.4",
-    "@types/node": "^22.15.30",
-    "@types/react": "^19.1.8",
-    "@types/react-dom": "^19.1.6",
-    "@vitejs/plugin-react": "^4.6.0",
-    "@vitest/coverage-v8": "^4.1.9",
-    "jsdom": "^29.1.1",
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0",
-    "react-markdown": "^10.1.0",
-    "remark-breaks": "^4.0.0",
-    "remark-gfm": "^4.0.1",
-    "typescript": "^5.8.3",
-    "unist-util-visit": "^5.0.0",
-    "vite": "^6.3.5",
-    "vitest": "^4.1.9"
   },
   "engines": {
     "node": ">=20"
-  },
-  "dependencies": {
-    "highlight.js": "^11.11.1"
   }
 }

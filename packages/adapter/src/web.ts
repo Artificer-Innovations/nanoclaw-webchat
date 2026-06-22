@@ -1,0 +1,1121 @@
+/**
+ * Web channel adapter — local browser chat via HTTP + WebSocket.
+ *
+ * Serves the @artificer-innovations/nanoclaw-webchat SPA and exposes a small REST/WS API.
+ * Routes patterns and DM rooms are wired by webchat-sync.ts; this adapter only
+ * transports messages through the normal router/delivery path.
+ */
+import fs from 'fs';
+import http from 'http';
+import path from 'path';
+
+import { WebSocketServer, WebSocket, type WebSocket as WebSocketClient } from 'ws';
+
+import { readEnvFile } from '../env.js';
+import { getAllAgentGroups } from '../db/agent-groups.js';
+import { getMessagingGroupByPlatform } from '../db/messaging-groups.js';
+import { log } from '../log.js';
+import { buildWebchatBootstrap, readTeamFolder } from '../webchat-sync.js';
+import {
+  backfillIntroLine,
+  buildRoutingMetadata,
+  folderFromSenderName,
+  HISTORICAL_REPLAY_FIELD,
+  readBackfillMessageLimit,
+  roomContextStub,
+  rosterJoinStub,
+  ROSTER_STUB_FIELD,
+  SYNTHETIC_KIND_FIELD,
+  SYNTHETIC_MESSAGE_FIELD,
+  THREAD_MESSAGE_SEQ_FIELD,
+  WEBCHAT_RECEIVER_FIELD,
+  type AgentNameRef,
+} from '../webchat-routing.js';
+import { implicitMentionedFolders, mentionedAgentFolders, type ImplicitMentionAgent } from '../webchat-mentions.js';
+import {
+  addEngagedAgents,
+  appendMessage,
+  createThread,
+  deleteThreadData,
+  ensureWebchatSchema,
+  enrichMessagesWithAttachmentData,
+  getEngagedAgents,
+  getMessageAttachmentPath,
+  getMessages,
+  getRecentMessages,
+  hasBackfillDelivered,
+  listThreads,
+  MAIN_THREAD,
+  markBackfillDelivered,
+  removeEngagedAgent,
+  upsertThread,
+  type WebchatAttachmentInput,
+  type WebchatStoredMessage,
+} from '../webchat-store.js';
+import { cleanupAgentSessionsForThread } from '../webchat-thread-cleanup.js';
+import { routeInbound } from '../router.js';
+import { registerChannelAdapter } from './channel-registry.js';
+import type { ChannelAdapter, ChannelSetup, InboundMessage, OutboundFile, OutboundMessage } from './adapter.js';
+
+const CHANNEL_TYPE = 'web';
+const MAX_ATTACHMENTS = 4;
+const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+
+interface WebChatAttachment {
+  name: string;
+  mimeType: string;
+  type: 'image' | 'file';
+  size?: number;
+  data?: string;
+  url?: string;
+}
+
+interface WebAdapterOptions {
+  port: number;
+  authToken: string;
+  userId: string;
+  displayName: string;
+}
+
+function extractText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (content && typeof content === 'object') {
+    const c = content as { text?: unknown };
+    if (typeof c.text === 'string') return c.text;
+  }
+  return '';
+}
+
+function extractSenderName(content: unknown): string | undefined {
+  if (content && typeof content === 'object') {
+    const name = (content as { senderName?: unknown }).senderName;
+    if (typeof name === 'string' && name.trim()) return name.trim();
+  }
+  return undefined;
+}
+
+function extractSenderFolder(content: unknown): string | undefined {
+  if (content && typeof content === 'object') {
+    const folder = (content as { senderFolder?: unknown }).senderFolder;
+    if (typeof folder === 'string' && folder.trim()) return folder.trim();
+  }
+  return undefined;
+}
+
+const EXT_TO_MIME: Record<string, string> = {
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.pdf': 'application/pdf',
+  '.txt': 'text/plain',
+  '.md': 'text/markdown',
+  '.markdown': 'text/markdown',
+  '.json': 'application/json',
+  '.zip': 'application/zip',
+  '.csv': 'text/csv',
+  '.html': 'text/html',
+  '.htm': 'text/html',
+};
+
+function mimeTypeFromFilename(filename: string): string {
+  const ext = path.extname(filename).toLowerCase();
+  return EXT_TO_MIME[ext] ?? 'application/octet-stream';
+}
+
+function inferAttachmentMime(name: string, mimeType: string): string {
+  const trimmed = mimeType.trim().toLowerCase();
+  if (trimmed) return trimmed;
+  return mimeTypeFromFilename(name);
+}
+
+function attachmentType(mimeType: string): 'image' | 'file' {
+  return mimeType.startsWith('image/') ? 'image' : 'file';
+}
+
+function outboundFileToAttachment(file: OutboundFile): WebChatAttachment | null {
+  if (file.data.length > MAX_ATTACHMENT_BYTES) {
+    log.warn('Skipping oversize outbound attachment', { filename: file.filename, size: file.data.length });
+    return null;
+  }
+  const mimeType = mimeTypeFromFilename(file.filename);
+  return {
+    name: file.filename,
+    mimeType,
+    type: attachmentType(mimeType),
+    size: file.data.length,
+    data: file.data.toString('base64'),
+  };
+}
+
+interface RawAttachment {
+  name?: string;
+  mimeType?: string;
+  type?: string;
+  data?: string;
+}
+
+function validateInboundAttachments(raw: unknown): WebChatAttachment[] | { error: string } {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) return { error: 'attachments must be an array' };
+  if (raw.length > MAX_ATTACHMENTS) return { error: 'too many attachments' };
+
+  const validated: WebChatAttachment[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') return { error: 'invalid attachment' };
+    const att = item as RawAttachment;
+    const name = typeof att.name === 'string' ? att.name.trim() : '';
+    const mimeType = inferAttachmentMime(name, typeof att.mimeType === 'string' ? att.mimeType : '');
+    const data = typeof att.data === 'string' ? att.data : '';
+    if (!name || !data) return { error: 'invalid attachment fields' };
+
+    let decoded: Buffer;
+    try {
+      decoded = Buffer.from(data, 'base64');
+    } catch {
+      return { error: 'invalid attachment data' };
+    }
+    if (decoded.length === 0 || decoded.length > MAX_ATTACHMENT_BYTES) {
+      return { error: 'attachment size out of range' };
+    }
+
+    validated.push({
+      name,
+      mimeType,
+      type: attachmentType(mimeType),
+      size: decoded.length,
+      data,
+    });
+  }
+  return validated;
+}
+
+function staticMimeType(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  switch (ext) {
+    case '.html':
+      return 'text/html; charset=utf-8';
+    case '.js':
+      return 'application/javascript; charset=utf-8';
+    case '.css':
+      return 'text/css; charset=utf-8';
+    case '.svg':
+      return 'image/svg+xml';
+    case '.json':
+      return 'application/json; charset=utf-8';
+    case '.woff2':
+      return 'font/woff2';
+    default:
+      return 'application/octet-stream';
+  }
+}
+
+function toStoredAttachments(attachments: WebChatAttachment[]): WebchatAttachmentInput[] {
+  return attachments.map((a) => ({
+    name: a.name,
+    mimeType: a.mimeType,
+    type: a.type,
+    size: a.size,
+    data: a.data,
+  }));
+}
+
+function engagedAgentsChanged(before: string[], after: string[]): boolean {
+  if (before.length !== after.length) return true;
+  const beforeSet = new Set(before);
+  return after.some((folder) => !beforeSet.has(folder));
+}
+
+async function dispatchInbound(platformId: string, threadId: string | null, inbound: InboundMessage): Promise<void> {
+  try {
+    await routeInbound({
+      channelType: CHANNEL_TYPE,
+      instance: CHANNEL_TYPE,
+      platformId,
+      threadId,
+      message: {
+        id: inbound.id,
+        kind: inbound.kind,
+        content: JSON.stringify(inbound.content),
+        timestamp: inbound.timestamp,
+        isMention: inbound.isMention,
+        isGroup: inbound.isGroup,
+      },
+    });
+  } catch (err) {
+    log.error('Web inbound routing failed', { err, platformId, threadId, messageId: inbound.id });
+  }
+}
+
+function lobbyAgentFolders(): { folders: string[]; teamFolder: string | null; agents: AgentNameRef[] } {
+  const agents = getAllAgentGroups().map((a) => ({
+    folder: a.folder,
+    displayName: a.name,
+  }));
+  return {
+    folders: agents.map((a) => a.folder),
+    teamFolder: readTeamFolder(),
+    agents,
+  };
+}
+
+const agentDeliveryChains = new Map<string, Promise<void>>();
+const pendingJoinStubByThread = new Map<string, string>();
+
+function deliveryChainKey(platformId: string, threadId: string, folder: string): string {
+  return `${platformId}|${threadId}|${folder}`;
+}
+
+function enqueueAgentDelivery(key: string, work: () => void | Promise<void>): Promise<void> {
+  const prev = agentDeliveryChains.get(key) ?? Promise.resolve();
+  const next = prev
+    .then(() => Promise.resolve(work()))
+    .catch((err) => {
+      log.error('Web agent delivery chain failed', { err, key });
+      return Promise.resolve(work());
+    })
+    .finally(() => {
+      if (agentDeliveryChains.get(key) === next) {
+        agentDeliveryChains.delete(key);
+      }
+    });
+  agentDeliveryChains.set(key, next);
+  return next;
+}
+
+/** Test helper: wait for all per-agent lobby delivery chains to finish. */
+export async function flushWebAgentDeliveryChains(): Promise<void> {
+  await Promise.all([...agentDeliveryChains.values()]);
+}
+
+function agentRefsForFolders(folders: readonly string[], allAgents: readonly AgentNameRef[]): AgentNameRef[] {
+  return folders.map((folder) => {
+    const found = allAgents.find((a) => a.folder === folder);
+    return found ?? { folder, displayName: folder };
+  });
+}
+
+function threadTitle(platformId: string, threadId: string): string {
+  return listThreads(platformId).find((t) => t.id === threadId)?.title ?? threadId;
+}
+
+function syntheticLobbyContent(
+  text: string,
+  receiverFolder: string,
+  engagedAfter: readonly string[],
+  syntheticKind: string,
+  webUserId: string,
+): Record<string, unknown> {
+  return {
+    text,
+    sender: 'System',
+    senderId: webUserId,
+    [SYNTHETIC_MESSAGE_FIELD]: true,
+    [SYNTHETIC_KIND_FIELD]: syntheticKind,
+    [WEBCHAT_RECEIVER_FIELD]: receiverFolder,
+    routing: buildRoutingMetadata(receiverFolder, [], [], engagedAfter, false),
+  };
+}
+
+function inboundAttachmentsFromStored(attachments?: WebchatAttachmentInput[]): WebChatAttachment[] {
+  return (
+    attachments?.map((att) => ({
+      name: att.name,
+      mimeType: att.mimeType,
+      type: att.type,
+      size: att.size,
+      ...(att.data ? { data: att.data } : {}),
+    })) ?? []
+  );
+}
+
+async function dispatchHistoryReplay(
+  platformId: string,
+  threadId: string | null,
+  receiverFolder: string,
+  webUserId: string,
+  userDisplayName: string,
+  allAgents: readonly AgentNameRef[],
+  engagedAfter: readonly string[],
+  history: readonly WebchatStoredMessage[],
+): Promise<void> {
+  const { folders, teamFolder } = lobbyAgentFolders();
+  const mentionOpts = { agentFolders: folders, teamFolder };
+  const engagedRefs: ImplicitMentionAgent[] = agentRefsForFolders(engagedAfter, allAgents);
+
+  for (const msg of history) {
+    const isOutbound = msg.direction === 'outbound';
+    const explicitMentions = isOutbound ? [] : mentionedAgentFolders(msg.text, mentionOpts);
+    const implicitMentions = isOutbound ? [] : implicitMentionedFolders(msg.text, engagedRefs);
+    const senderFolder = isOutbound ? folderFromSenderName(msg.senderName, allAgents) : null;
+    const attachments = inboundAttachmentsFromStored(msg.attachments);
+    const routing = buildRoutingMetadata(receiverFolder, explicitMentions, implicitMentions, engagedAfter, isOutbound);
+    const replayInbound: InboundMessage = {
+      id: `web-backfill-replay-${msg.id}-${receiverFolder}`,
+      kind: 'chat',
+      content: {
+        text: msg.text,
+        sender: isOutbound ? msg.senderName?.trim() || 'Agent' : userDisplayName,
+        senderId: webUserId,
+        ...(msg.threadSeq != null ? { [THREAD_MESSAGE_SEQ_FIELD]: msg.threadSeq } : {}),
+        [HISTORICAL_REPLAY_FIELD]: true,
+        ...(isOutbound && senderFolder ? { senderFolder } : {}),
+        [WEBCHAT_RECEIVER_FIELD]: receiverFolder,
+        routing,
+        ...(attachments.length > 0 ? { attachments } : {}),
+      },
+      timestamp: new Date(msg.timestamp).toISOString(),
+      isGroup: true,
+    };
+    await dispatchInbound(platformId, threadId, replayInbound);
+  }
+}
+
+function dispatchBackfillForAgent(
+  platformId: string,
+  threadId: string | null,
+  threadIdStored: string,
+  receiverFolder: string,
+  webUserId: string,
+  userDisplayName: string,
+  allAgents: readonly AgentNameRef[],
+  engagedAfter: readonly string[],
+  excludeMessageId: string,
+): Promise<void> {
+  const chainKey = deliveryChainKey(platformId, threadIdStored, receiverFolder);
+  return enqueueAgentDelivery(chainKey, async () => {
+    if (hasBackfillDelivered(platformId, threadIdStored, receiverFolder)) {
+      log.debug('Web backfill skipped — already delivered for agent', {
+        platformId,
+        threadId: threadIdStored,
+        receiverFolder,
+      });
+      return;
+    }
+
+    const others = agentRefsForFolders(
+      engagedAfter.filter((f) => f !== receiverFolder),
+      allAgents,
+    );
+    const limit = readBackfillMessageLimit();
+    const history = enrichMessagesWithAttachmentData(
+      getRecentMessages(platformId, threadIdStored, limit).filter((m) => m.id !== excludeMessageId),
+    );
+    const stubInbound: InboundMessage = {
+      id: `web-backfill-stub-${platformId}-${threadIdStored}-${receiverFolder}`,
+      kind: 'chat',
+      content: syntheticLobbyContent(roomContextStub(others), receiverFolder, engagedAfter, 'room_context', webUserId),
+      timestamp: new Date().toISOString(),
+      isGroup: true,
+    };
+    await dispatchInbound(platformId, threadId, stubInbound);
+
+    if (history.length > 0) {
+      const introInbound: InboundMessage = {
+        id: `web-backfill-intro-${platformId}-${threadIdStored}-${receiverFolder}`,
+        kind: 'chat',
+        content: syntheticLobbyContent(
+          backfillIntroLine(threadTitle(platformId, threadIdStored), others),
+          receiverFolder,
+          engagedAfter,
+          'backfill_intro',
+          webUserId,
+        ),
+        timestamp: new Date().toISOString(),
+        isGroup: true,
+      };
+      await dispatchInbound(platformId, threadId, introInbound);
+      await dispatchHistoryReplay(
+        platformId,
+        threadId,
+        receiverFolder,
+        webUserId,
+        userDisplayName,
+        allAgents,
+        engagedAfter,
+        history,
+      );
+    }
+
+    markBackfillDelivered(platformId, threadIdStored, receiverFolder);
+  });
+}
+
+function routeLobbyInbound(
+  platformId: string,
+  threadId: string | null,
+  threadIdStored: string,
+  baseInbound: InboundMessage,
+  content: Record<string, unknown>,
+  trimmedText: string,
+  webUserId: string,
+  userDisplayName: string,
+  broadcastEngaged: (agents: string[]) => void,
+): void {
+  const { folders, teamFolder, agents } = lobbyAgentFolders();
+  const mentionOpts = { agentFolders: folders, teamFolder };
+  const explicitMentions = mentionedAgentFolders(trimmedText, mentionOpts);
+  const priorEngaged = getEngagedAgents(platformId, threadIdStored);
+
+  let engagedAfter = priorEngaged;
+  if (explicitMentions.length > 0) {
+    engagedAfter = addEngagedAgents(platformId, threadIdStored, explicitMentions);
+    if (engagedAgentsChanged(priorEngaged, engagedAfter)) {
+      broadcastEngaged(engagedAfter);
+    }
+  }
+
+  if (engagedAfter.length === 0) return;
+
+  const newlyEngaged = explicitMentions.filter((folder) => !priorEngaged.includes(folder));
+  if (newlyEngaged.length > 0) {
+    const joinedNames = newlyEngaged.map((folder) => agents.find((a) => a.folder === folder)?.displayName ?? folder);
+    pendingJoinStubByThread.set(
+      `${platformId}|${threadIdStored}`,
+      joinedNames.map((name) => rosterJoinStub(name)).join('\n'),
+    );
+  }
+
+  const engagedRefs: ImplicitMentionAgent[] = agentRefsForFolders(engagedAfter, agents);
+  const implicitMentions = implicitMentionedFolders(trimmedText, engagedRefs);
+  const threadStubKey = `${platformId}|${threadIdStored}`;
+  const joinStub = pendingJoinStubByThread.get(threadStubKey);
+
+  for (const receiverFolder of engagedAfter) {
+    if (newlyEngaged.includes(receiverFolder)) {
+      dispatchBackfillForAgent(
+        platformId,
+        threadId,
+        threadIdStored,
+        receiverFolder,
+        webUserId,
+        userDisplayName,
+        agents,
+        engagedAfter,
+        baseInbound.id,
+      );
+    }
+
+    const chainKey = deliveryChainKey(platformId, threadIdStored, receiverFolder);
+    enqueueAgentDelivery(chainKey, async () => {
+      const routing = buildRoutingMetadata(receiverFolder, explicitMentions, implicitMentions, engagedAfter, false);
+      let deliveryText = trimmedText;
+      const routingContent: Record<string, unknown> = {
+        ...content,
+        text: deliveryText,
+        [WEBCHAT_RECEIVER_FIELD]: receiverFolder,
+        routing,
+      };
+      if (joinStub && !newlyEngaged.includes(receiverFolder)) {
+        routingContent[ROSTER_STUB_FIELD] = joinStub;
+      }
+      const routingInbound: InboundMessage = {
+        ...baseInbound,
+        id: `${baseInbound.id}-route-${receiverFolder}`,
+        content: routingContent,
+      };
+      await dispatchInbound(platformId, threadId, routingInbound);
+    });
+  }
+
+  if (joinStub) {
+    pendingJoinStubByThread.delete(threadStubKey);
+  }
+}
+
+async function fanOutPeerReply(
+  platformId: string,
+  threadId: string | null,
+  threadIdStored: string,
+  webUserId: string,
+  outboundText: string,
+  outboundContent: unknown,
+  threadMessageSeq?: number,
+): Promise<void> {
+  const { agents } = lobbyAgentFolders();
+  const engaged = getEngagedAgents(platformId, threadIdStored);
+  const senderName = extractSenderName(outboundContent);
+  const senderFolder = extractSenderFolder(outboundContent) ?? folderFromSenderName(senderName, agents);
+  const peers = senderFolder ? engaged.filter((folder) => folder !== senderFolder) : [];
+  if (!senderFolder || peers.length === 0) {
+    if (peers.length === 0 && senderFolder && engaged.length > 0) {
+      log.debug('Web peer fan-out skipped — no peer recipients', {
+        platformId,
+        threadIdStored,
+        senderFolder,
+        engaged,
+      });
+    }
+    if (!senderFolder) {
+      log.warn('Web peer fan-out skipped — could not resolve sender folder', {
+        platformId,
+        threadIdStored,
+        senderName,
+      });
+    }
+    return;
+  }
+
+  for (const peerFolder of peers) {
+    const routing = buildRoutingMetadata(peerFolder, [], [], engaged, true);
+    const peerInbound: InboundMessage = {
+      id: `web-peer-${Date.now()}-${peerFolder}-${Math.random().toString(36).slice(2, 6)}`,
+      kind: 'chat',
+      content: {
+        text: outboundText,
+        sender: senderName ?? senderFolder,
+        senderId: webUserId,
+        ...(senderName ? { senderName } : {}),
+        senderFolder,
+        ...(threadMessageSeq != null ? { [THREAD_MESSAGE_SEQ_FIELD]: threadMessageSeq } : {}),
+        [WEBCHAT_RECEIVER_FIELD]: peerFolder,
+        routing,
+      },
+      timestamp: new Date().toISOString(),
+      isGroup: true,
+    };
+    const chainKey = deliveryChainKey(platformId, threadIdStored, peerFolder);
+    await enqueueAgentDelivery(chainKey, () => dispatchInbound(platformId, threadId, peerInbound));
+  }
+}
+
+const MAX_BODY_BYTES = 20 * 1024 * 1024;
+
+export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
+  let server: http.Server | null = null;
+  let wss: WebSocketServer | null = null;
+  let setupConfig: ChannelSetup | null = null;
+  let assetDir: string | null = null;
+  let cachedIndexHtml: string | null = null;
+  const wsClients = new Set<WebSocketClient>();
+
+  function checkAuth(req: http.IncomingMessage, url: URL): boolean {
+    const header = req.headers.authorization;
+    if (header === `Bearer ${opts.authToken}`) return true;
+    // WebSocket browser clients cannot set Authorization headers; ?token= is accepted
+    // for /api/ws only (weaker — may appear in logs/history).
+    if (url.pathname === '/api/ws') {
+      const q = url.searchParams.get('token');
+      return q === opts.authToken;
+    }
+    return false;
+  }
+
+  function broadcast(event: unknown): void {
+    const payload = JSON.stringify(event);
+    for (const client of wsClients) {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(payload);
+      }
+    }
+  }
+
+  function persistAndBroadcast(msg: WebchatStoredMessage): WebchatStoredMessage {
+    const stored = appendMessage(msg);
+    broadcast({ type: 'message', message: stored });
+    return stored;
+  }
+
+  function readBody(req: http.IncomingMessage): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const contentLength = req.headers['content-length'];
+      if (contentLength && Number(contentLength) > MAX_BODY_BYTES) {
+        reject(new Error('body too large'));
+        return;
+      }
+      let body = '';
+      let bytes = 0;
+      req.on('data', (chunk: Buffer | string) => {
+        const size = typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.length;
+        bytes += size;
+        if (bytes > MAX_BODY_BYTES) {
+          req.destroy();
+          reject(new Error('body too large'));
+          return;
+        }
+        body += chunk;
+      });
+      req.on('end', () => resolve(body));
+      req.on('error', reject);
+    });
+  }
+
+  function json(res: http.ServerResponse, status: number, data: unknown): void {
+    res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify(data));
+  }
+
+  function escapeHtmlAttr(value: string): string {
+    return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  }
+
+  function injectWebchatTokenMeta(html: string, token: string): string {
+    const metaName = 'webchat-token';
+    const meta = `<meta name="${metaName}" content="${escapeHtmlAttr(token)}" />`;
+    const existing = new RegExp(`<meta name="${metaName}" content="[^"]*"\\s*/?>`);
+    if (existing.test(html)) return html.replace(existing, meta);
+    if (html.includes('</head>')) return html.replace('</head>', `    ${meta}\n  </head>`);
+    return html;
+  }
+
+  function serveIndexHtml(res: http.ServerResponse): boolean {
+    if (!assetDir) return false;
+    const indexPath = path.join(assetDir, 'index.html');
+    if (!fs.existsSync(indexPath)) return false;
+    if (!cachedIndexHtml) {
+      cachedIndexHtml = injectWebchatTokenMeta(fs.readFileSync(indexPath, 'utf8'), opts.authToken);
+    }
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(cachedIndexHtml);
+    return true;
+  }
+
+  function isUnderAssetDir(filePath: string): boolean {
+    if (!assetDir) return false;
+    const root = path.resolve(assetDir);
+    const resolved = path.resolve(filePath);
+    return resolved === root || resolved.startsWith(root + path.sep);
+  }
+
+  function serveStatic(urlPath: string, res: http.ServerResponse): boolean {
+    if (!assetDir) return false;
+    const safe = path.normalize(urlPath).replace(/^(\.\.[/\\])+/, '');
+    const relative = safe === '/' ? 'index.html' : safe.replace(/^\/+/, '');
+    if (relative === 'index.html') {
+      return serveIndexHtml(res);
+    }
+    const filePath = path.join(assetDir, relative);
+    if (!isUnderAssetDir(filePath)) {
+      res.writeHead(403).end();
+      return true;
+    }
+    if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+      return serveIndexHtml(res);
+    }
+    res.writeHead(200, { 'Content-Type': staticMimeType(filePath) });
+    res.end(fs.readFileSync(filePath));
+    return true;
+  }
+
+  async function handlePostMessage(
+    platformId: string,
+    threadIdRaw: string,
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+  ): Promise<void> {
+    let body: string;
+    try {
+      body = await readBody(req);
+    } catch {
+      json(res, 400, { error: 'read failed' });
+      return;
+    }
+    let text: string;
+    let attachmentsRaw: unknown;
+    try {
+      const parsed = JSON.parse(body) as { text?: string; attachments?: unknown };
+      text = parsed.text ?? '';
+      attachmentsRaw = parsed.attachments;
+    } catch {
+      json(res, 400, { error: 'Invalid JSON' });
+      return;
+    }
+
+    const attachmentResult = validateInboundAttachments(attachmentsRaw);
+    if (!Array.isArray(attachmentResult)) {
+      json(res, 400, { error: attachmentResult.error });
+      return;
+    }
+    const attachments = attachmentResult;
+
+    if (!text.trim() && attachments.length === 0) {
+      json(res, 400, { error: 'text or attachments required' });
+      return;
+    }
+
+    const threadId = threadIdRaw === MAIN_THREAD ? null : threadIdRaw;
+    const id = `web-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const timestamp = new Date().toISOString();
+    const isGroup = platformId === 'lobby';
+
+    const content: Record<string, unknown> = {
+      text: text.trim(),
+      sender: opts.displayName,
+      senderId: opts.userId,
+    };
+    if (attachments.length > 0) {
+      content.attachments = attachments.map((a) => ({
+        name: a.name,
+        type: a.type === 'image' ? 'image' : 'file',
+        mimeType: a.mimeType,
+        size: a.size,
+        data: a.data,
+      }));
+    }
+
+    const inbound: InboundMessage = {
+      id,
+      kind: 'chat',
+      content,
+      timestamp,
+      isGroup,
+    };
+
+    const stored = persistAndBroadcast({
+      id,
+      direction: 'inbound',
+      text: text.trim(),
+      timestamp: Date.now(),
+      platformId,
+      threadId: threadId ?? MAIN_THREAD,
+      ...(attachments.length > 0 ? { attachments: toStoredAttachments(attachments) } : {}),
+    });
+    content[THREAD_MESSAGE_SEQ_FIELD] = stored.threadSeq;
+    inbound.content = content;
+
+    if (setupConfig) {
+      const threadIdStored = threadId ?? MAIN_THREAD;
+      const trimmedText = text.trim();
+      if (isGroup) {
+        routeLobbyInbound(
+          platformId,
+          threadId,
+          threadIdStored,
+          inbound,
+          content,
+          trimmedText,
+          opts.userId,
+          opts.displayName,
+          (agents) => {
+            broadcast({ type: 'engaged', platformId, threadId: threadIdStored, agents });
+          },
+        );
+      } else {
+        void dispatchInbound(platformId, threadId, inbound);
+      }
+    }
+
+    json(res, 200, { messageId: id, timestamp: Date.now() });
+  }
+
+  async function handleCreateThread(
+    platformId: string,
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+  ): Promise<void> {
+    let title = 'Thread';
+    try {
+      const body = await readBody(req);
+      if (body.trim()) {
+        const parsed = JSON.parse(body) as { title?: string };
+        if (typeof parsed.title === 'string' && parsed.title.trim()) {
+          title = parsed.title.trim();
+        }
+      }
+    } catch {
+      json(res, 400, { error: 'Invalid JSON' });
+      return;
+    }
+    const thread = createThread(platformId, title);
+    json(res, 200, thread);
+  }
+
+  async function handlePatchThread(
+    platformId: string,
+    threadId: string,
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+  ): Promise<void> {
+    let body: string;
+    try {
+      body = await readBody(req);
+    } catch {
+      json(res, 400, { error: 'read failed' });
+      return;
+    }
+    let title: string;
+    try {
+      const parsed = JSON.parse(body) as { title?: string };
+      title = typeof parsed.title === 'string' ? parsed.title.trim() : '';
+    } catch {
+      json(res, 400, { error: 'Invalid JSON' });
+      return;
+    }
+    if (!title) {
+      json(res, 400, { error: 'title required' });
+      return;
+    }
+    upsertThread(platformId, threadId, title);
+    json(res, 200, { id: threadId, title });
+  }
+
+  function handleDeleteThread(platformId: string, threadId: string, res: http.ServerResponse): void {
+    if (threadId === MAIN_THREAD) {
+      json(res, 400, { error: 'cannot delete main thread' });
+      return;
+    }
+    deleteThreadData(platformId, threadId);
+    try {
+      const mg = getMessagingGroupByPlatform(CHANNEL_TYPE, platformId);
+      if (mg) {
+        cleanupAgentSessionsForThread(mg.id, threadId);
+      }
+    } catch (err) {
+      log.error('Web thread session cleanup failed', { err, platformId, threadId });
+    }
+    json(res, 200, { ok: true });
+  }
+
+  function serveAttachment(messageId: string, storageName: string, res: http.ServerResponse): void {
+    const filePath = getMessageAttachmentPath(messageId, storageName);
+    if (!filePath) {
+      res.writeHead(404).end();
+      return;
+    }
+    res.writeHead(200, {
+      'Content-Type': mimeTypeFromFilename(storageName),
+      'X-Content-Type-Options': 'nosniff',
+    });
+    res.end(fs.readFileSync(filePath));
+  }
+
+  return {
+    name: 'web',
+    channelType: CHANNEL_TYPE,
+    supportsThreads: true,
+
+    async setup(config: ChannelSetup): Promise<void> {
+      setupConfig = config;
+      ensureWebchatSchema();
+
+      try {
+        const pkg = await import('@artificer-innovations/nanoclaw-webchat');
+        assetDir = pkg.getAssetDir();
+      } catch (err) {
+        log.error('Web channel: @artificer-innovations/nanoclaw-webchat not installed', { err });
+        throw err;
+      }
+
+      server = http.createServer(async (req, res) => {
+        try {
+          const url = new URL(req.url ?? '/', `http://127.0.0.1:${opts.port}`);
+
+          if (url.pathname === '/api/ws') {
+            res.writeHead(426).end();
+            return;
+          }
+
+          if (url.pathname.startsWith('/api/')) {
+            if (!checkAuth(req, url)) {
+              json(res, 401, { error: 'Unauthorized' });
+              return;
+            }
+
+            if (req.method === 'GET' && url.pathname === '/api/bootstrap') {
+              json(res, 200, buildWebchatBootstrap(opts.userId, opts.displayName));
+              return;
+            }
+
+            const attMatch = url.pathname.match(/^\/api\/attachments\/([^/]+)\/([^/]+)$/);
+            if (attMatch && req.method === 'GET') {
+              const messageId = decodeURIComponent(attMatch[1]!);
+              const storageName = decodeURIComponent(attMatch[2]!);
+              serveAttachment(messageId, storageName, res);
+              return;
+            }
+
+            const threadsMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/threads$/);
+            if (threadsMatch && req.method === 'POST') {
+              const platformId = decodeURIComponent(threadsMatch[1]!);
+              await handleCreateThread(platformId, req, res);
+              return;
+            }
+
+            const threadMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/threads\/([^/]+)$/);
+            if (threadMatch) {
+              const platformId = decodeURIComponent(threadMatch[1]!);
+              const threadId = decodeURIComponent(threadMatch[2]!);
+              if (req.method === 'PATCH') {
+                await handlePatchThread(platformId, threadId, req, res);
+                return;
+              }
+              if (req.method === 'DELETE') {
+                handleDeleteThread(platformId, threadId, res);
+                return;
+              }
+            }
+
+            const msgMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/threads\/([^/]+)\/messages$/);
+            if (msgMatch) {
+              const platformId = decodeURIComponent(msgMatch[1]!);
+              const threadId = decodeURIComponent(msgMatch[2]!);
+              if (req.method === 'GET') {
+                const since = parseInt(url.searchParams.get('since') ?? '0', 10);
+                const messages = getMessages(platformId, threadId, since);
+                const engagedAgents = platformId === 'lobby' ? getEngagedAgents(platformId, threadId) : [];
+                json(res, 200, { messages, engagedAgents });
+                return;
+              }
+              if (req.method === 'POST') {
+                await handlePostMessage(platformId, threadId, req, res);
+                return;
+              }
+            }
+
+            const engagedMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/threads\/([^/]+)\/engaged\/([^/]+)$/);
+            if (engagedMatch && req.method === 'DELETE') {
+              const platformId = decodeURIComponent(engagedMatch[1]!);
+              const threadId = decodeURIComponent(engagedMatch[2]!);
+              const agentFolder = decodeURIComponent(engagedMatch[3]!);
+              if (platformId !== 'lobby') {
+                json(res, 400, { error: 'engaged agents only apply to lobby' });
+                return;
+              }
+              const agents = removeEngagedAgent(platformId, threadId, agentFolder);
+              broadcast({ type: 'engaged', platformId, threadId, agents });
+              json(res, 200, { agents });
+              return;
+            }
+
+            json(res, 404, { error: 'Not found' });
+            return;
+          }
+
+          if (req.method === 'GET') {
+            if (serveStatic(url.pathname, res)) return;
+          }
+
+          res.writeHead(404).end();
+        } catch (err) {
+          log.error('Web channel request failed', { err, path: req.url });
+          if (!res.headersSent) {
+            json(res, 500, { error: 'Internal server error' });
+          }
+        }
+      });
+
+      wss = new WebSocketServer({ noServer: true });
+
+      server.on('upgrade', (req, socket, head) => {
+        const url = new URL(req.url ?? '/', `http://127.0.0.1:${opts.port}`);
+        if (url.pathname !== '/api/ws') {
+          socket.destroy();
+          return;
+        }
+        if (!checkAuth(req, url)) {
+          socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+          socket.destroy();
+          return;
+        }
+        wss!.handleUpgrade(req, socket, head, (ws) => {
+          wsClients.add(ws);
+          ws.on('close', () => wsClients.delete(ws));
+        });
+      });
+
+      await new Promise<void>((resolve, reject) => {
+        server!.once('error', reject);
+        server!.listen(opts.port, '127.0.0.1', () => {
+          log.info('Web channel listening', { port: opts.port });
+          resolve();
+        });
+      });
+
+      config.onMetadata('lobby', 'Web Lobby', true);
+    },
+
+    async teardown(): Promise<void> {
+      for (const ws of wsClients) {
+        try {
+          ws.close();
+        } catch {
+          // swallow
+        }
+      }
+      wsClients.clear();
+      if (wss) {
+        await new Promise<void>((resolve) => wss!.close(() => resolve()));
+        wss = null;
+      }
+      if (server) {
+        server.closeAllConnections();
+        await new Promise<void>((resolve) => server!.close(() => resolve()));
+        server = null;
+      }
+      log.info('Web channel stopped');
+    },
+
+    isConnected(): boolean {
+      return server?.listening ?? false;
+    },
+
+    async deliver(platformId: string, threadId: string | null, message: OutboundMessage): Promise<string | undefined> {
+      const text = extractText(message.content);
+      const attachments =
+        message.files?.map(outboundFileToAttachment).filter((a): a is WebChatAttachment => a !== null) ?? [];
+      if (!text.trim() && attachments.length === 0) return undefined;
+      const id = `web-out-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      const senderName = extractSenderName(message.content);
+      const stored = persistAndBroadcast({
+        id,
+        direction: 'outbound',
+        text,
+        timestamp: Date.now(),
+        platformId,
+        threadId: threadId ?? MAIN_THREAD,
+        ...(senderName ? { senderName } : {}),
+        ...(attachments.length > 0 ? { attachments: toStoredAttachments(attachments) } : {}),
+      });
+
+      if (platformId === 'lobby' && text.trim()) {
+        await fanOutPeerReply(
+          platformId,
+          threadId,
+          threadId ?? MAIN_THREAD,
+          opts.userId,
+          text.trim(),
+          message.content,
+          stored.threadSeq,
+        );
+      }
+
+      return id;
+    },
+
+    async setTyping(platformId: string, threadId: string | null): Promise<void> {
+      broadcast({
+        type: 'typing',
+        platformId,
+        threadId: threadId ?? MAIN_THREAD,
+      });
+    },
+  };
+}
+
+registerChannelAdapter('web', {
+  factory: () => {
+    const env = readEnvFile([
+      'WEBCHAT_ENABLED',
+      'WEBCHAT_PORT',
+      'WEBCHAT_SECRET',
+      'WEBCHAT_USER_ID',
+      'WEBCHAT_DISPLAY_NAME',
+    ]);
+    const enabled = process.env.WEBCHAT_ENABLED || env.WEBCHAT_ENABLED;
+    if (!enabled || enabled === 'false') return null;
+
+    const secret = process.env.WEBCHAT_SECRET || env.WEBCHAT_SECRET;
+    if (!secret) {
+      log.warn('Web channel disabled — WEBCHAT_SECRET is required when WEBCHAT_ENABLED=true');
+      return null;
+    }
+
+    const portStr = process.env.WEBCHAT_PORT || env.WEBCHAT_PORT || '3200';
+    const port = parseInt(portStr, 10);
+    const userId = process.env.WEBCHAT_USER_ID || env.WEBCHAT_USER_ID || 'web:local';
+    const displayName = process.env.WEBCHAT_DISPLAY_NAME || env.WEBCHAT_DISPLAY_NAME || 'Local';
+
+    return createWebAdapter({ port, authToken: secret, userId, displayName });
+  },
+});

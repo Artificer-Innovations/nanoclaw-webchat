@@ -1,0 +1,29 @@
+name: Integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+      - name: Verify skill resources match adapter source
+        run: |
+          node scripts/sync-adapter-resources.mjs
+          git diff --exit-code skills/add-webchat/resources/
+      - name: Install and run integration
+        run: |
+          pnpm install --frozen-lockfile
+          node scripts/run-integration.mjs
