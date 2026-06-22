@@ -54,6 +54,7 @@ function maskExcludedSpans(text: string): string {
 }
 
 function isCitation(text: string, matchIndex: number, matchedLength: number): boolean {
+  // Fixed 12-char look-behind — misses longer phrases like "according to Rahul".
   const before = text.slice(Math.max(0, matchIndex - 12), matchIndex).toLowerCase();
   const afterStart = matchIndex + matchedLength;
   const after = text.slice(afterStart, afterStart + 24).toLowerCase();

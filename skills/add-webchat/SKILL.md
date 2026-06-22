@@ -129,7 +129,7 @@ Generate secret: `node -e "console.log(require('crypto').randomBytes(16).toStrin
 
 ## Verify
 
-Open `http://127.0.0.1:3200` and paste `WEBCHAT_SECRET`.
+Open `http://127.0.0.1:3200` — auth token is injected by the host (no paste step).
 
 - **Lobby:** `@sarah hello` routes to the sarah agent
 - **DM:** pick an agent in the sidebar — all messages go to that agent

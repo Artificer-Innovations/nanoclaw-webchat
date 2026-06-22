@@ -10,6 +10,7 @@ import {
   copyAdapterFiles,
   insertWebchatBootBlock,
   findWebchatBootInsertIndex,
+  hasWebchatBootBlock,
   removeAdapterFiles,
   removeBarrelImport,
   removeEnvVars,
@@ -285,6 +286,30 @@ describe('patch edge cases', () => {
     fs.writeFileSync(path.join(root, '.env'), 'WEBCHAT_ENABLED=true\nOTHER=1\n');
     expect(removeEnvVars(root)).toEqual(['WEBCHAT_ENABLED']);
     expect(fs.readFileSync(path.join(root, '.env'), 'utf8')).toContain('OTHER=1');
+  });
+
+  it('removeEnvVars preserves custom WEBCHAT_* keys not scaffolded by install', () => {
+    const root = makeNanoclawFixture();
+    fs.writeFileSync(
+      path.join(root, '.env'),
+      'WEBCHAT_ENABLED=true\nWEBCHAT_TEAM_FOLDER=dm-with-brad\nOTHER=1\n',
+    );
+    expect(removeEnvVars(root)).toEqual(['WEBCHAT_ENABLED']);
+    const env = fs.readFileSync(path.join(root, '.env'), 'utf8');
+    expect(env).toContain('WEBCHAT_TEAM_FOLDER=dm-with-brad');
+    expect(env).toContain('OTHER=1');
+  });
+
+  it('removeBarrelImport preserves trailing newline', () => {
+    const root = makeNanoclawFixture();
+    appendBarrelImport(root);
+    expect(removeBarrelImport(root)).toBe(true);
+    expect(fs.readFileSync(path.join(root, 'src/channels/index.ts'), 'utf8').endsWith('\n')).toBe(true);
+  });
+
+  it('findWebchatBootInsertIndex matches tab-indented initChannelAdapters', () => {
+    const content = 'async function main() {\n\tawait initChannelAdapters(config);\n}\n';
+    expect(findWebchatBootInsertIndex(content)).toBeGreaterThanOrEqual(0);
   });
 
   it('scaffoldEnv makes no writes when all keys already exist', () => {

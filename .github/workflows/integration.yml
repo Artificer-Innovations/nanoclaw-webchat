@@ -18,6 +18,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Artificer-Innovations/nanoclaw-v2
+          # Pin: nanoclaw-v2 @ 3be0f30 (2026-06-21) — bump when fixture API changes
           ref: 3be0f30
           path: nanoclaw-v2
       - uses: pnpm/action-setup@v4
@@ -28,6 +29,11 @@ jobs:
           node-version: '22'
           cache: 'pnpm'
           cache-dependency-path: nanoclaw-webchat/pnpm-lock.yaml
+      - name: Verify skill resources match adapter source
+        working-directory: nanoclaw-webchat
+        run: |
+          node scripts/sync-adapter-resources.mjs
+          git diff --exit-code skills/add-webchat/resources/
       - name: Install and run integration
         working-directory: nanoclaw-webchat
         env:

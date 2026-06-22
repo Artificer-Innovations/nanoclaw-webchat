@@ -86,7 +86,7 @@ pnpm exec nanoclaw-webchat verify    # optional
 open http://127.0.0.1:3200
 ```
 
-Paste `WEBCHAT_SECRET` when prompted.
+The host injects `WEBCHAT_SECRET` into the page automatically (localhost-only; same model as the dashboard).
 
 ### Verify behavior
 

@@ -25,6 +25,7 @@ export interface InstallResult {
 
 export function runInstall(root?: string): InstallResult {
   const nanoclawRoot = root ?? findNanoclawRoot();
+  console.log(`Detected NanoClaw root: ${nanoclawRoot}`);
   const copied = copyAdapterFiles(nanoclawRoot);
   const barrelPatched = appendBarrelImport(nanoclawRoot);
   const bootPatched = insertWebchatBootBlock(nanoclawRoot);

@@ -37,28 +37,40 @@ export function appendBarrelImport(nanoclawRoot: string): boolean {
 
 export function removeBarrelImport(nanoclawRoot: string): boolean {
   const filePath = path.join(nanoclawRoot, 'src/channels/index.ts');
-  const lines = fs.readFileSync(filePath, 'utf8').split('\n');
+  const content = fs.readFileSync(filePath, 'utf8');
+  const lines = content.split('\n');
   const filtered = lines.filter((line) => line.trim() !== WEBCHAT_BARREL_IMPORT);
   if (filtered.length === lines.length) return false;
-  fs.writeFileSync(filePath, filtered.join('\n'));
+  const body = filtered.join('\n');
+  fs.writeFileSync(filePath, content.endsWith('\n') ? `${body}\n` : body);
   return true;
 }
 
+/** Keys written by scaffoldEnv — uninstall removes only these, not other WEBCHAT_* vars. */
+export const SCAFFOLDED_ENV_KEYS = ['WEBCHAT_ENABLED', 'WEBCHAT_PORT', 'WEBCHAT_SECRET'] as const;
+
+const WEBCHAT_BOOT_BLOCK_PATTERN =
+  /^[ \t]*const \{ startWebChat \} = await import\('\.\/webchat-boot\.js'\);\r?\n^[ \t]*await startWebChat\(\);\r?\n(?:\r?\n)?/m;
+
 /** Index in src/index.ts where the webchat boot block should be inserted (start of line). */
 export function findWebchatBootInsertIndex(content: string): number {
-  const awaited = content.match(/^  await initChannelAdapters\(/m);
+  const awaited = content.match(/^\s+await initChannelAdapters\(/m);
   if (awaited?.index != null) return awaited.index;
 
-  const plain = content.match(/^  initChannelAdapters\(/m);
+  const plain = content.match(/^\s+initChannelAdapters\(/m);
   if (plain?.index != null) return plain.index;
 
   return -1;
 }
 
+export function hasWebchatBootBlock(content: string): boolean {
+  return WEBCHAT_BOOT_BLOCK_PATTERN.test(content);
+}
+
 export function insertWebchatBootBlock(nanoclawRoot: string): boolean {
   const filePath = path.join(nanoclawRoot, 'src/index.ts');
   const content = fs.readFileSync(filePath, 'utf8');
-  if (content.includes('startWebChat()')) return false;
+  if (hasWebchatBootBlock(content)) return false;
   const idx = findWebchatBootInsertIndex(content);
   if (idx < 0) {
     throw new Error('Could not find initChannelAdapters( in src/index.ts');
@@ -71,20 +83,9 @@ export function insertWebchatBootBlock(nanoclawRoot: string): boolean {
 export function removeWebchatBootBlock(nanoclawRoot: string): boolean {
   const filePath = path.join(nanoclawRoot, 'src/index.ts');
   const content = fs.readFileSync(filePath, 'utf8');
-  const replacements: Array<[string, string]> = [
-    [`${WEBCHAT_BOOT_BLOCK}\n\n  await initChannelAdapters(`, 'await initChannelAdapters('],
-    [`${WEBCHAT_BOOT_BLOCK}\n\n  initChannelAdapters(`, 'initChannelAdapters('],
-    [`await ${WEBCHAT_BOOT_BLOCK}\n\n  initChannelAdapters(`, 'await initChannelAdapters('],
-    [`${WEBCHAT_BOOT_BLOCK}\n\n`, ''],
-    [`${WEBCHAT_BOOT_BLOCK}\n`, ''],
-  ];
-  for (const [pattern, replacement] of replacements) {
-    if (content.includes(pattern)) {
-      fs.writeFileSync(filePath, content.replace(pattern, replacement));
-      return true;
-    }
-  }
-  return false;
+  if (!hasWebchatBootBlock(content)) return false;
+  fs.writeFileSync(filePath, content.replace(WEBCHAT_BOOT_BLOCK_PATTERN, ''));
+  return true;
 }
 
 export function scaffoldEnv(nanoclawRoot: string): { created: string[]; skipped: string[] } {
@@ -121,16 +122,19 @@ export function removeEnvVars(nanoclawRoot: string): string[] {
   const envPath = path.join(nanoclawRoot, '.env');
   if (!fs.existsSync(envPath)) return [];
   const removed: string[] = [];
-  const lines = fs.readFileSync(envPath, 'utf8').split('\n');
+  const allowlist = new Set<string>(SCAFFOLDED_ENV_KEYS);
+  const content = fs.readFileSync(envPath, 'utf8');
+  const lines = content.split('\n');
   const kept = lines.filter((line) => {
     const key = line.split('=')[0]?.trim();
-    if (key?.startsWith('WEBCHAT_')) {
+    if (key && allowlist.has(key)) {
       removed.push(key);
       return false;
     }
     return true;
   });
-  fs.writeFileSync(envPath, kept.join('\n'));
+  const body = kept.join('\n');
+  fs.writeFileSync(envPath, content.endsWith('\n') ? `${body}\n` : body);
   return removed;
 }
 

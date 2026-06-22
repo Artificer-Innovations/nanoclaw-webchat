@@ -580,18 +580,26 @@ async function fanOutPeerReply(
   }
 }
 
+const MAX_BODY_BYTES = 20 * 1024 * 1024;
+
 export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
   let server: http.Server | null = null;
   let wss: WebSocketServer | null = null;
   let setupConfig: ChannelSetup | null = null;
   let assetDir: string | null = null;
+  let cachedIndexHtml: string | null = null;
   const wsClients = new Set<WebSocketClient>();
 
   function checkAuth(req: http.IncomingMessage, url: URL): boolean {
     const header = req.headers.authorization;
     if (header === `Bearer ${opts.authToken}`) return true;
-    const q = url.searchParams.get('token');
-    return q === opts.authToken;
+    // WebSocket browser clients cannot set Authorization headers; ?token= is accepted
+    // for /api/ws only (weaker — may appear in logs/history).
+    if (url.pathname === '/api/ws') {
+      const q = url.searchParams.get('token');
+      return q === opts.authToken;
+    }
+    return false;
   }
 
   function broadcast(event: unknown): void {
@@ -611,8 +619,23 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
 
   function readBody(req: http.IncomingMessage): Promise<string> {
     return new Promise((resolve, reject) => {
+      const contentLength = req.headers['content-length'];
+      if (contentLength && Number(contentLength) > MAX_BODY_BYTES) {
+        reject(new Error('body too large'));
+        return;
+      }
       let body = '';
-      req.on('data', (chunk) => (body += chunk));
+      let bytes = 0;
+      req.on('data', (chunk: Buffer | string) => {
+        const size = typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.length;
+        bytes += size;
+        if (bytes > MAX_BODY_BYTES) {
+          req.destroy();
+          reject(new Error('body too large'));
+          return;
+        }
+        body += chunk;
+      });
       req.on('end', () => resolve(body));
       req.on('error', reject);
     });
@@ -640,10 +663,19 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
     if (!assetDir) return false;
     const indexPath = path.join(assetDir, 'index.html');
     if (!fs.existsSync(indexPath)) return false;
-    const html = injectWebchatTokenMeta(fs.readFileSync(indexPath, 'utf8'), opts.authToken);
+    if (!cachedIndexHtml) {
+      cachedIndexHtml = injectWebchatTokenMeta(fs.readFileSync(indexPath, 'utf8'), opts.authToken);
+    }
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end(html);
+    res.end(cachedIndexHtml);
     return true;
+  }
+
+  function isUnderAssetDir(filePath: string): boolean {
+    if (!assetDir) return false;
+    const root = path.resolve(assetDir);
+    const resolved = path.resolve(filePath);
+    return resolved === root || resolved.startsWith(root + path.sep);
   }
 
   function serveStatic(urlPath: string, res: http.ServerResponse): boolean {
@@ -654,7 +686,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
       return serveIndexHtml(res);
     }
     const filePath = path.join(assetDir, relative);
-    if (!filePath.startsWith(assetDir)) {
+    if (!isUnderAssetDir(filePath)) {
       res.writeHead(403).end();
       return true;
     }

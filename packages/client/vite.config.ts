@@ -1,7 +1,8 @@
 import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 
-const webchatApiTarget = process.env.WEBCHAT_API_TARGET ?? 'http://127.0.0.1:3200';
+const webchatApiTarget =
+  process.env.VITE_WEBCHAT_API_TARGET ?? process.env.WEBCHAT_API_TARGET ?? 'http://127.0.0.1:3200';
 const WEBCHAT_TOKEN_META_NAME = 'webchat-token';
 
 function escapeHtmlAttr(value: string): string {
@@ -11,7 +12,9 @@ function escapeHtmlAttr(value: string): string {
 function webchatTokenMetaPlugin(): Plugin {
   return {
     name: 'webchat-token-meta',
-    transformIndexHtml(html) {
+    transformIndexHtml(html, ctx) {
+      // Dev only — never bake secrets into production dist/client bundles.
+      if (!ctx.server) return html;
       const secret = process.env.WEBCHAT_SECRET?.trim();
       if (!secret) return html;
       const meta = `<meta name="${WEBCHAT_TOKEN_META_NAME}" content="${escapeHtmlAttr(secret)}" />`;

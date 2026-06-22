@@ -4,7 +4,9 @@ Local-only HTTP + WebSocket interface between the browser UI and a NanoClaw `web
 
 **Base URL:** `http://127.0.0.1:<WEBCHAT_PORT>` (default `3200`)
 
-**Auth:** `Authorization: Bearer <WEBCHAT_SECRET>` on REST requests. WebSocket accepts the same header or `?token=<secret>` query parameter.
+**Auth:** `Authorization: Bearer <WEBCHAT_SECRET>` on REST requests. WebSocket accepts the same header or `?token=<secret>` query parameter (browser clients only; weaker — may appear in logs).
+
+**Localhost assumption:** The web channel binds to `127.0.0.1` and injects the secret into served `index.html` for the browser UI. Do not expose the server on `0.0.0.0` without replacing this auth model.
 
 ## REST
 

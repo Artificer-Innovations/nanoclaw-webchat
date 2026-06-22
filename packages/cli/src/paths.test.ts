@@ -16,15 +16,18 @@ describe('packageRoot failure', () => {
 
 describe('readPackageVersion', () => {
   it('falls back when version field is missing', () => {
-    const pkgPath = path.join(packageRoot(), 'package.json');
-    const original = fs.readFileSync(pkgPath, 'utf8');
-    const parsed = JSON.parse(original) as Record<string, unknown>;
-    delete parsed.version;
-    fs.writeFileSync(pkgPath, JSON.stringify(parsed));
+    const originalRead = fs.readFileSync.bind(fs);
+    const read = vi.spyOn(fs, 'readFileSync').mockImplementation((target, encoding) => {
+      const p = String(target);
+      if (p.endsWith('package.json') && p.includes('nanoclaw-webchat')) {
+        return JSON.stringify({ name: '@artificer-innovations/nanoclaw-webchat' });
+      }
+      return originalRead(target, encoding as BufferEncoding);
+    });
     try {
       expect(readPackageVersion()).toBe('0.0.0');
     } finally {
-      fs.writeFileSync(pkgPath, original);
+      read.mockRestore();
     }
   });
 });

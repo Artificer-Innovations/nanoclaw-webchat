@@ -125,7 +125,8 @@ function messageFilesDir(messageId: string): string {
 function openDb(): Database.Database {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   const db = new Database(webchatDbPath());
-  db.pragma('journal_mode = DELETE');
+  db.pragma('journal_mode = WAL');
+  db.pragma('wal_autocheckpoint = 1000');
   db.pragma('busy_timeout = 5000');
   return db;
 }
@@ -564,18 +565,20 @@ export function deleteThreadData(platformId: string, threadId: string): string[]
   const db = openDb();
   const messageIds: string[] = [];
   try {
-    const rows = db
-      .prepare('SELECT id FROM web_messages WHERE platform_id = ? AND thread_id = ?')
-      .all(platformId, threadId) as Array<{ id: string }>;
-    messageIds.push(...rows.map((r) => r.id));
+    db.transaction(() => {
+      const rows = db
+        .prepare('SELECT id FROM web_messages WHERE platform_id = ? AND thread_id = ?')
+        .all(platformId, threadId) as Array<{ id: string }>;
+      messageIds.push(...rows.map((r) => r.id));
 
-    db.prepare('DELETE FROM web_messages WHERE platform_id = ? AND thread_id = ?').run(platformId, threadId);
-    db.prepare('DELETE FROM web_thread_engaged WHERE platform_id = ? AND thread_id = ?').run(platformId, threadId);
-    db.prepare('DELETE FROM web_thread_backfill_delivered WHERE platform_id = ? AND thread_id = ?').run(
-      platformId,
-      threadId,
-    );
-    db.prepare('DELETE FROM web_threads WHERE platform_id = ? AND thread_id = ?').run(platformId, threadId);
+      db.prepare('DELETE FROM web_messages WHERE platform_id = ? AND thread_id = ?').run(platformId, threadId);
+      db.prepare('DELETE FROM web_thread_engaged WHERE platform_id = ? AND thread_id = ?').run(platformId, threadId);
+      db.prepare('DELETE FROM web_thread_backfill_delivered WHERE platform_id = ? AND thread_id = ?').run(
+        platformId,
+        threadId,
+      );
+      db.prepare('DELETE FROM web_threads WHERE platform_id = ? AND thread_id = ?').run(platformId, threadId);
+    })();
   } finally {
     db.close();
   }

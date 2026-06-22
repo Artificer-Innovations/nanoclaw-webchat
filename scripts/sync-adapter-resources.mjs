@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /**
  * Sync packages/adapter/src → skills/add-webchat/resources before publish.
+ *
+ * Intentionally copies every *.ts file in packages/adapter/src — the skill bundle
+ * should mirror the full adapter source set (see ADAPTER_COPY_RULES in paths.ts).
  */
 import fs from 'node:fs';
 import path from 'node:path';
