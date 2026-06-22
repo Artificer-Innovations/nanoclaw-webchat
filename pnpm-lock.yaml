@@ -6,11 +6,49 @@ settings:
 
 importers:
 
-  .:
+  .: {}
+
+  packages/cli:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.15.30
+        version: 22.19.21
+      '@vitest/coverage-v8':
+        specifier: ^4.1.9
+        version: 4.1.9(vitest@4.1.9)
+      typescript:
+        specifier: ^5.8.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.9
+        version: 4.1.9(@types/node@22.19.21)(@vitest/coverage-v8@4.1.9)(jsdom@29.1.1)(vite@6.4.3(@types/node@22.19.21))
+
+  packages/client:
     dependencies:
+      '@nanoclaw-webchat/shared':
+        specifier: workspace:*
+        version: link:../shared
       highlight.js:
         specifier: ^11.11.1
         version: 11.11.1
+      react:
+        specifier: ^19.1.0
+        version: 19.2.7
+      react-dom:
+        specifier: ^19.1.0
+        version: 19.2.7(react@19.2.7)
+      react-markdown:
+        specifier: ^10.1.0
+        version: 10.1.0(@types/react@19.2.17)(react@19.2.7)
+      remark-breaks:
+        specifier: ^4.0.0
+        version: 4.0.0
+      remark-gfm:
+        specifier: ^4.0.1
+        version: 4.0.1
+      unist-util-visit:
+        specifier: ^5.0.0
+        version: 5.1.0
     devDependencies:
       '@testing-library/jest-dom':
         specifier: ^6.9.1
@@ -42,27 +80,9 @@ importers:
       jsdom:
         specifier: ^29.1.1
         version: 29.1.1
-      react:
-        specifier: ^19.1.0
-        version: 19.2.7
-      react-dom:
-        specifier: ^19.1.0
-        version: 19.2.7(react@19.2.7)
-      react-markdown:
-        specifier: ^10.1.0
-        version: 10.1.0(@types/react@19.2.17)(react@19.2.7)
-      remark-breaks:
-        specifier: ^4.0.0
-        version: 4.0.0
-      remark-gfm:
-        specifier: ^4.0.1
-        version: 4.0.1
       typescript:
         specifier: ^5.8.3
         version: 5.9.3
-      unist-util-visit:
-        specifier: ^5.0.0
-        version: 5.1.0
       vite:
         specifier: ^6.3.5
         version: 6.4.3(@types/node@22.19.21)
@@ -70,11 +90,14 @@ importers:
         specifier: ^4.1.9
         version: 4.1.9(@types/node@22.19.21)(@vitest/coverage-v8@4.1.9)(jsdom@29.1.1)(vite@6.4.3(@types/node@22.19.21))
 
-  mcp:
+  packages/mcp:
     dependencies:
       '@modelcontextprotocol/sdk':
         specifier: ^1.12.1
         version: 1.29.0(zod@3.25.76)
+      '@nanoclaw-webchat/shared':
+        specifier: workspace:*
+        version: link:../shared
       zod:
         specifier: ^3.25.67
         version: 3.25.76
@@ -82,6 +105,18 @@ importers:
       '@types/node':
         specifier: ^22.15.30
         version: 22.19.21
+      '@vitest/coverage-v8':
+        specifier: ^4.1.9
+        version: 4.1.9(vitest@4.1.9)
+      typescript:
+        specifier: ^5.8.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.9
+        version: 4.1.9(@types/node@22.19.21)(@vitest/coverage-v8@4.1.9)(jsdom@29.1.1)(vite@6.4.3(@types/node@22.19.21))
+
+  packages/shared:
+    devDependencies:
       '@vitest/coverage-v8':
         specifier: ^4.1.9
         version: 4.1.9(vitest@4.1.9)

@@ -87,8 +87,7 @@ function threadsMapFromRooms(rooms: WebChatRoom[]): Record<string, ThreadMeta[]>
 }
 
 export function App() {
-  const [token, setToken] = useState(getStoredToken);
-  const [tokenInput, setTokenInput] = useState(token);
+  const [token] = useState(getStoredToken);
   const [bootstrap, setBootstrap] = useState<BootstrapPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [room, setRoom] = useState<WebChatRoom | null>(null);
@@ -492,16 +491,6 @@ export function App() {
 
   const hasEngagedAgents = engagedFolders.length > 0;
 
-  const handleAuth = () => {
-    const nextToken = tokenInput.trim();
-    if (!nextToken) {
-      setError('Token required');
-      return;
-    }
-    setError(null);
-    setToken(nextToken);
-  };
-
   const updateThreadsForRoom = useCallback(
     (platformId: string, updater: (threads: ThreadMeta[]) => ThreadMeta[]) => {
       setThreadsByRoom((prev) => {
@@ -774,19 +763,9 @@ export function App() {
     return (
       <div className="auth-screen">
         <h1>NanoClaw Web Chat</h1>
-        <p className="hint">Enter your WEBCHAT_SECRET to connect to the local channel.</p>
-        <label htmlFor="token">Bearer token</label>
-        <input
-          id="token"
-          type="password"
-          value={tokenInput}
-          onChange={(e) => setTokenInput(e.target.value)}
-          placeholder="Paste WEBCHAT_SECRET"
-        />
-        {error && <p className="error">{error}</p>}
-        <button type="button" className="btn" onClick={handleAuth}>
-          Connect
-        </button>
+        <p className="hint">
+          Open this UI from the NanoClaw webchat server (for example http://127.0.0.1:3200).
+        </p>
       </div>
     );
   }

@@ -215,6 +215,7 @@ describe('App', () => {
   beforeEach(() => {
     sessionStorage.clear();
     localStorage.clear();
+    document.head.querySelectorAll('meta[name="webchat-token"]').forEach((node) => node.remove());
     vi.mocked(api.sendMessage).mockImplementation(actualApi.sendMessage!);
     vi.mocked(api.createThread).mockImplementation(threadMocks.createThreadImpl);
     vi.mocked(api.renameThread).mockImplementation(threadMocks.renameThreadImpl);
@@ -240,20 +241,21 @@ describe('App', () => {
     vi.restoreAllMocks();
   });
 
-  it('renders auth screen when no token is stored', () => {
+  it('renders setup hint when no token is available', () => {
     render(<App />);
 
     expect(screen.getByRole('heading', { name: 'NanoClaw Web Chat' })).toBeInTheDocument();
-    expect(screen.getByLabelText('Bearer token')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Connect' })).toBeInTheDocument();
+    expect(screen.getByText(/Open this UI from the NanoClaw webchat server/)).toBeInTheDocument();
+    expect(screen.queryByLabelText('Bearer token')).not.toBeInTheDocument();
   });
 
-  it('connects with entered token and loads chat UI', async () => {
-    const user = userEvent.setup();
-    render(<App />);
+  it('connects using injected token meta and loads chat UI', async () => {
+    const meta = document.createElement('meta');
+    meta.setAttribute('name', 'webchat-token');
+    meta.setAttribute('content', 'secret-token');
+    document.head.appendChild(meta);
 
-    await user.type(screen.getByLabelText('Bearer token'), 'secret-token');
-    await user.click(screen.getByRole('button', { name: 'Connect' }));
+    render(<App />);
 
     expect(await screen.findByRole('heading', { name: 'NanoClaw' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Lobby' })).toBeInTheDocument();
@@ -1617,24 +1619,6 @@ describe('App', () => {
 
     expect(lobbyButton.closest('.nav-room-header')).not.toHaveClass('active');
     expect(threadBButton.closest('.nav-thread-row')).toHaveClass('active');
-  });
-
-  it('updates the token input while on the auth screen', async () => {
-    const user = userEvent.setup();
-    render(<App />);
-
-    const tokenInput = screen.getByLabelText('Bearer token');
-    await user.type(tokenInput, 'abc');
-    expect(tokenInput).toHaveValue('abc');
-  });
-
-  it('shows an auth error when connect is clicked without a token', async () => {
-    const user = userEvent.setup();
-    render(<App />);
-
-    await user.click(screen.getByRole('button', { name: 'Connect' }));
-
-    expect(screen.getByText('Token required')).toBeInTheDocument();
   });
 
   it('falls back to the main thread when bootstrap threads are empty', async () => {

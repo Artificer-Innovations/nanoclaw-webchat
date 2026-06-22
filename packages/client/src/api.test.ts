@@ -39,6 +39,7 @@ describe('api', () => {
   beforeEach(() => {
     sessionStorage.clear();
     localStorage.clear();
+    document.head.querySelectorAll('meta[name="webchat-token"]').forEach((node) => node.remove());
     vi.stubGlobal('fetch', vi.fn());
     vi.stubGlobal('location', {
       protocol: 'http:',
@@ -53,7 +54,29 @@ describe('api', () => {
   });
 
   describe('getStoredToken', () => {
-    it('reads token from URL search params', () => {
+    it('reads token from injected meta tag', () => {
+      const meta = document.createElement('meta');
+      meta.setAttribute('name', 'webchat-token');
+      meta.setAttribute('content', 'meta-token');
+      document.head.appendChild(meta);
+      expect(getStoredToken()).toBe('meta-token');
+    });
+
+    it('prefers meta tag over URL search params and sessionStorage', () => {
+      const meta = document.createElement('meta');
+      meta.setAttribute('name', 'webchat-token');
+      meta.setAttribute('content', 'meta-token');
+      document.head.appendChild(meta);
+      vi.stubGlobal('location', {
+        protocol: 'http:',
+        host: 'localhost:3200',
+        search: '?token=url-token',
+      });
+      sessionStorage.setItem('webchat_token', 'stored-token');
+      expect(getStoredToken()).toBe('meta-token');
+    });
+
+    it('reads token from URL search params when meta is absent', () => {
       vi.stubGlobal('location', {
         protocol: 'http:',
         host: 'localhost:3200',
@@ -68,6 +91,11 @@ describe('api', () => {
     });
 
     it('returns empty string when no token is available', () => {
+      expect(getStoredToken()).toBe('');
+    });
+
+    it('returns empty string when document is unavailable', () => {
+      vi.stubGlobal('document', undefined);
       expect(getStoredToken()).toBe('');
     });
   });

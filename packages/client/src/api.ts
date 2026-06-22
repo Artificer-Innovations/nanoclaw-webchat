@@ -10,7 +10,17 @@ import type {
 
 const DEFAULT_WEBCHAT_API_TARGET = 'http://127.0.0.1:3200';
 
+/** Must match the meta tag injected by the web adapter when serving index.html. */
+export const WEBCHAT_TOKEN_META_NAME = 'webchat-token';
+
+function tokenFromMeta(): string {
+  if (typeof document === 'undefined') return '';
+  return document.querySelector(`meta[name="${WEBCHAT_TOKEN_META_NAME}"]`)?.getAttribute('content') ?? '';
+}
+
 function tokenFromLocation(): string {
+  const fromMeta = tokenFromMeta();
+  if (fromMeta) return fromMeta;
   const params = new URLSearchParams(window.location.search);
   return params.get('token') ?? sessionStorage.getItem('webchat_token') ?? '';
 }

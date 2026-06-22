@@ -192,7 +192,7 @@ Thread metadata and message history are stored in `data/webchat.db` on the host.
 
 ## MCP integration
 
-The [`mcp/`](./mcp/) package provides a stdio MCP server for external clients (Cursor, Claude Desktop, etc.).
+The [`packages/mcp/`](./packages/mcp/) package provides a stdio MCP server for external clients (Cursor, Claude Desktop, etc.).
 
 | Env var | Default | Purpose |
 |---------|---------|---------|

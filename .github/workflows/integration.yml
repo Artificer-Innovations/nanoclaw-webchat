@@ -1,0 +1,37 @@
+name: Integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: nanoclaw-webchat
+      - name: Checkout NanoClaw fixture
+        uses: actions/checkout@v4
+        with:
+          repository: Artificer-Innovations/nanoclaw-v2
+          ref: 3be0f30
+          path: nanoclaw-v2
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+          cache-dependency-path: nanoclaw-webchat/pnpm-lock.yaml
+      - name: Install and run integration
+        working-directory: nanoclaw-webchat
+        env:
+          NANOCLAW_ROOT: ${{ github.workspace }}/nanoclaw-v2
+        run: |
+          pnpm install --frozen-lockfile
+          node scripts/run-integration.mjs

@@ -1,103 +1,69 @@
 # @artificer-innovations/nanoclaw-webchat
 
-Browser UI for the NanoClaw **web chat** channel. Talk to your agents from a local tab — lobby with `@mentions`, per-agent DMs, and threading.
+Browser UI, NanoClaw **web chat** channel adapter, and `/add-webchat` skill — talk to your agents from a local tab with lobby `@mentions`, per-agent DMs, and threading.
 
-This package is **UI only**. Message routing runs through NanoClaw's `web` channel adapter (installed via the `/add-webchat` skill).
+**→ [QUICKSTART.md](./QUICKSTART.md)** — install into an existing NanoClaw fork, upgrade, and local pre-publish testing.
 
-## Install
+## What's in the package
 
-```bash
-pnpm install @artificer-innovations/nanoclaw-webchat
+| Component | Purpose |
+|-----------|---------|
+| Browser UI | React SPA served by the adapter via `getAssetDir()` |
+| Adapter templates | Copied into your NanoClaw fork's `src/` by `/add-webchat` |
+| `/add-webchat` skill | Claude Code install flow (bundled under `skills/add-webchat/`) |
+| CLI | `nanoclaw-webchat install` / `upgrade` / `verify` (automation + CI) |
+| MCP server | Separate package `@artificer-innovations/nanoclaw-webchat-mcp` |
+
+## Architecture
+
+```
+Browser UI  ←HTTP/WS→  web.ts adapter (in your fork)  →  NanoClaw router  →  agents
+MCP server  ←REST──→  same adapter
 ```
 
-The host adapter serves the built assets from this package and exposes the [API contract](./api-contract.md).
+See [api-contract.md](./api-contract.md) for the REST/WebSocket API.
 
-## Development
+## Quick install (NanoClaw fork)
+
+```bash
+cd /path/to/your-nanoclaw-fork
+pnpm add @artificer-innovations/nanoclaw-webchat ws
+pnpm exec nanoclaw-webchat sync-skill
+/add-webchat    # in Claude Code, or: pnpm exec nanoclaw-webchat install
+```
+
+Open `http://127.0.0.1:3200` after building and restarting the host.
+
+Full steps: **[QUICKSTART.md](./QUICKSTART.md)**
+
+## Development (this repo)
 
 ```bash
 pnpm install
-pnpm run dev      # Vite dev server (needs a running adapter for API)
-pnpm run build
 pnpm run typecheck
 pnpm run test:coverage
+pnpm run build
+pnpm --filter @nanoclaw-webchat/client dev   # Vite → proxies /api to :3200
 ```
 
-### Branches & releases
-
-This repository uses a **single long-lived `main` branch**. It is published as an npm package (`@artificer-innovations/nanoclaw-webchat`) and does **not** follow the org-wide `develop` → `main` SDLC used by application repos.
-
-- Open pull requests against **`main`**
-- CI runs on pushes and PRs to `main` (see [`.github/workflows/ci.yml`](./.github/workflows/ci.yml))
-- There is no `develop` branch in this repo by design
-
-## Usage
-
-1. Install the `/add-webchat` skill in your NanoClaw fork.
-2. Set `WEBCHAT_ENABLED=true` and `WEBCHAT_SECRET=…` in `.env`.
-3. Open `http://127.0.0.1:3200` and paste the secret when prompted.
-
-### Lobby
-
-Type `@sarah review this` in the lobby — only the agent whose folder matches the pattern engages (per NanoClaw wiring). Once an agent has been @'d in a thread, they keep receiving follow-up messages in that thread without being @'d again.
-
-### DMs
-
-Pick an agent from the sidebar DM list. Every message goes to that agent (`engage_pattern: '.'`).
-
-### Threads
-
-Use **New thread** in the header. Each thread gets its own session on threaded adapters.
-
-## MCP server
-
-The [`mcp/`](./mcp/) package exposes a stdio MCP server so Cursor and other MCP clients can interact with web channels without the browser UI — similar to Slack MCP.
-
-### Setup
-
-1. Build the MCP server:
+Test against a local NanoClaw fork without publishing:
 
 ```bash
-pnpm install
-pnpm --filter @artificer-innovations/nanoclaw-webchat-mcp build
+cd ../nanoclaw-v2
+pnpm add file:../nanoclaw-webchat
+pnpm exec nanoclaw-webchat install
 ```
 
-2. Add to Cursor MCP settings (`.cursor/mcp.json` or global config):
+See QUICKSTART § *Testing before publish*.
 
-```json
-{
-  "mcpServers": {
-    "nanoclaw-webchat": {
-      "command": "node",
-      "args": ["/absolute/path/to/nanoclaw-webchat/mcp/dist/index.js"],
-      "env": {
-        "WEBCHAT_API_BASE": "http://127.0.0.1:3200",
-        "WEBCHAT_SECRET": "your-secret-from-nanoclaw-env"
-      }
-    }
-  }
-}
-```
+## Branches & releases
 
-See [`mcp/mcp.example.json`](./mcp/mcp.example.json) for a template.
+Single long-lived **`main`** branch. Published as npm packages:
 
-### Tools
+- `@artificer-innovations/nanoclaw-webchat`
+- `@artificer-innovations/nanoclaw-webchat-mcp`
 
-| Tool | Purpose |
-|------|---------|
-| `webchat_list_channels` | List lobby and DM rooms |
-| `webchat_list_agents` | List agents with `@mention` and DM platform IDs |
-| `webchat_read_channel` | Read main-thread messages |
-| `webchat_read_thread` | Read a specific thread |
-| `webchat_send_message` | Post a message (optional attachments via local paths) |
-| `webchat_create_thread` | Create a server-side thread |
-| `webchat_list_threads` | List threads for a channel |
-
-### Typical workflow
-
-1. `webchat_list_agents` — pick an agent or use `lobby`
-2. `webchat_create_thread` — optional, for an isolated session
-3. `webchat_send_message` — e.g. `@sarah review this diff`
-4. `webchat_read_thread` with `since=<timestamp from send>` — poll every **2–5 seconds** until agent replies appear (avoid tight loops)
+Release notes: [CHANGELOG.md](./CHANGELOG.md)
 
 ## License
 
