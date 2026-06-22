@@ -61,9 +61,9 @@ try {
   fixturePnpm(['rebuild', 'better-sqlite3']);
   fixturePnpm(['add', `file:${webchatRoot}`, 'ws@8.18.3']);
   fixturePnpm(['add', '-D', '@types/ws@8.18.1']);
-  run('pnpm', ['exec', 'nanoclaw-webchat', 'install', '--path', nanoclawRoot], {
-    cwd: nanoclawRoot,
-  });
+
+  const cliBin = path.join(webchatRoot, 'packages/cli/dist/bin.js');
+  run('node', [cliBin, 'install', '--path', nanoclawRoot]);
 
   run(
     'pnpm',
