@@ -199,11 +199,19 @@ pnpm --filter @nanoclaw-webchat/client dev
 # open http://localhost:5173 — proxies /api → 127.0.0.1:3200
 ```
 
-**Full integration test:**
+**Full integration test (in-repo fixture):**
+
+CI installs the CLI into `test/fixtures/nanoclaw-host` — a minimal bundled host skeleton. No external NanoClaw repo checkout.
 
 ```bash
 cd ~/Dev/nanoclaw-webchat
-NANOCLAW_ROOT=../nanoclaw-v2 pnpm run test:integration
+pnpm run test:integration
+```
+
+Optional: regenerate the fixture after host DB API changes (requires a local NanoClaw fork):
+
+```bash
+NANOCLAW_SRC=../nanoclaw-v2 node scripts/prepare-host-fixture.mjs
 ```
 
 After validation, switch to the registry version:

@@ -1,19 +1,20 @@
 #!/usr/bin/env node
 /**
- * Full-stack integration: install CLI into a NanoClaw fork and run adapter tests.
+ * In-repo integration: install CLI into a copy of the bundled host fixture and run adapter tests.
  *
  * Usage:
- *   NANOCLAW_ROOT=/path/to/nanoclaw-v2 node scripts/run-integration.mjs
- *
- * Defaults to ../nanoclaw-v2 when present.
+ *   node scripts/run-integration.mjs
+ *   NANOCLAW_ROOT=/custom/path node scripts/run-integration.mjs
  */
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const webchatRoot = path.resolve(__dirname, '..');
+const bundledFixture = path.join(webchatRoot, 'test/fixtures/nanoclaw-host');
 
 function run(cmd, args, opts = {}) {
   const result = spawnSync(cmd, args, {
@@ -26,47 +27,62 @@ function run(cmd, args, opts = {}) {
   }
 }
 
-const nanoclawRoot =
-  process.env.NANOCLAW_ROOT ??
-  (fs.existsSync(path.join(webchatRoot, '../nanoclaw-v2'))
-    ? path.join(webchatRoot, '../nanoclaw-v2')
-    : null);
+function copyFixture(from, to) {
+  fs.cpSync(from, to, {
+    recursive: true,
+    filter: (src) => !src.includes(`${path.sep}node_modules${path.sep}`),
+  });
+}
 
-if (!nanoclawRoot || !fs.existsSync(path.join(nanoclawRoot, 'src/index.ts'))) {
-  console.error(
-    'Integration fixture not found. Set NANOCLAW_ROOT to a NanoClaw fork (e.g. ../nanoclaw-v2).',
-  );
-  process.exit(1);
+let nanoclawRoot = process.env.NANOCLAW_ROOT;
+let tempDir = null;
+
+if (!nanoclawRoot) {
+  if (!fs.existsSync(path.join(bundledFixture, 'src/index.ts'))) {
+    console.error(
+      `Bundled fixture missing at ${bundledFixture}. Run: node scripts/prepare-host-fixture.mjs`,
+    );
+    process.exit(1);
+  }
+  tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nanoclaw-webchat-fixture-'));
+  copyFixture(bundledFixture, tempDir);
+  nanoclawRoot = tempDir;
 }
 
 console.log(`Integration target: ${nanoclawRoot}`);
 
-run('pnpm', ['run', 'build'], { cwd: webchatRoot });
-run('pnpm', ['add', `file:${webchatRoot}`, 'ws@8.18.3'], { cwd: nanoclawRoot });
-run('pnpm', ['add', '-D', '@types/ws@8.18.1'], { cwd: nanoclawRoot });
-run('pnpm', ['exec', 'nanoclaw-webchat', 'install', '--path', nanoclawRoot], {
-  cwd: nanoclawRoot,
-});
-run('pnpm', ['run', 'build'], { cwd: nanoclawRoot });
-run(
-  'pnpm',
-  [
-    'exec',
-    'vitest',
-    'run',
-    'src/channels/web-registration.test.ts',
-    'src/channels/web.test.ts',
-    'src/webchat-sync.test.ts',
-    'src/webchat-wiring.test.ts',
-  ],
-  { cwd: nanoclawRoot },
-);
+const fixturePnpm = (args) =>
+  run('pnpm', ['--ignore-workspace', ...args], { cwd: nanoclawRoot });
 
-const smoke = path.join(nanoclawRoot, 'scripts/webchat-smoke.ts');
-if (fs.existsSync(smoke)) {
-  run('pnpm', ['exec', 'tsx', smoke], { cwd: nanoclawRoot });
-} else {
-  console.log('Skipping webchat-smoke.ts (not present in fixture)');
+try {
+  run('pnpm', ['run', 'build'], { cwd: webchatRoot });
+
+  fixturePnpm(['install']);
+  fixturePnpm(['rebuild', 'better-sqlite3']);
+  fixturePnpm(['add', `file:${webchatRoot}`, 'ws@8.18.3']);
+  fixturePnpm(['add', '-D', '@types/ws@8.18.1']);
+  run('pnpm', ['exec', 'nanoclaw-webchat', 'install', '--path', nanoclawRoot], {
+    cwd: nanoclawRoot,
+  });
+
+  run(
+    'pnpm',
+    [
+      '--ignore-workspace',
+      'exec',
+      'vitest',
+      'run',
+      'src/channels/web-registration.test.ts',
+      'src/channels/web.test.ts',
+      'src/webchat-sync.test.ts',
+      'src/webchat-wiring.test.ts',
+    ],
+    { cwd: nanoclawRoot },
+  );
+
+  console.log('Integration passed.');
+} finally {
+  if (tempDir) {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
 }
-
-console.log('Integration passed.');
