@@ -1,11 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
+const readEnvFileMock = vi.fn<(keys: string[]) => Record<string, string>>(() => ({
+  WEBCHAT_ENABLED: 'true',
+  WEBCHAT_USER_ID: 'web:local',
+  WEBCHAT_DISPLAY_NAME: 'Local',
+}));
+
 vi.mock('./env.js', () => ({
-  readEnvFile: () => ({
-    WEBCHAT_ENABLED: 'true',
-    WEBCHAT_USER_ID: 'web:local',
-    WEBCHAT_DISPLAY_NAME: 'Local',
-  }),
+  readEnvFile: (keys: string[]) => readEnvFileMock(keys),
 }));
 
 vi.mock('./log.js', () => ({
@@ -14,17 +16,31 @@ vi.mock('./log.js', () => ({
 
 import { initTestDb, closeDb, runMigrations, createAgentGroup } from './db/index.js';
 import {
+  createMessagingGroup,
   getMessagingGroupByPlatform,
   getMessagingGroupAgents,
   getMessagingGroupAgentByPair,
+  updateMessagingGroup,
 } from './db/messaging-groups.js';
-import { syncWebchatWirings, WEB_CHANNEL_TYPE, WEB_LOBBY_PLATFORM_ID } from './webchat-sync.js';
+import {
+  buildWebchatBootstrap,
+  readTeamFolder,
+  syncWebchatWirings,
+  WEB_CHANNEL_TYPE,
+  WEB_LOBBY_PLATFORM_ID,
+} from './webchat-sync.js';
+import { appendMessage, createThread, ensureWebchatSchema, MAIN_THREAD } from './webchat-store.js';
 
 function now(): string {
   return new Date().toISOString();
 }
 
 beforeEach(() => {
+  readEnvFileMock.mockReturnValue({
+    WEBCHAT_ENABLED: 'true',
+    WEBCHAT_USER_ID: 'web:local',
+    WEBCHAT_DISPLAY_NAME: 'Local',
+  });
   process.env.WEBCHAT_ENABLED = 'true';
   const db = initTestDb();
   runMigrations(db);
@@ -32,7 +48,64 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.WEBCHAT_ENABLED;
+  delete process.env.WEBCHAT_TEAM_FOLDER;
+  delete process.env.WEBCHAT_USER_ID;
+  delete process.env.WEBCHAT_DISPLAY_NAME;
   closeDb();
+});
+
+describe('readTeamFolder', () => {
+  it('reads team folder from env or file', () => {
+    process.env.WEBCHAT_TEAM_FOLDER = ' team-coord ';
+    expect(readTeamFolder()).toBe('team-coord');
+    delete process.env.WEBCHAT_TEAM_FOLDER;
+    readEnvFileMock.mockReturnValue({ WEBCHAT_TEAM_FOLDER: 'from-file' });
+    expect(readTeamFolder()).toBe('from-file');
+    readEnvFileMock.mockReturnValue({});
+    expect(readTeamFolder()).toBeNull();
+  });
+});
+
+describe('buildWebchatBootstrap', () => {
+  it('returns lobby + per-agent DM rooms with threads', () => {
+    ensureWebchatSchema();
+    createAgentGroup({
+      id: 'ag-sarah',
+      name: 'Sarah',
+      folder: 'sarah',
+      agent_provider: null,
+      created_at: now(),
+    });
+    createThread('lobby', 'Topic');
+    appendMessage({
+      id: 'web-1',
+      direction: 'inbound',
+      text: 'hello',
+      timestamp: 1000,
+      platformId: 'lobby',
+      threadId: MAIN_THREAD,
+    });
+
+    const payload = buildWebchatBootstrap('web:user', 'User');
+    expect(payload.user).toEqual({ id: 'web:user', displayName: 'User' });
+    expect(payload.rooms[0]).toMatchObject({ platformId: 'lobby', kind: 'lobby' });
+    expect(payload.rooms.some((r) => r.platformId === 'dm:sarah' && r.kind === 'dm')).toBe(true);
+    expect(payload.agents[0]).toMatchObject({ folder: 'sarah', mention: '@sarah' });
+  });
+
+  it('labels team folder agent as Team with @team mention', () => {
+    process.env.WEBCHAT_TEAM_FOLDER = 'team-coord';
+    createAgentGroup({
+      id: 'ag-team',
+      name: 'Coordinator',
+      folder: 'team-coord',
+      agent_provider: null,
+      created_at: now(),
+    });
+
+    const payload = buildWebchatBootstrap('web:local', 'Local');
+    expect(payload.agents[0]).toMatchObject({ folder: 'team-coord', name: 'Team', mention: '@team' });
+  });
 });
 
 describe('syncWebchatWirings', () => {
@@ -103,5 +176,123 @@ describe('syncWebchatWirings', () => {
 
     const lobby = getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, WEB_LOBBY_PLATFORM_ID)!;
     expect(getMessagingGroupAgents(lobby.id)).toHaveLength(2);
+  });
+
+  it('no-ops when WEBCHAT_ENABLED is false or unset', () => {
+    createAgentGroup({
+      id: 'ag-a',
+      name: 'A',
+      folder: 'a',
+      agent_provider: null,
+      created_at: now(),
+    });
+    process.env.WEBCHAT_ENABLED = 'false';
+    syncWebchatWirings();
+    expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, WEB_LOBBY_PLATFORM_ID)).toBeUndefined();
+
+    delete process.env.WEBCHAT_ENABLED;
+    readEnvFileMock.mockReturnValue({});
+    syncWebchatWirings();
+    expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, WEB_LOBBY_PLATFORM_ID)).toBeUndefined();
+
+    readEnvFileMock.mockReturnValue({ WEBCHAT_ENABLED: 'false' });
+    syncWebchatWirings();
+    expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, WEB_LOBBY_PLATFORM_ID)).toBeUndefined();
+  });
+
+  it('runs when WEBCHAT_ENABLED comes from env file only', () => {
+    delete process.env.WEBCHAT_ENABLED;
+    readEnvFileMock.mockReturnValue({
+      WEBCHAT_ENABLED: 'true',
+      WEBCHAT_USER_ID: 'web:local',
+      WEBCHAT_DISPLAY_NAME: 'Local',
+    });
+    createAgentGroup({
+      id: 'ag-a',
+      name: 'A',
+      folder: 'a',
+      agent_provider: null,
+      created_at: now(),
+    });
+    syncWebchatWirings();
+    expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, WEB_LOBBY_PLATFORM_ID)).toBeDefined();
+  });
+
+  it('reads user identity from env file when process env is unset', () => {
+    delete process.env.WEBCHAT_USER_ID;
+    delete process.env.WEBCHAT_DISPLAY_NAME;
+    readEnvFileMock.mockReturnValue({
+      WEBCHAT_ENABLED: 'true',
+      WEBCHAT_USER_ID: 'web:from-file',
+      WEBCHAT_DISPLAY_NAME: 'From File',
+    });
+    createAgentGroup({
+      id: 'ag-a',
+      name: 'A',
+      folder: 'a',
+      agent_provider: null,
+      created_at: now(),
+    });
+    syncWebchatWirings();
+    expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, WEB_LOBBY_PLATFORM_ID)).toBeDefined();
+  });
+
+  it('falls back to default user identity when env vars are missing', () => {
+    delete process.env.WEBCHAT_USER_ID;
+    delete process.env.WEBCHAT_DISPLAY_NAME;
+    readEnvFileMock.mockReturnValue({ WEBCHAT_ENABLED: 'true' });
+    createAgentGroup({
+      id: 'ag-a',
+      name: 'A',
+      folder: 'a',
+      agent_provider: null,
+      created_at: now(),
+    });
+    syncWebchatWirings();
+    expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, WEB_LOBBY_PLATFORM_ID)).toBeDefined();
+  });
+
+  it('uses team lobby pattern when WEBCHAT_TEAM_FOLDER matches agent', () => {
+    process.env.WEBCHAT_TEAM_FOLDER = 'team-coord';
+    createAgentGroup({
+      id: 'ag-team',
+      name: 'Team',
+      folder: 'team-coord',
+      agent_provider: null,
+      created_at: now(),
+    });
+
+    syncWebchatWirings();
+
+    const lobby = getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, WEB_LOBBY_PLATFORM_ID)!;
+    const wiring = getMessagingGroupAgents(lobby.id)[0];
+    expect(wiring?.engage_pattern).toBe('@(team|team-coord)\\b');
+  });
+
+  it('corrects DM messaging group is_group flag on re-sync', () => {
+    createAgentGroup({
+      id: 'ag-sarah',
+      name: 'Sarah',
+      folder: 'sarah',
+      agent_provider: null,
+      created_at: now(),
+    });
+    createMessagingGroup({
+      id: 'mg-dm-sarah',
+      channel_type: WEB_CHANNEL_TYPE,
+      platform_id: 'dm:sarah',
+      name: 'Sarah',
+      is_group: 1,
+      unknown_sender_policy: 'strict',
+      created_at: now(),
+    });
+
+    syncWebchatWirings();
+
+    const dmSarah = getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, 'dm:sarah')!;
+    expect(dmSarah.is_group).toBe(0);
+    updateMessagingGroup(dmSarah.id, { is_group: 1 });
+    syncWebchatWirings();
+    expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, 'dm:sarah')!.is_group).toBe(0);
   });
 });

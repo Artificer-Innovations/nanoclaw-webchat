@@ -15,6 +15,11 @@ pnpm run test:coverage
 
 Do not push if any command fails. Fix failures first, then re-run the full sequence.
 
-`test:coverage` enforces 100% thresholds (statements, branches, functions, lines) — treat any coverage regression as a blocker.
+`test:coverage` runs each package with its own Vitest thresholds:
+
+- **client, cli, mcp**: 100% (statements, branches, functions, lines)
+- **adapter** (host fixture at `test/fixtures/nanoclaw-host/vitest.config.ts`): 98%
+
+Treat any coverage regression as a blocker for the package that failed.
 
 When tests involve WebSocket mocks or fake timers, prefer waiting for async side effects (e.g. `waitFor`) rather than assuming synchronous setup after render.

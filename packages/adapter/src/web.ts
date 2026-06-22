@@ -476,7 +476,10 @@ function routeLobbyInbound(
 
   const newlyEngaged = explicitMentions.filter((folder) => !priorEngaged.includes(folder));
   if (newlyEngaged.length > 0) {
-    const joinedNames = newlyEngaged.map((folder) => agents.find((a) => a.folder === folder)?.displayName ?? folder);
+    const joinedNames = newlyEngaged.map((folder) => {
+      const ref = agents.find((a) => a.folder === folder);
+      return ref?.displayName ?? folder;
+    });
     pendingJoinStubByThread.set(
       `${platformId}|${threadIdStored}`,
       joinedNames.map((name) => rosterJoinStub(name)).join('\n'),
@@ -665,9 +668,10 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
     return html;
   }
 
+  // serveIndexHtml/isUnderAssetDir are only called from serveStatic after setup()
+  // assigns assetDir and serveStatic's falsy assetDir guard returns early.
   function serveIndexHtml(res: http.ServerResponse): boolean {
-    if (!assetDir) return false;
-    const indexPath = path.join(assetDir, 'index.html');
+    const indexPath = path.join(assetDir!, 'index.html');
     if (!fs.existsSync(indexPath)) return false;
     if (!cachedIndexHtml) {
       cachedIndexHtml = injectWebchatTokenMeta(fs.readFileSync(indexPath, 'utf8'), opts.authToken);
@@ -678,8 +682,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
   }
 
   function isUnderAssetDir(filePath: string): boolean {
-    if (!assetDir) return false;
-    const root = path.resolve(assetDir);
+    const root = path.resolve(assetDir!);
     const resolved = path.resolve(filePath);
     return resolved === root || resolved.startsWith(root + path.sep);
   }
@@ -897,6 +900,8 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
 
       try {
         const pkg = await import('nanoclaw-webchat');
+        // Must be set before the HTTP server accepts requests; setup() throws if missing.
+        // serveStatic guards falsy assetDir; serveIndexHtml/isUnderAssetDir rely on this.
         assetDir = pkg.getAssetDir();
       } catch (err) {
         log.error('Web channel: nanoclaw-webchat not installed', { err });

@@ -747,7 +747,7 @@ describe('api', () => {
     it('DELETEs engaged agent and returns updated list', async () => {
       vi.stubGlobal(
         'fetch',
-        vi.fn(async (input: string, init?: RequestInit) => ({
+        vi.fn(async (_input: string, _init?: RequestInit) => ({
           ok: true,
           json: async () => ({ agents: ['diego'] }),
         }) as Response),

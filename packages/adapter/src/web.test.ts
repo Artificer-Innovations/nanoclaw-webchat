@@ -12,7 +12,7 @@ vi.mock('../config.js', async () => {
 const TEST_DATA = '/tmp/nanoclaw-web-adapter-test';
 
 vi.mock('nanoclaw-webchat', () => ({
-  getAssetDir: () => '/tmp/nanoclaw-webchat-test-assets',
+  getAssetDir: vi.fn(() => '/tmp/nanoclaw-webchat-test-assets'),
 }));
 
 vi.mock('../webchat-sync.js', () => ({
@@ -51,6 +51,14 @@ const routeCaptures: Array<{
   };
 }> = [];
 
+vi.mock('../webchat-thread-cleanup.js', () => ({
+  cleanupAgentSessionsForThread: vi.fn(),
+}));
+
+vi.mock('../db/messaging-groups.js', () => ({
+  getMessagingGroupByPlatform: vi.fn(() => ({ id: 'mg-lobby' })),
+}));
+
 vi.mock('../router.js', () => ({
   routeInbound: vi.fn(async (event: {
     platformId: string;
@@ -73,6 +81,18 @@ vi.mock('../router.js', () => ({
 
 import { createWebAdapter, clearWebAdapterTestState, flushWebAgentDeliveryChains } from './web.js';
 import type { ChannelSetup, InboundMessage } from './adapter.js';
+import { routeInbound } from '../router.js';
+import { cleanupAgentSessionsForThread } from '../webchat-thread-cleanup.js';
+import { getMessagingGroupByPlatform } from '../db/messaging-groups.js';
+import { getAssetDir } from 'nanoclaw-webchat';
+import * as webchatStore from '../webchat-store.js';
+import * as agentGroups from '../db/agent-groups.js';
+import * as webchatMentions from '../webchat-mentions.js';
+
+const routeInboundMock = vi.mocked(routeInbound);
+const cleanupSessionsMock = vi.mocked(cleanupAgentSessionsForThread);
+const getMessagingGroupMock = vi.mocked(getMessagingGroupByPlatform);
+const getAssetDirMock = vi.mocked(getAssetDir);
 
 const SECRET = 'test-secret';
 let testPort = 38462;
@@ -880,5 +900,1217 @@ describe('web channel adapter', () => {
       senderId: 'web:local',
       sender: 'Diego',
     });
+  });
+
+  it('returns 401 for API requests without Bearer token', async () => {
+    await adapter.setup(setup);
+    const { status } = await httpGetText('/api/rooms/lobby/threads/main/messages', testPort);
+    expect(status).toBe(401);
+  });
+
+  it('returns bootstrap payload from GET /api/bootstrap', async () => {
+    await adapter.setup(setup);
+    const { status, body } = await httpGet('/api/bootstrap');
+    expect(status).toBe(200);
+    expect(body).toMatchObject({
+      user: { id: 'web:local', displayName: 'Local' },
+      rooms: expect.any(Array),
+      agents: expect.any(Array),
+    });
+  });
+
+  it('returns 426 for GET /api/ws', async () => {
+    await adapter.setup(setup);
+    const { status } = await httpGetText('/api/ws?token=' + SECRET, testPort);
+    expect(status).toBe(426);
+  });
+
+  it('broadcasts typing events via setTyping', async () => {
+    await adapter.setup(setup);
+    const received: unknown[] = [];
+    await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${testPort}/api/ws?token=${SECRET}`);
+      ws.on('open', async () => {
+        await adapter.setTyping!('lobby', 'thread_abc');
+      });
+      ws.on('message', (data) => {
+        received.push(JSON.parse(data.toString()));
+        ws.close();
+        resolve();
+      });
+      ws.on('error', reject);
+    });
+    expect(received[0]).toMatchObject({ type: 'typing', platformId: 'lobby', threadId: 'thread_abc' });
+  });
+
+  it('serves static assets with correct Content-Type', async () => {
+    const assetDir = '/tmp/nanoclaw-webchat-test-assets';
+    fs.writeFileSync(path.join(assetDir, 'app.js'), 'console.log("x")');
+    fs.writeFileSync(path.join(assetDir, 'styles.css'), 'body {}');
+    await adapter.setup(setup);
+    const js = await httpGetText('/app.js', testPort);
+    const css = await httpGetText('/styles.css', testPort);
+    expect(js.status).toBe(200);
+    expect(js.body).toContain('console.log');
+    expect(css.status).toBe(200);
+    expect(css.body).toContain('body');
+  });
+
+  it('replaces existing webchat-token meta on second index serve', async () => {
+    const assetDir = '/tmp/nanoclaw-webchat-test-assets';
+    fs.writeFileSync(
+      path.join(assetDir, 'index.html'),
+      '<!doctype html><html><head><meta name="webchat-token" content="old" /></head><body></body></html>',
+    );
+    await adapter.setup(setup);
+    const first = await httpGetText('/', testPort);
+    const second = await httpGetText('/', testPort);
+    expect(first.body).toContain(`content="${SECRET}"`);
+    expect(second.body).not.toContain('content="old"');
+  });
+
+  it('returns undefined from deliver() when content is empty', async () => {
+    await adapter.setup(setup);
+    const id = await adapter.deliver('lobby', 'thread_abc', { kind: 'chat', content: { text: '   ' } });
+    expect(id).toBeUndefined();
+  });
+
+  it('skips oversize outbound file attachments', async () => {
+    await adapter.setup(setup);
+    const huge = Buffer.alloc(6 * 1024 * 1024);
+    await adapter.deliver('lobby', 'thread_abc', {
+      kind: 'chat',
+      content: { text: 'see attached' },
+      files: [{ filename: 'big.bin', data: huge }],
+    });
+    const { body } = await httpGet('/api/rooms/lobby/threads/thread_abc/messages');
+    const msg = (body as { messages: Array<{ attachments?: unknown[] }> }).messages.at(-1);
+    expect(msg?.attachments ?? []).toHaveLength(0);
+  });
+
+  it('continues when routeInbound throws', async () => {
+    routeInboundMock.mockRejectedValueOnce(new Error('router down'));
+    await adapter.setup(setup);
+    const status = await httpPost('/api/rooms/lobby/threads/thread_abc/messages', { text: '@sarah hello' });
+    expect(status).toBe(200);
+    await flushAgentDeliveries();
+  });
+
+  it('filters GET messages with since query', async () => {
+    await adapter.setup(setup);
+    await httpPost('/api/rooms/lobby/threads/main/messages', { text: 'first' });
+    const { body: firstBody } = await httpGet('/api/rooms/lobby/threads/main/messages');
+    const firstTs = (firstBody as { messages: Array<{ timestamp: number }> }).messages[0]!.timestamp;
+    await httpPost('/api/rooms/lobby/threads/main/messages', { text: 'second' });
+    const { status, body } = await httpGet(`/api/rooms/lobby/threads/main/messages?since=${firstTs}`);
+    expect(status).toBe(200);
+    expect((body as { messages: Array<{ text: string }> }).messages.map((m) => m.text)).toEqual(['second']);
+  });
+
+  it('returns empty engagedAgents for DM rooms', async () => {
+    await adapter.setup(setup);
+    const { status, body } = await httpGet('/api/rooms/dm%3Asarah/threads/main/messages');
+    expect(status).toBe(200);
+    expect((body as { engagedAgents: string[] }).engagedAgents).toEqual([]);
+  });
+
+  it('returns 400 when removing engaged agent from non-lobby room', async () => {
+    await adapter.setup(setup);
+    const { status } = await httpDelete('/api/rooms/dm%3Asarah/threads/main/engaged/sarah');
+    expect(status).toBe(400);
+  });
+
+  it('returns 400 when deleting main thread', async () => {
+    await adapter.setup(setup);
+    const { status } = await httpDelete('/api/rooms/lobby/threads/main');
+    expect(status).toBe(400);
+  });
+
+  it('returns 404 for unknown attachment', async () => {
+    await adapter.setup(setup);
+    const { status } = await httpGet('/api/attachments/missing/file.png');
+    expect(status).toBe(404);
+  });
+
+  it('returns 400 for invalid JSON on POST message', async () => {
+    await adapter.setup(setup);
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port: testPort,
+          path: '/api/rooms/lobby/threads/main/messages',
+          method: 'POST',
+          headers: { Authorization: `Bearer ${SECRET}`, 'Content-Type': 'application/json', Connection: 'close' },
+        },
+        (res) => {
+          res.resume();
+          res.on('end', () => resolve(res.statusCode ?? 0));
+        },
+      );
+      req.on('error', reject);
+      req.write('{bad json');
+      req.end();
+    });
+    expect(status).toBe(400);
+  });
+
+  it('returns 400 when attachments is not an array', async () => {
+    await adapter.setup(setup);
+    const status = await httpPost('/api/rooms/lobby/threads/main/messages', { attachments: 'nope' });
+    expect(status).toBe(400);
+  });
+
+  it('returns 400 for too many attachments', async () => {
+    await adapter.setup(setup);
+    const attachments = Array.from({ length: 5 }, (_, i) => ({
+      name: `f${i}.png`,
+      mimeType: 'image/png',
+      data: PNG_BASE64,
+    }));
+    const status = await httpPost('/api/rooms/lobby/threads/main/messages', { text: 'x', attachments });
+    expect(status).toBe(400);
+  });
+
+  it('returns 404 for unknown API routes', async () => {
+    await adapter.setup(setup);
+    const { status } = await httpGet('/api/unknown');
+    expect(status).toBe(404);
+  });
+
+  it('skips peer fan-out when sender folder cannot be resolved', async () => {
+    await adapter.setup(setup);
+    await httpPost('/api/rooms/lobby/threads/thread_abc/messages', { text: '@sarah first' });
+    await flushAgentDeliveries();
+    captures.length = 0;
+    await adapter.deliver('lobby', 'thread_abc', {
+      kind: 'chat',
+      content: { text: 'Anonymous reply', senderName: 'Unknown Person' },
+    });
+    await flushAgentDeliveries();
+    expect(captures.filter((c) => c.message.id.startsWith('web-peer-'))).toHaveLength(0);
+  });
+
+  it('skips peer fan-out when sender is the only engaged agent', async () => {
+    await adapter.setup(setup);
+    await httpPost('/api/rooms/lobby/threads/thread_abc/messages', { text: '@sarah solo' });
+    await flushAgentDeliveries();
+    captures.length = 0;
+    await adapter.deliver('lobby', 'thread_abc', {
+      kind: 'chat',
+      content: { text: 'Solo reply', senderName: 'Sarah', senderFolder: 'sarah' },
+    });
+    await flushAgentDeliveries();
+    expect(captures.filter((c) => c.message.id.startsWith('web-peer-'))).toHaveLength(0);
+  });
+
+  it('logs and continues when thread session cleanup fails', async () => {
+    cleanupSessionsMock.mockImplementationOnce(() => {
+      throw new Error('cleanup failed');
+    });
+    await adapter.setup(setup);
+    const createRes = await new Promise<{ status: number; body: { id: string } }>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port: testPort,
+          path: '/api/rooms/lobby/threads',
+          method: 'POST',
+          headers: { Authorization: `Bearer ${SECRET}`, 'Content-Type': 'application/json', Connection: 'close' },
+        },
+        (res) => {
+          let data = '';
+          res.on('data', (chunk) => (data += chunk));
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, body: JSON.parse(data) }));
+        },
+      );
+      req.on('error', reject);
+      req.write(JSON.stringify({ title: 'Temp' }));
+      req.end();
+    });
+    expect(createRes.status).toBe(200);
+    const { status } = await httpDelete(`/api/rooms/lobby/threads/${createRes.body.id}`);
+    expect(status).toBe(200);
+  });
+
+  it('replays outbound agent messages during backfill', async () => {
+    await adapter.setup(setup);
+    await httpPost('/api/rooms/lobby/threads/thread_abc/messages', { text: 'user msg' });
+    await adapter.deliver('lobby', 'thread_abc', {
+      kind: 'chat',
+      content: { text: 'Agent reply', senderName: 'Sarah', senderFolder: 'sarah' },
+    });
+    captures.length = 0;
+    await httpPost('/api/rooms/lobby/threads/thread_abc/messages', { text: '@diego join' });
+    await flushAgentDeliveries();
+    const replay = captures.find(
+      (c) =>
+        c.message.id.includes('backfill-replay') &&
+        (c.message.content as { text?: string }).text === 'Agent reply',
+    );
+    expect(replay).toBeDefined();
+    expect(replay!.message.content).toMatchObject({
+      historicalReplay: true,
+      senderFolder: 'sarah',
+    });
+  });
+
+  it('rejects WebSocket upgrade on wrong path', async () => {
+    await adapter.setup(setup);
+    await expect(
+      new Promise<void>((resolve, reject) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${testPort}/wrong?token=${SECRET}`);
+        ws.on('open', () => reject(new Error('should not open')));
+        ws.on('error', () => resolve());
+        ws.on('close', () => resolve());
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('rejects WebSocket upgrade without auth token', async () => {
+    await adapter.setup(setup);
+    await expect(
+      new Promise<void>((resolve, reject) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${testPort}/api/ws`);
+        ws.on('open', () => reject(new Error('should not open')));
+        ws.on('error', () => resolve());
+        ws.on('close', () => resolve());
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('serves svg and json assets with specialized mime types', async () => {
+    const assetDir = '/tmp/nanoclaw-webchat-test-assets';
+    fs.writeFileSync(path.join(assetDir, 'icon.svg'), '<svg></svg>');
+    fs.writeFileSync(path.join(assetDir, 'data.json'), '{}');
+    await adapter.setup(setup);
+    const svg = await httpGetText('/icon.svg', testPort);
+    const json = await httpGetText('/data.json', testPort);
+    expect(svg.status).toBe(200);
+    expect(json.status).toBe(200);
+  });
+
+  it('returns 400 for attachment size out of range', async () => {
+    await adapter.setup(setup);
+    const huge = Buffer.alloc(6 * 1024 * 1024).toString('base64');
+    const status = await httpPost('/api/rooms/lobby/threads/main/messages', {
+      text: 'bad',
+      attachments: [{ name: 'big.bin', mimeType: 'application/octet-stream', data: huge }],
+    });
+    expect(status).toBe(400);
+  });
+
+  it('returns 400 for non-object attachment entries', async () => {
+    await adapter.setup(setup);
+    const status = await httpPost('/api/rooms/lobby/threads/main/messages', {
+      text: 'bad',
+      attachments: ['nope'],
+    });
+    expect(status).toBe(400);
+  });
+
+  it('returns 400 when patching thread with empty title', async () => {
+    await adapter.setup(setup);
+    const createRes = await new Promise<{ status: number; body: { id: string } }>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port: testPort,
+          path: '/api/rooms/lobby/threads',
+          method: 'POST',
+          headers: { Authorization: `Bearer ${SECRET}`, 'Content-Type': 'application/json', Connection: 'close' },
+        },
+        (res) => {
+          let data = '';
+          res.on('data', (chunk) => (data += chunk));
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, body: JSON.parse(data) }));
+        },
+      );
+      req.on('error', reject);
+      req.write(JSON.stringify({ title: 'Topic' }));
+      req.end();
+    });
+    const patchStatus = await new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port: testPort,
+          path: `/api/rooms/lobby/threads/${createRes.body.id}`,
+          method: 'PATCH',
+          headers: { Authorization: `Bearer ${SECRET}`, 'Content-Type': 'application/json', Connection: 'close' },
+        },
+        (res) => {
+          res.resume();
+          res.on('end', () => resolve(res.statusCode ?? 0));
+        },
+      );
+      req.on('error', reject);
+      req.write(JSON.stringify({ title: '   ' }));
+      req.end();
+    });
+    expect(patchStatus).toBe(400);
+  });
+
+  it('serves index.html for static directory requests', async () => {
+    const assetDir = '/tmp/nanoclaw-webchat-test-assets';
+    fs.mkdirSync(path.join(assetDir, 'assets'), { recursive: true });
+    await adapter.setup(setup);
+    const { status, body } = await httpGetText('/assets/', testPort);
+    expect(status).toBe(200);
+    expect(body).toContain('webchat-token');
+  });
+
+  it('leaves index.html unchanged when no head tag exists', async () => {
+    const assetDir = '/tmp/nanoclaw-webchat-test-assets';
+    fs.writeFileSync(path.join(assetDir, 'index.html'), '<html><body>app</body></html>');
+    await adapter.setup(setup);
+    const { body } = await httpGetText('/', testPort);
+    expect(body).toBe('<html><body>app</body></html>');
+  });
+
+  it('recovers agent delivery chain after routeInbound failure', async () => {
+    routeInboundMock.mockRejectedValueOnce(new Error('first fail'));
+    await adapter.setup(setup);
+    await httpPost('/api/rooms/lobby/threads/thread_abc/messages', { text: '@sarah @diego pair' });
+    await flushAgentDeliveries();
+    expect(routeInboundMock.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it('fails setup when nanoclaw-webchat assets are unavailable', async () => {
+    getAssetDirMock.mockImplementationOnce(() => {
+      throw new Error('missing package');
+    });
+    await expect(adapter.setup(setup)).rejects.toThrow('missing package');
+  });
+
+  it('serves attachment bytes from GET /api/attachments', async () => {
+    await adapter.setup(setup);
+    await httpPost('/api/rooms/lobby/threads/thread_abc/messages', {
+      text: 'pic',
+      attachments: [{ name: 'photo.png', mimeType: 'image/png', type: 'image', data: PNG_BASE64 }],
+    });
+    const msgs = (await httpGet('/api/rooms/lobby/threads/thread_abc/messages')).body as {
+      messages: Array<{ attachments?: Array<{ url: string }> }>;
+    };
+    const url = msgs.messages[0]!.attachments![0]!.url;
+    const { status, body } = await httpGet(url, testPort);
+    expect(status).toBe(200);
+    expect(String(body).length).toBeGreaterThan(0);
+  });
+
+  it('deliver extracts text from object content', async () => {
+    await adapter.setup(setup);
+    await adapter.deliver('lobby', 'thread_abc', {
+      kind: 'chat',
+      content: { text: 'Object text' },
+    });
+    const { body } = await httpGet('/api/rooms/lobby/threads/thread_abc/messages');
+    expect((body as { messages: Array<{ text: string }> }).messages.at(-1)?.text).toBe('Object text');
+  });
+
+  it('returns 500 when message history handler throws', async () => {
+    await adapter.setup(setup);
+    const getMessagesSpy = vi.spyOn(webchatStore, 'getMessages').mockImplementation(() => {
+      throw new Error('db exploded');
+    });
+    try {
+      const { status } = await httpGet('/api/rooms/lobby/threads/main/messages');
+      expect(status).toBe(500);
+    } finally {
+      getMessagesSpy.mockRestore();
+    }
+  });
+
+  it('returns 404 when static asset and index.html are missing', async () => {
+    fs.rmSync(path.join('/tmp/nanoclaw-webchat-test-assets', 'index.html'));
+    await adapter.setup(setup);
+    const { status } = await httpGetText('/missing.js', testPort);
+    expect(status).toBe(404);
+  });
+
+  it('returns 400 when POST body exceeds max size via content-length', async () => {
+    await adapter.setup(setup);
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port: testPort,
+          path: '/api/rooms/lobby/threads/main/messages',
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${SECRET}`,
+            'Content-Type': 'application/json',
+            'Content-Length': String(21 * 1024 * 1024),
+            Connection: 'close',
+          },
+        },
+        (res) => {
+          res.resume();
+          res.on('end', () => resolve(res.statusCode ?? 0));
+        },
+      );
+      req.on('error', reject);
+      req.end();
+    });
+    expect(status).toBe(400);
+  });
+
+  it('returns 400 when POST has neither text nor attachments', async () => {
+    await adapter.setup(setup);
+    const status = await httpPost('/api/rooms/lobby/threads/main/messages', { text: '   ' });
+    expect(status).toBe(400);
+  });
+
+  it('returns 400 when creating thread with invalid JSON', async () => {
+    await adapter.setup(setup);
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port: testPort,
+          path: '/api/rooms/lobby/threads',
+          method: 'POST',
+          headers: { Authorization: `Bearer ${SECRET}`, 'Content-Type': 'application/json', Connection: 'close' },
+        },
+        (res) => {
+          res.resume();
+          res.on('end', () => resolve(res.statusCode ?? 0));
+        },
+      );
+      req.on('error', reject);
+      req.write('{bad');
+      req.end();
+    });
+    expect(status).toBe(400);
+  });
+
+  it('returns 400 when patching thread with invalid JSON', async () => {
+    await adapter.setup(setup);
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port: testPort,
+          path: '/api/rooms/lobby/threads/thread_abc',
+          method: 'PATCH',
+          headers: { Authorization: `Bearer ${SECRET}`, 'Content-Type': 'application/json', Connection: 'close' },
+        },
+        (res) => {
+          res.resume();
+          res.on('end', () => resolve(res.statusCode ?? 0));
+        },
+      );
+      req.on('error', reject);
+      req.write('{bad');
+      req.end();
+    });
+    expect(status).toBe(400);
+  });
+
+  it('returns 400 when patching thread with non-string title', async () => {
+    await adapter.setup(setup);
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port: testPort,
+          path: '/api/rooms/lobby/threads/thread_abc',
+          method: 'PATCH',
+          headers: { Authorization: `Bearer ${SECRET}`, 'Content-Type': 'application/json', Connection: 'close' },
+        },
+        (res) => {
+          res.resume();
+          res.on('end', () => resolve(res.statusCode ?? 0));
+        },
+      );
+      req.on('error', reject);
+      req.write(JSON.stringify({ title: 123 }));
+      req.end();
+    });
+    expect(status).toBe(400);
+  });
+
+  it('calls session cleanup when deleting a thread with a messaging group', async () => {
+    await adapter.setup(setup);
+    const createRes = await new Promise<{ status: number; body: { id: string } }>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port: testPort,
+          path: '/api/rooms/lobby/threads',
+          method: 'POST',
+          headers: { Authorization: `Bearer ${SECRET}`, 'Content-Type': 'application/json', Connection: 'close' },
+        },
+        (res) => {
+          let data = '';
+          res.on('data', (chunk) => (data += chunk));
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, body: JSON.parse(data) }));
+        },
+      );
+      req.on('error', reject);
+      req.write(JSON.stringify({ title: 'Temp' }));
+      req.end();
+    });
+    expect(createRes.status).toBe(200);
+    cleanupSessionsMock.mockClear();
+    const { status } = await httpDelete(`/api/rooms/lobby/threads/${createRes.body.id}`);
+    expect(status).toBe(200);
+    expect(cleanupSessionsMock).toHaveBeenCalledWith('mg-lobby', createRes.body.id);
+  });
+
+  it('skips backfill when agent already received history', async () => {
+    await adapter.setup(setup);
+    const skipSpy = vi.spyOn(webchatStore, 'hasBackfillDelivered').mockReturnValue(true);
+    captures.length = 0;
+    try {
+      await httpPost('/api/rooms/lobby/threads/thread_abc/messages', { text: '@diego join' });
+      await flushAgentDeliveries();
+      expect(captures.some((c) => c.message.id.includes('backfill-stub'))).toBe(false);
+    } finally {
+      skipSpy.mockRestore();
+    }
+  });
+
+  it('fans out peer replies using senderFolder from deliver content', async () => {
+    await adapter.setup(setup);
+    await httpPost('/api/rooms/lobby/threads/thread_abc/messages', { text: '@sarah @diego sync' });
+    await flushAgentDeliveries();
+    captures.length = 0;
+    await adapter.deliver('lobby', 'thread_abc', {
+      kind: 'chat',
+      content: { text: 'Sarah reply', senderFolder: 'sarah' },
+    });
+    await flushAgentDeliveries();
+    expect(captures.some((c) => c.message.id.startsWith('web-peer-'))).toBe(true);
+  });
+
+  it('deliver omits senderName when content has no name', async () => {
+    await adapter.setup(setup);
+    await adapter.deliver('lobby', 'thread_abc', {
+      kind: 'chat',
+      content: { text: 'Plain outbound' },
+    });
+    const { body } = await httpGet('/api/rooms/lobby/threads/thread_abc/messages');
+    const msg = (body as { messages: Array<{ senderName?: string }> }).messages.at(-1);
+    expect(msg?.senderName).toBeUndefined();
+  });
+
+  it('deliver returns undefined for non-text object content', async () => {
+    await adapter.setup(setup);
+    const id = await adapter.deliver('lobby', 'thread_abc', { kind: 'chat', content: { body: 'nope' } });
+    expect(id).toBeUndefined();
+  });
+
+  it('infers mime type from filename when attachment mimeType is blank', async () => {
+    await adapter.setup(setup);
+    const status = await httpPost('/api/rooms/lobby/threads/main/messages', {
+      text: '@sarah',
+      attachments: [{ name: 'photo.webp', mimeType: '', data: PNG_BASE64 }],
+    });
+    expect(status).toBe(200);
+  });
+
+  it('serves woff2 and htm assets with specialized mime types', async () => {
+    const assetDir = '/tmp/nanoclaw-webchat-test-assets';
+    fs.writeFileSync(path.join(assetDir, 'font.woff2'), Buffer.from('font'));
+    fs.writeFileSync(path.join(assetDir, 'legacy.htm'), '<html></html>');
+    await adapter.setup(setup);
+    const woff = await httpGetText('/font.woff2', testPort);
+    const htm = await httpGetText('/legacy.htm', testPort);
+    expect(woff.status).toBe(200);
+    expect(htm.status).toBe(200);
+  });
+
+  it('serves unknown extension assets as octet-stream', async () => {
+    const assetDir = '/tmp/nanoclaw-webchat-test-assets';
+    fs.writeFileSync(path.join(assetDir, 'blob.xyz'), 'data');
+    await adapter.setup(setup);
+    const { status } = await httpGetText('/blob.xyz', testPort);
+    expect(status).toBe(200);
+  });
+
+  it('setTyping broadcasts on main thread when threadId is null', async () => {
+    await adapter.setup(setup);
+    await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${testPort}/api/ws?token=${SECRET}`);
+      ws.on('open', async () => {
+        await adapter.setTyping!('lobby', null);
+      });
+      ws.on('message', (data) => {
+        const event = JSON.parse(data.toString()) as { type: string; threadId: string };
+        if (event.type === 'typing') {
+          expect(event.threadId).toBe('main');
+          ws.close();
+          resolve();
+        }
+      });
+      ws.on('error', reject);
+    });
+  });
+
+  it('returns 400 when POST body stream exceeds max size', async () => {
+    await adapter.setup(setup);
+    const status = await new Promise<number>((resolve) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port: testPort,
+          path: '/api/rooms/lobby/threads/main/messages',
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${SECRET}`,
+            'Content-Type': 'application/json',
+            Connection: 'close',
+          },
+        },
+        (res) => {
+          res.resume();
+          res.on('end', () => resolve(res.statusCode ?? 0));
+        },
+      );
+      req.on('error', () => resolve(400));
+      req.write('{"text":"');
+      req.write('x'.repeat(21 * 1024 * 1024));
+      req.write('"}');
+      req.end();
+    });
+    expect(status).toBe(400);
+  });
+
+  it('returns 400 when patch body read fails', async () => {
+    await adapter.setup(setup);
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port: testPort,
+          path: '/api/rooms/lobby/threads/thread_abc',
+          method: 'PATCH',
+          headers: {
+            Authorization: `Bearer ${SECRET}`,
+            'Content-Type': 'application/json',
+            'Content-Length': String(21 * 1024 * 1024),
+            Connection: 'close',
+          },
+        },
+        (res) => {
+          res.resume();
+          res.on('end', () => resolve(res.statusCode ?? 0));
+        },
+      );
+      req.on('error', reject);
+      req.end();
+    });
+    expect(status).toBe(400);
+  });
+
+  it('creates thread with default title when body is empty', async () => {
+    await adapter.setup(setup);
+    const createRes = await new Promise<{ status: number; body: { title: string } }>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port: testPort,
+          path: '/api/rooms/lobby/threads',
+          method: 'POST',
+          headers: { Authorization: `Bearer ${SECRET}`, 'Content-Type': 'application/json', Connection: 'close' },
+        },
+        (res) => {
+          let data = '';
+          res.on('data', (chunk) => (data += chunk));
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, body: JSON.parse(data) }));
+        },
+      );
+      req.on('error', reject);
+      req.end();
+    });
+    expect(createRes.status).toBe(200);
+    expect(createRes.body.title).toBe('Thread');
+  });
+
+  it('deliver accepts plain string content', async () => {
+    await adapter.setup(setup);
+    await adapter.deliver('lobby', 'thread_abc', { kind: 'chat', content: 'String body' });
+    const { body } = await httpGet('/api/rooms/lobby/threads/thread_abc/messages');
+    expect((body as { messages: Array<{ text: string }> }).messages.at(-1)?.text).toBe('String body');
+  });
+
+  it('replays history attachments with embedded data during backfill', async () => {
+    await adapter.setup(setup);
+    await httpPost('/api/rooms/lobby/threads/thread_abc/messages', {
+      text: '@sarah look',
+      attachments: [{ name: 'photo.png', mimeType: 'image/png', type: 'image', data: PNG_BASE64 }],
+    });
+    await flushAgentDeliveries();
+    captures.length = 0;
+    await httpPost('/api/rooms/lobby/threads/thread_abc/messages', { text: '@diego join' });
+    await flushAgentDeliveries();
+    const replay = captures.find(
+      (c) =>
+        c.message.id.includes('backfill-replay') &&
+        (c.message.content as { text?: string }).text?.includes('look'),
+    );
+    expect(replay).toBeDefined();
+    const att = (replay!.message.content as { attachments: Array<{ data?: string }> }).attachments![0]!;
+    expect(att.data).toBe(PNG_BASE64);
+  });
+
+  it('replays history attachments without inline data when disk read fails', async () => {
+    await adapter.setup(setup);
+    await httpPost('/api/rooms/lobby/threads/thread_abc/messages', {
+      text: '@sarah look',
+      attachments: [{ name: 'photo.png', mimeType: 'image/png', type: 'image', data: PNG_BASE64 }],
+    });
+    await flushAgentDeliveries();
+    const originalRead = fs.readFileSync.bind(fs);
+    const readSpy = vi.spyOn(fs, 'readFileSync').mockImplementation((filePath, ...args) => {
+      if (typeof filePath === 'string' && filePath.includes('/webchat/')) {
+        throw new Error('read failed');
+      }
+      return originalRead(filePath, ...args);
+    });
+    captures.length = 0;
+    try {
+      await httpPost('/api/rooms/lobby/threads/thread_abc/messages', { text: '@diego join' });
+      await flushAgentDeliveries();
+      const replay = captures.find(
+        (c) =>
+          c.message.id.includes('backfill-replay') &&
+          (c.message.content as { text?: string }).text?.includes('look'),
+      );
+      expect(replay).toBeDefined();
+      const att = (replay!.message.content as { attachments: Array<{ data?: string; name: string }> }).attachments![0]!;
+      expect(att.name).toBe('photo.png');
+      expect(att.data).toBeUndefined();
+    } finally {
+      readSpy.mockRestore();
+    }
+  });
+
+  it('deliver includes senderName when provided in content', async () => {
+    await adapter.setup(setup);
+    await adapter.deliver('lobby', 'thread_abc', {
+      kind: 'chat',
+      content: { text: 'Named reply', senderName: 'Sarah' },
+    });
+    const { body } = await httpGet('/api/rooms/lobby/threads/thread_abc/messages');
+    expect((body as { messages: Array<{ senderName?: string }> }).messages.at(-1)?.senderName).toBe('Sarah');
+  });
+
+  it('returns 400 when attachment base64 decoding fails', async () => {
+    await adapter.setup(setup);
+    const origFrom = Buffer.from;
+    // Only intercept base64 decodes in validateInboundAttachments, not other Buffer.from callers.
+    const fromSpy = vi.spyOn(Buffer, 'from').mockImplementation((input, encoding) => {
+      if (encoding === 'base64') throw new Error('invalid base64');
+      return origFrom(input as Parameters<typeof Buffer.from>[0], encoding as BufferEncoding);
+    });
+    try {
+      const status = await httpPost('/api/rooms/lobby/threads/main/messages', {
+        text: '@sarah',
+        attachments: [{ name: 'photo.png', mimeType: 'image/png', data: PNG_BASE64 }],
+      });
+      expect(status).toBe(400);
+    } finally {
+      fromSpy.mockRestore();
+    }
+  });
+
+  it('serves standalone html assets with html mime type', async () => {
+    const assetDir = '/tmp/nanoclaw-webchat-test-assets';
+    fs.writeFileSync(path.join(assetDir, 'about.html'), '<html><body>about</body></html>');
+    await adapter.setup(setup);
+    const { status, body } = await httpGetText('/about.html', testPort);
+    expect(status).toBe(200);
+    expect(body).toContain('about');
+  });
+
+  it('infers octet-stream for unknown outbound attachment extensions', async () => {
+    await adapter.setup(setup);
+    await adapter.deliver('lobby', 'thread_abc', {
+      kind: 'chat',
+      content: { text: 'file' },
+      files: [{ filename: 'archive.xyz', data: Buffer.from('data') }],
+    });
+    const { body } = await httpGet('/api/rooms/lobby/threads/thread_abc/messages');
+    const msg = (body as { messages: Array<{ attachments?: Array<{ mimeType: string }> }> }).messages.at(-1);
+    expect(msg?.attachments?.[0]?.mimeType).toBe('application/octet-stream');
+  });
+
+  it('deletes thread without session cleanup when messaging group is missing', async () => {
+    getMessagingGroupMock.mockReturnValueOnce(undefined);
+    await adapter.setup(setup);
+    const createRes = await new Promise<{ status: number; body: { id: string } }>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port: testPort,
+          path: '/api/rooms/lobby/threads',
+          method: 'POST',
+          headers: { Authorization: `Bearer ${SECRET}`, 'Content-Type': 'application/json', Connection: 'close' },
+        },
+        (res) => {
+          let data = '';
+          res.on('data', (chunk) => (data += chunk));
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, body: JSON.parse(data) }));
+        },
+      );
+      req.on('error', reject);
+      req.write(JSON.stringify({ title: 'Orphan' }));
+      req.end();
+    });
+    cleanupSessionsMock.mockClear();
+    const { status } = await httpDelete(`/api/rooms/lobby/threads/${createRes.body.id}`);
+    expect(status).toBe(200);
+    expect(cleanupSessionsMock).not.toHaveBeenCalled();
+  });
+
+  it('peer fan-out includes senderName when provided without senderFolder', async () => {
+    await adapter.setup(setup);
+    await httpPost('/api/rooms/lobby/threads/thread_abc/messages', { text: '@sarah @diego sync' });
+    await flushAgentDeliveries();
+    captures.length = 0;
+    await adapter.deliver('lobby', 'thread_abc', {
+      kind: 'chat',
+      content: { text: 'Sarah reply', senderName: 'Sarah' },
+    });
+    await flushAgentDeliveries();
+    const peer = captures.find((c) => c.message.id.startsWith('web-peer-'));
+    expect(peer).toBeDefined();
+    expect(peer!.message.content).toMatchObject({ senderName: 'Sarah', senderFolder: 'sarah' });
+  });
+
+  it('deliver stores outbound files without text on non-lobby rooms', async () => {
+    await adapter.setup(setup);
+    const id = await adapter.deliver('dm:sarah', null, {
+      kind: 'chat',
+      content: { text: '   ' },
+      files: [{ filename: 'note.txt', data: Buffer.from('hello') }],
+    });
+    expect(id).toBeDefined();
+    const { body } = await httpGet('/api/rooms/dm%3Asarah/threads/main/messages');
+    const msg = (body as { messages: Array<{ attachments?: unknown[] }> }).messages.at(-1);
+    expect(msg?.attachments).toHaveLength(1);
+  });
+
+  it('deliver on lobby main thread uses main when threadId is null', async () => {
+    await adapter.setup(setup);
+    await httpPost('/api/rooms/lobby/threads/main/messages', { text: '@sarah @diego sync' });
+    await flushAgentDeliveries();
+    captures.length = 0;
+    await adapter.deliver('lobby', null, {
+      kind: 'chat',
+      content: { text: 'Sarah reply', senderFolder: 'sarah' },
+    });
+    await flushAgentDeliveries();
+    expect(captures.some((c) => c.message.id.startsWith('web-peer-'))).toBe(true);
+  });
+
+  it('returns 404 for unsupported methods on static paths', async () => {
+    await adapter.setup(setup);
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port: testPort,
+          path: '/app.js',
+          method: 'POST',
+          headers: { Connection: 'close' },
+        },
+        (res) => {
+          res.resume();
+          res.on('end', () => resolve(res.statusCode ?? 0));
+        },
+      );
+      req.on('error', reject);
+      req.end();
+    });
+    expect(status).toBe(404);
+  });
+
+  it('returns 404 for unsupported methods on message routes', async () => {
+    await adapter.setup(setup);
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port: testPort,
+          path: '/api/rooms/lobby/threads/main/messages',
+          method: 'PUT',
+          headers: { Authorization: `Bearer ${SECRET}`, Connection: 'close' },
+        },
+        (res) => {
+          res.resume();
+          res.on('end', () => resolve(res.statusCode ?? 0));
+        },
+      );
+      req.on('error', reject);
+      req.end();
+    });
+    expect(status).toBe(404);
+  });
+
+  it('deliver returns undefined for null chat content', async () => {
+    await adapter.setup(setup);
+    const id = await adapter.deliver('lobby', 'thread_abc', { kind: 'chat', content: null as unknown as string });
+    expect(id).toBeUndefined();
+  });
+
+  it('accepts inbound attachments with extension-based mime inference', async () => {
+    await adapter.setup(setup);
+    const status = await httpPost('/api/rooms/lobby/threads/main/messages', {
+      text: '@sarah',
+      attachments: [{ name: 'photo.jpg', mimeType: 'image/png', data: PNG_BASE64 }],
+    });
+    expect(status).toBe(200);
+  });
+
+  it('returns 401 when auth token is only provided as a query parameter', async () => {
+    await adapter.setup(setup);
+    const { status } = await httpGetText('/api/bootstrap?token=' + SECRET, testPort);
+    expect(status).toBe(401);
+  });
+
+  it('returns 404 for GET on thread routes without a messages suffix', async () => {
+    await adapter.setup(setup);
+    const { status } = await httpGet('/api/rooms/lobby/threads/thread_abc');
+    expect(status).toBe(404);
+  });
+
+  it('skips broadcast to WebSocket clients that are no longer open', async () => {
+    await adapter.setup(setup);
+    const ws = new WebSocket(`ws://127.0.0.1:${testPort}/api/ws?token=${SECRET}`);
+    await new Promise<void>((resolve, reject) => {
+      ws.on('open', () => resolve());
+      ws.on('error', reject);
+    });
+    ws.terminate();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const status = await httpPost('/api/rooms/lobby/threads/main/messages', { text: 'hello after terminate' });
+    expect(status).toBe(200);
+  });
+
+  it('ignores blank senderName and senderFolder on deliver content', async () => {
+    await adapter.setup(setup);
+    await adapter.deliver('lobby', 'thread_abc', {
+      kind: 'chat',
+      content: { text: 'Named reply', senderName: '   ', senderFolder: '   ' },
+    });
+    const { body } = await httpGet('/api/rooms/lobby/threads/thread_abc/messages');
+    const msg = (body as { messages: Array<{ senderName?: string }> }).messages.at(-1);
+    expect(msg?.senderName).toBeUndefined();
+  });
+
+  it('returns 400 when attachment fields are not strings', async () => {
+    await adapter.setup(setup);
+    const status = await httpPost('/api/rooms/lobby/threads/main/messages', {
+      text: 'x',
+      attachments: [{ name: 123, mimeType: true, data: false }],
+    });
+    expect(status).toBe(400);
+  });
+
+  it('returns 404 for static assets when package asset dir is empty', async () => {
+    getAssetDirMock.mockReturnValueOnce('');
+    await adapter.setup(setup);
+    const { status } = await httpGetText('/app.js', testPort);
+    expect(status).toBe(404);
+  });
+
+  it('routes follow-ups for engaged folders missing from the current agent roster', async () => {
+    await adapter.setup(setup);
+    webchatStore.addEngagedAgents('lobby', 'thread_abc', ['orphan']);
+    const groupsSpy = vi.spyOn(agentGroups, 'getAllAgentGroups').mockReturnValue([
+      { id: 'ag-sarah', folder: 'sarah', name: 'Sarah', agent_provider: null, created_at: '2020-01-01' },
+    ]);
+    try {
+      await httpPost('/api/rooms/lobby/threads/thread_abc/messages', { text: 'hello everyone' });
+      await flushAgentDeliveries();
+      expect(captures.some((c) => (c.message.content as { webchatReceiver?: string }).webchatReceiver === 'orphan')).toBe(
+        true,
+      );
+    } finally {
+      groupsSpy.mockRestore();
+    }
+  });
+
+  it('uses Agent as sender when replaying outbound messages without senderName', async () => {
+    await adapter.setup(setup);
+    await httpPost('/api/rooms/lobby/threads/thread_abc/messages', { text: 'hi' });
+    await adapter.deliver('lobby', 'thread_abc', { kind: 'chat', content: { text: 'Unnamed reply' } });
+    captures.length = 0;
+    await httpPost('/api/rooms/lobby/threads/thread_abc/messages', { text: '@diego join' });
+    await flushAgentDeliveries();
+    const replay = captures.find(
+      (c) =>
+        c.message.id.includes('backfill-replay') &&
+        (c.message.content as { text?: string }).text === 'Unnamed reply',
+    );
+    expect(replay).toBeDefined();
+    expect((replay!.message.content as { sender?: string }).sender).toBe('Agent');
+  });
+
+  it('omits threadMessageSeq from backfill replay when history rows lack thread_seq', async () => {
+    await adapter.setup(setup);
+    await httpPost('/api/rooms/lobby/threads/thread_abc/messages', { text: 'seed' });
+    const recentSpy = vi.spyOn(webchatStore, 'getRecentMessages').mockReturnValueOnce([
+      {
+        id: 'legacy-msg',
+        direction: 'inbound',
+        text: 'legacy without seq',
+        timestamp: Date.now(),
+        platformId: 'lobby',
+        threadId: 'thread_abc',
+      },
+    ]);
+    try {
+      captures.length = 0;
+      await httpPost('/api/rooms/lobby/threads/thread_abc/messages', { text: '@diego join' });
+      await flushAgentDeliveries();
+      const replay = captures.find(
+        (c) =>
+          c.message.id.includes('backfill-replay') &&
+          (c.message.content as { text?: string }).text === 'legacy without seq',
+      );
+      expect(replay).toBeDefined();
+      expect((replay!.message.content as { threadMessageSeq?: number }).threadMessageSeq).toBeUndefined();
+    } finally {
+      recentSpy.mockRestore();
+    }
+  });
+
+  it('omits threadMessageSeq from peer fan-out when stored message has no thread_seq', async () => {
+    const origAppend = webchatStore.appendMessage;
+    const appendSpy = vi.spyOn(webchatStore, 'appendMessage');
+    await adapter.setup(setup);
+    await httpPost('/api/rooms/lobby/threads/thread_abc/messages', { text: '@sarah @diego sync' });
+    await flushAgentDeliveries();
+    appendSpy.mockImplementation((msg) => {
+      const stored = origAppend(msg);
+      const { threadSeq: _seq, ...withoutSeq } = stored;
+      return withoutSeq as typeof stored;
+    });
+    try {
+      captures.length = 0;
+      await adapter.deliver('lobby', 'thread_abc', {
+        kind: 'chat',
+        content: { text: 'Peer without seq', senderFolder: 'sarah' },
+      });
+      await flushAgentDeliveries();
+      const peer = captures.find((c) => c.message.id.startsWith('web-peer-'));
+      expect(peer).toBeDefined();
+      expect((peer!.message.content as { threadMessageSeq?: number }).threadMessageSeq).toBeUndefined();
+    } finally {
+      appendSpy.mockRestore();
+    }
+  });
+
+  it('retries agent delivery when backfill history load throws once', async () => {
+    await adapter.setup(setup);
+    await httpPost('/api/rooms/lobby/threads/thread_abc/messages', { text: '@sarah seed' });
+    await flushAgentDeliveries();
+    const recentSpy = vi.spyOn(webchatStore, 'getRecentMessages');
+    recentSpy.mockImplementationOnce(() => {
+      throw new Error('transient db');
+    });
+    try {
+      captures.length = 0;
+      await httpPost('/api/rooms/lobby/threads/thread_abc/messages', { text: '@diego join' });
+      await flushAgentDeliveries();
+      expect(captures.some((c) => c.message.id.includes('backfill-stub'))).toBe(true);
+      expect(recentSpy.mock.calls.length).toBeGreaterThan(1);
+    } finally {
+      recentSpy.mockRestore();
+    }
+  });
+
+  it('returns 403 when a static asset resolves outside the asset directory', async () => {
+    const assetDir = '/tmp/nanoclaw-webchat-test-assets';
+    fs.writeFileSync(path.join(assetDir, '403-probe.txt'), 'secret');
+    const origResolve = path.resolve;
+    const resolveSpy = vi.spyOn(path, 'resolve').mockImplementation((...args) => {
+      const resolved = origResolve(...args);
+      if (String(args[0]).endsWith('403-probe.txt')) return '/outside/403-probe.txt';
+      return resolved;
+    });
+    try {
+      await adapter.setup(setup);
+      const { status } = await httpGetText('/403-probe.txt', testPort);
+      expect(status).toBe(403);
+    } finally {
+      resolveSpy.mockRestore();
+    }
+  });
+
+  it('returns 404 for non-GET requests to static routes', async () => {
+    await adapter.setup(setup);
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port: testPort,
+          path: '/',
+          method: 'POST',
+          headers: { Connection: 'close' },
+        },
+        (res) => {
+          res.resume();
+          res.on('end', () => resolve(res.statusCode ?? 0));
+        },
+      );
+      req.on('error', reject);
+      req.end();
+    });
+    expect(status).toBe(404);
+  });
+
+  it('uses folder name in join stub when mentioned agent is absent from roster', async () => {
+    const mentionSpy = vi.spyOn(webchatMentions, 'mentionedAgentFolders');
+    try {
+      await adapter.setup(setup);
+      await httpPost('/api/rooms/lobby/threads/thread_abc/messages', { text: '@sarah first' });
+      await flushAgentDeliveries();
+      captures.length = 0;
+      mentionSpy.mockReturnValue(['ghost']);
+      await httpPost('/api/rooms/lobby/threads/thread_abc/messages', { text: '@ghost hello' });
+      await flushAgentDeliveries();
+      const sarahLive = captures.find(
+        (c) =>
+          c.message.id.includes('-route-') &&
+          (c.message.content as { webchatReceiver?: string }).webchatReceiver === 'sarah',
+      );
+      expect(sarahLive).toBeDefined();
+      expect((sarahLive!.message.content as { rosterStub?: string }).rosterStub).toBe('ghost has joined this thread.');
+    } finally {
+      mentionSpy.mockRestore();
+    }
+  });
+
+  it('counts string request body chunks toward the max body size', async () => {
+    await adapter.setup(setup);
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port: testPort,
+          path: '/api/rooms/lobby/threads/main/messages',
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${SECRET}`,
+            'Content-Type': 'application/json',
+            Connection: 'close',
+          },
+        },
+        (res) => {
+          res.resume();
+          res.on('end', () => resolve(res.statusCode ?? 0));
+        },
+      );
+      req.on('error', reject);
+      req.write('{"text":"');
+      req.write('x"}');
+      req.end();
+    });
+    expect(status).toBe(200);
   });
 });

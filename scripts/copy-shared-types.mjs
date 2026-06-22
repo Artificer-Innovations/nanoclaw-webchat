@@ -6,6 +6,9 @@
  * Runs twice in `pnpm run build`: once before the client tsc emit (so
  * dist/types.* exists for index.d.ts re-exports) and again after the MCP
  * build rewrites all dist .d.ts files that reference the workspace package.
+ *
+ * Only types.js / types.d.ts are copied from shared. Root dist/index.js and
+ * dist/index.d.ts are owned by the client tsc emit (getAssetDir + re-exports).
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -15,7 +18,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const sharedDist = path.join(root, 'packages/shared/dist');
 const outDir = path.join(root, 'dist');
 
-for (const file of ['types.js', 'types.d.ts', 'index.js', 'index.d.ts']) {
+for (const file of ['types.js', 'types.d.ts']) {
   const src = path.join(sharedDist, file);
   if (!fs.existsSync(src)) {
     throw new Error(`Expected ${src} — run shared build first`);

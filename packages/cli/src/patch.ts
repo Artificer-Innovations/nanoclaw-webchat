@@ -42,7 +42,7 @@ export function removeBarrelImport(nanoclawRoot: string): boolean {
   const filtered = lines.filter((line) => line.trim() !== WEBCHAT_BARREL_IMPORT);
   if (filtered.length === lines.length) return false;
   const body = filtered.join('\n');
-  fs.writeFileSync(filePath, content.endsWith('\n') ? `${body}\n` : body);
+  fs.writeFileSync(filePath, `${body.replace(/\n?$/, '')}\n`);
   return true;
 }
 
@@ -111,8 +111,7 @@ export function scaffoldEnv(nanoclawRoot: string): { created: string[]; skipped:
   }
 
   if (created.length > 0) {
-    const body = lines.join('\n');
-    fs.writeFileSync(envPath, body.endsWith('\n') ? body : `${body}\n`);
+    fs.writeFileSync(envPath, `${lines.join('\n').replace(/\n?$/, '')}\n`);
   }
 
   return { created, skipped };
@@ -134,7 +133,7 @@ export function removeEnvVars(nanoclawRoot: string): string[] {
     return true;
   });
   const body = kept.join('\n');
-  fs.writeFileSync(envPath, content.endsWith('\n') ? `${body}\n` : body);
+  fs.writeFileSync(envPath, `${body.replace(/\n?$/, '')}\n`);
   return removed;
 }
 
