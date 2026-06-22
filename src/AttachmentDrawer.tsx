@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ATTACHMENT_DRAWER_MIN_WIDTH,
+  getStoredAttachmentDrawerWidth,
+  setStoredAttachmentDrawerWidth,
   attachmentDrawerWidthFromDrag,
   attachmentDrawerWidthFromKeyboard,
-  getStoredAttachmentDrawerWidth,
+  ATTACHMENT_DRAWER_MIN_WIDTH,
   clampAttachmentDrawerWidth,
   maxAttachmentDrawerWidth,
   resetDrawerBodyScroll,
-  setStoredAttachmentDrawerWidth,
 } from './attachment-drawer-layout';
 import { codeLanguageFromAttachment } from './attachment-code';
 import {
@@ -45,10 +45,16 @@ export function AttachmentDrawer({
   attachment,
   token,
   onClose,
+  width: controlledWidth,
+  onWidthChange,
+  maxWidth,
 }: {
   attachment: WebChatAttachment;
   token: string;
   onClose: () => void;
+  width?: number;
+  onWidthChange?: (width: number) => void;
+  maxWidth?: number;
 }) {
   const att = useMemo(() => normalizeAttachment(attachment), [attachment]);
   const category = attachmentTextCategory(att.mimeType, att.name);
@@ -58,7 +64,9 @@ export function AttachmentDrawer({
 
   const bodyRef = useRef<HTMLDivElement>(null);
   const copiedTimeoutRef = useRef<number | null>(null);
-  const [width, setWidth] = useState(getStoredAttachmentDrawerWidth);
+  const [uncontrolledWidth, setUncontrolledWidth] = useState(getStoredAttachmentDrawerWidth);
+  const width = controlledWidth ?? uncontrolledWidth;
+  const drawerMaxWidth = maxWidth ?? maxAttachmentDrawerWidth();
   const [textContent, setTextContent] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(mode === 'text');
@@ -74,12 +82,13 @@ export function AttachmentDrawer({
   }, [att.name, att.mimeType, att.data, att.url]);
 
   useEffect(() => {
+    if (controlledWidth != null) return;
     const onResize = () => {
-      setWidth((current) => clampAttachmentDrawerWidth(current));
+      setUncontrolledWidth((current) => clampAttachmentDrawerWidth(current));
     };
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
-  }, []);
+  }, [controlledWidth]);
 
   useEffect(() => {
     setCopied(false);
@@ -168,10 +177,17 @@ export function AttachmentDrawer({
     openAttachmentInNewTab(att, token);
   }, [att, category, token]);
 
-  const persistWidth = useCallback((nextWidth: number) => {
-    setWidth(nextWidth);
-    setStoredAttachmentDrawerWidth(nextWidth);
-  }, []);
+  const persistWidth = useCallback(
+    (nextWidth: number) => {
+      if (onWidthChange) {
+        onWidthChange(nextWidth);
+        return;
+      }
+      setUncontrolledWidth(nextWidth);
+      setStoredAttachmentDrawerWidth(nextWidth);
+    },
+    [onWidthChange],
+  );
 
   const handleResizeKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -195,24 +211,25 @@ export function AttachmentDrawer({
 
       const onPointerMove = (moveEvent: PointerEvent) => {
         lastClientX = moveEvent.clientX;
-        setWidth(attachmentDrawerWidthFromDrag(startWidth, startX, lastClientX));
+        persistWidth(attachmentDrawerWidthFromDrag(startWidth, startX, lastClientX));
       };
 
-      const finishResize = () => {
+      const cleanupResize = () => {
         handle.releasePointerCapture(event.pointerId);
         handle.removeEventListener('pointermove', onPointerMove);
         handle.removeEventListener('pointerup', onPointerUp);
         handle.removeEventListener('pointercancel', onPointerCancel);
         document.body.classList.remove('attachment-drawer-resizing');
-        persistWidth(attachmentDrawerWidthFromDrag(startWidth, startX, lastClientX));
       };
 
       const onPointerUp = () => {
-        finishResize();
+        cleanupResize();
+        persistWidth(attachmentDrawerWidthFromDrag(startWidth, startX, lastClientX));
       };
 
       const onPointerCancel = () => {
-        finishResize();
+        cleanupResize();
+        persistWidth(startWidth);
       };
 
       handle.addEventListener('pointermove', onPointerMove);
@@ -237,7 +254,7 @@ export function AttachmentDrawer({
         aria-orientation="vertical"
         aria-label="Resize attachment preview"
         aria-valuemin={ATTACHMENT_DRAWER_MIN_WIDTH}
-        aria-valuemax={Math.round(maxAttachmentDrawerWidth())}
+        aria-valuemax={Math.round(drawerMaxWidth)}
         aria-valuenow={width}
         tabIndex={0}
         onKeyDown={handleResizeKeyDown}

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { withThrowingStorageGet, withThrowingStorageSet } from './test/storage';
 import {
   ATTACHMENT_DRAWER_WIDTH_STORAGE_KEY,
   attachmentDrawerWidthFromDrag,
@@ -46,6 +47,18 @@ describe('attachment-drawer-layout', () => {
     expect(attachmentDrawerWidthFromKeyboard(400, 'ArrowLeft', 1200)).toBe(420);
     expect(attachmentDrawerWidthFromKeyboard(400, 'ArrowRight', 1200)).toBe(380);
     expect(attachmentDrawerWidthFromKeyboard(400, 'Enter', 1200)).toBeNull();
+  });
+
+  it('falls back when localStorage read throws', () => {
+    withThrowingStorageGet(() => {
+      expect(getStoredAttachmentDrawerWidth(1200)).toBe(480);
+    });
+  });
+
+  it('ignores localStorage write failures', () => {
+    withThrowingStorageSet(() => {
+      expect(() => setStoredAttachmentDrawerWidth(520)).not.toThrow();
+    });
   });
 
   it('resets drawer body scroll position', () => {
