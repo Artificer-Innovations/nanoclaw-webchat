@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1
+
+### Fixed
+
+- Root package entry now exports `getAssetDir()` so host forks can compile and serve UI assets from the npm install. Fixes build failure `Property 'getAssetDir' does not exist` after installing from the registry.
+
 ## 0.1.0
 
 Initial public release.

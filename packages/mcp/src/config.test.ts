@@ -25,6 +25,22 @@ describe('config', () => {
     expect(config.requestTimeoutMs).toBe(45_000);
   });
 
+  it('loadConfig strips trailing slash from WEBCHAT_API_BASE', () => {
+    const config = loadConfig({
+      WEBCHAT_SECRET: 's',
+      WEBCHAT_API_BASE: 'http://localhost:4000/',
+    });
+    expect(config.apiBase).toBe('http://localhost:4000');
+  });
+
+  it('loadConfig preserves WEBCHAT_API_BASE without trailing slash', () => {
+    const config = loadConfig({
+      WEBCHAT_SECRET: 's',
+      WEBCHAT_API_BASE: 'http://localhost:4000',
+    });
+    expect(config.apiBase).toBe('http://localhost:4000');
+  });
+
   it('loadConfig ignores invalid timeout override', () => {
     const config = loadConfig({
       WEBCHAT_SECRET: 's',

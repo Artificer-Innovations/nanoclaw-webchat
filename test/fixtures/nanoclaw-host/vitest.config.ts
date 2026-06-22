@@ -14,12 +14,10 @@ export default defineConfig({
       ],
       exclude: ['src/**/*.test.ts'],
       thresholds: {
-        // Adapter tests run in the host fixture; webchat-boot and thread-cleanup
-        // are covered by integration/wiring tests rather than unit coverage here.
-        lines: 76,
-        functions: 88,
-        branches: 62,
-        statements: 78,
+        lines: 98,
+        functions: 98,
+        branches: 98,
+        statements: 98,
       },
     },
   },
