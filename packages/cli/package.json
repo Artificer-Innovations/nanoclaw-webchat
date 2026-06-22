@@ -1,0 +1,21 @@
+{
+  "name": "@nanoclaw-webchat/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "nanoclaw-webchat": "./dist/bin.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:unit": "vitest run",
+    "test:coverage": "vitest run --coverage"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.30",
+    "@vitest/coverage-v8": "^4.1.9",
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.9"
+  }
+}
