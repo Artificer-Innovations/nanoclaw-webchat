@@ -1,7 +1,7 @@
 /**
  * Web channel adapter — local browser chat via HTTP + WebSocket.
  *
- * Serves the @artificer-innovations/nanoclaw-webchat SPA and exposes a small REST/WS API.
+ * Serves the nanoclaw-webchat SPA and exposes a small REST/WS API.
  * Routes patterns and DM rooms are wired by webchat-sync.ts; this adapter only
  * transports messages through the normal router/delivery path.
  */
@@ -890,10 +890,10 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
       ensureWebchatSchema();
 
       try {
-        const pkg = await import('@artificer-innovations/nanoclaw-webchat');
+        const pkg = await import('nanoclaw-webchat');
         assetDir = pkg.getAssetDir();
       } catch (err) {
-        log.error('Web channel: @artificer-innovations/nanoclaw-webchat not installed', { err });
+        log.error('Web channel: nanoclaw-webchat not installed', { err });
         throw err;
       }
 

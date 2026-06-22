@@ -11,7 +11,7 @@ vi.mock('../config.js', async () => {
 
 const TEST_DATA = '/tmp/nanoclaw-web-adapter-test';
 
-vi.mock('@artificer-innovations/nanoclaw-webchat', () => ({
+vi.mock('nanoclaw-webchat', () => ({
   getAssetDir: () => '/tmp/nanoclaw-webchat-test-assets',
 }));
 

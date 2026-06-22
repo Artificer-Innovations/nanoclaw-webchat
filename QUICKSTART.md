@@ -12,7 +12,7 @@ Install the browser web chat channel into an **existing, working NanoClaw fork**
 
 | Piece | Location after install | Updates when you… |
 |-------|------------------------|-------------------|
-| npm package (UI + skill + adapter templates) | `node_modules/@artificer-innovations/nanoclaw-webchat/` | `pnpm update @artificer-innovations/nanoclaw-webchat` |
+| npm package (UI + skill + adapter templates + MCP) | `node_modules/nanoclaw-webchat/` | `pnpm update nanoclaw-webchat` |
 | Browser UI assets | served from `node_modules/.../dist/client/` at runtime | update package + restart host |
 | Adapter code | copied into **your fork** `src/channels/web.ts`, `src/webchat-*.ts` | re-run `install` or `upgrade` |
 | `/add-webchat` skill | `.claude/skills/add-webchat/` in your fork | `nanoclaw-webchat sync-skill` or `upgrade` |
@@ -26,7 +26,7 @@ You do **not** need to clone this repository beside your NanoClaw fork.
 
 ```bash
 cd ~/Dev/my-nanoclaw          # your NanoClaw fork
-pnpm add @artificer-innovations/nanoclaw-webchat@0.2.0 ws@8.18.3
+pnpm add nanoclaw-webchat@0.1.0 ws@8.18.3
 pnpm add -D @types/ws@8.18.1
 ```
 
@@ -97,7 +97,7 @@ The host injects `WEBCHAT_SECRET` into the page automatically (localhost-only; s
 ## Upgrading
 
 ```bash
-pnpm update @artificer-innovations/nanoclaw-webchat
+pnpm update nanoclaw-webchat
 pnpm exec nanoclaw-webchat upgrade
 pnpm run build
 # restart host
@@ -113,13 +113,9 @@ See [CHANGELOG.md](./CHANGELOG.md) for breaking changes.
 
 ## MCP setup (optional)
 
-Lets Cursor or other MCP clients post/read messages without the browser.
+Lets Cursor or other MCP clients post/read messages without the browser. The MCP server is bundled in the same `nanoclaw-webchat` package.
 
 Prerequisite: webchat channel installed and host running on `:3200`.
-
-```bash
-pnpm add -D @artificer-innovations/nanoclaw-webchat-mcp
-```
 
 Add to Cursor `mcp.json`:
 
@@ -147,7 +143,7 @@ Template: [packages/mcp/mcp.example.json](./packages/mcp/mcp.example.json)
 
 ```bash
 pnpm exec nanoclaw-webchat uninstall
-pnpm remove @artificer-innovations/nanoclaw-webchat ws
+pnpm remove nanoclaw-webchat ws
 pnpm remove -D @types/ws
 pnpm run build
 # restart host
@@ -160,10 +156,10 @@ See bundled [skills/add-webchat/REMOVE.md](./skills/add-webchat/REMOVE.md).
 | Symptom | Fix |
 |---------|-----|
 | 401 in browser | Wrong `WEBCHAT_SECRET` |
-| Blank page / 404 | `@artificer-innovations/nanoclaw-webchat` not installed or host not rebuilt |
+| Blank page / 404 | `nanoclaw-webchat` not installed or host not rebuilt |
 | Agent not engaging in lobby | Message must include `@folder` (e.g. `@sarah`) |
 | Port in use | Change `WEBCHAT_PORT` in `.env` |
-| Package missing at build | Run `pnpm add @artificer-innovations/nanoclaw-webchat` |
+| Package missing at build | Run `pnpm add nanoclaw-webchat` |
 
 ## Testing before publish (developers)
 
@@ -188,7 +184,7 @@ open http://127.0.0.1:3200
 cd ~/Dev/nanoclaw-webchat
 pnpm pack
 cd ~/Dev/nanoclaw-v2
-pnpm add ../nanoclaw-webchat/artificer-innovations-nanoclaw-webchat-0.2.0.tgz
+pnpm add ../nanoclaw-webchat/nanoclaw-webchat-0.1.0.tgz
 ```
 
 **UI hot reload** (adapter still from fork):
@@ -217,8 +213,8 @@ NANOCLAW_SRC=../nanoclaw-v2 node scripts/prepare-host-fixture.mjs
 After validation, switch to the registry version:
 
 ```bash
-pnpm remove @artificer-innovations/nanoclaw-webchat
-pnpm add @artificer-innovations/nanoclaw-webchat@0.2.0
+pnpm remove nanoclaw-webchat
+pnpm add nanoclaw-webchat@0.1.0
 ```
 
 ## How this repo relates to your fork

@@ -1,0 +1,40 @@
+name: Bug report
+description: Report a bug in nanoclaw-webchat
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Include steps to reproduce and your NanoClaw host setup if relevant.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      placeholder: Describe the bug and expected behavior.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Install nanoclaw-webchat@...
+        2. Run nanoclaw-webchat install
+        3. ...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: nanoclaw-webchat version
+      placeholder: e.g. 0.1.0
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: OS, Node version, browser, NanoClaw fork if applicable

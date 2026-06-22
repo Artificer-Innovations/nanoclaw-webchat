@@ -371,7 +371,7 @@ describe('paths edge cases', () => {
     tempDirs.push(temp);
     fs.writeFileSync(
       path.join(temp, 'package.json'),
-      JSON.stringify({ name: '@artificer-innovations/nanoclaw-webchat' }),
+      JSON.stringify({ name: 'nanoclaw-webchat' }),
     );
     expect(packageRoot(temp)).toBe(temp);
   });
