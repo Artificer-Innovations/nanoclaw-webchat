@@ -62,7 +62,7 @@ try {
   fixturePnpm(['add', `file:${webchatRoot}`, 'ws@8.18.3']);
   fixturePnpm(['add', '-D', '@types/ws@8.18.1']);
 
-  const cliBin = path.join(webchatRoot, 'packages/cli/dist/bin.js');
+  const cliBin = path.join(webchatRoot, 'dist/cli/bin.js');
   run('node', [cliBin, 'install', '--path', nanoclawRoot]);
 
   run(
