@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { printInstallNextSteps, runInstall, runUninstall, runUpgrade } from './install.js';
+import { syncSkillToFork } from './patch.js';
 import { resourcesDir, skillDir } from './paths.js';
 
 const tempDirs: string[] = [];
@@ -53,6 +54,21 @@ describe('install', () => {
     const result = runUpgrade(root);
     expect(result.skillPath).toBe(path.join(root, '.claude/skills/add-webchat'));
     expect(fs.existsSync(path.join(result.skillPath, 'SKILL.md'))).toBe(true);
+  });
+
+  it('syncSkillToFork copies nested skill directories', () => {
+    const root = makeNanoclawFixture();
+    const skillSource = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-src-'));
+    tempDirs.push(skillSource);
+    fs.writeFileSync(path.join(skillSource, 'SKILL.md'), '# skill\n');
+    fs.mkdirSync(path.join(skillSource, 'resources'), { recursive: true });
+    fs.writeFileSync(path.join(skillSource, 'resources', 'web.ts'), 'export {};\n');
+
+    const dest = syncSkillToFork(root, skillSource);
+
+    expect(dest).toBe(path.join(root, '.claude/skills/add-webchat'));
+    expect(fs.readFileSync(path.join(dest, 'SKILL.md'), 'utf8')).toBe('# skill\n');
+    expect(fs.readFileSync(path.join(dest, 'resources', 'web.ts'), 'utf8')).toBe('export {};\n');
   });
 
   it('runUninstall removes adapter artifacts', () => {
