@@ -1,13 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-const readEnvFileMock = vi.fn(() => ({
+const readEnvFileMock = vi.fn<(keys: string[]) => Record<string, string>>(() => ({
   WEBCHAT_ENABLED: 'true',
   WEBCHAT_USER_ID: 'web:local',
   WEBCHAT_DISPLAY_NAME: 'Local',
 }));
 
 vi.mock('./env.js', () => ({
-  readEnvFile: (...args: unknown[]) => readEnvFileMock(...args),
+  readEnvFile: (keys: string[]) => readEnvFileMock(keys),
 }));
 
 vi.mock('./log.js', () => ({

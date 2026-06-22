@@ -1671,7 +1671,7 @@ describe('web channel adapter', () => {
     const replay = captures.find(
       (c) =>
         c.message.id.includes('backfill-replay') &&
-        (c.message.content as { text?: string }).text.includes('look'),
+        (c.message.content as { text?: string }).text?.includes('look'),
     );
     expect(replay).toBeDefined();
     const att = (replay!.message.content as { attachments: Array<{ data?: string }> }).attachments![0]!;
@@ -1699,7 +1699,7 @@ describe('web channel adapter', () => {
       const replay = captures.find(
         (c) =>
           c.message.id.includes('backfill-replay') &&
-          (c.message.content as { text?: string }).text.includes('look'),
+          (c.message.content as { text?: string }).text?.includes('look'),
       );
       expect(replay).toBeDefined();
       const att = (replay!.message.content as { attachments: Array<{ data?: string; name: string }> }).attachments![0]!;
