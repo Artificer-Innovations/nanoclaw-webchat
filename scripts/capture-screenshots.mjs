@@ -74,6 +74,18 @@ const lobbyMessages = [
     platformId: 'lobby',
     threadId: 'main',
     senderName: 'Sarah',
+    attachments: [
+      {
+        name: 'router.ts',
+        mimeType: 'text/typescript',
+        type: 'file',
+        data: Buffer.from(`export function routeMessage(text: string) {
+  const mention = text.match(/@([a-z0-9_-]+)/i);
+  return mention ? mention[1] : null;
+}
+`).toString('base64'),
+      },
+    ],
   },
 ];
 
@@ -200,16 +212,28 @@ async function main() {
   await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
   await page.waitForTimeout(2500);
   await page.screenshot({ path: path.join(outDir, 'lobby.png') });
-  await page.screenshot({ path: path.join(outDir, 'sidebar.png') });
+  await page.locator('aside.sidebar').screenshot({ path: path.join(outDir, 'sidebar.png') });
 
-  const sarah = page.getByRole('button', { name: 'Sarah' }).first();
-  if (await sarah.count()) {
-    await sarah.click();
+  const dmSarah = page.locator('.sidebar-nav button.nav-room-item', { hasText: 'Sarah' });
+  if (await dmSarah.count()) {
+    await dmSarah.click();
     await page.waitForTimeout(800);
-    await page.screenshot({ path: path.join(outDir, 'dm.png') });
+    await page.locator('.main').screenshot({ path: path.join(outDir, 'dm.png') });
   }
 
-  await page.screenshot({ path: path.join(outDir, 'attachments.png') });
+  const lobbyRoom = page.locator('.sidebar-nav button.nav-room-item', { hasText: 'Lobby' });
+  if (await lobbyRoom.count()) {
+    await lobbyRoom.click();
+    await page.waitForTimeout(600);
+  }
+  const attachment = page.locator('.msg-attachment-file').first();
+  if (await attachment.count()) {
+    await attachment.click();
+    await page.waitForTimeout(800);
+    await page.locator('.layout').screenshot({ path: path.join(outDir, 'attachments.png') });
+  } else {
+    await page.locator('.main').screenshot({ path: path.join(outDir, 'attachments.png') });
+  }
   await browser.close();
   server.close();
 

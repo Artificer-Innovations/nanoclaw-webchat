@@ -22,6 +22,8 @@ nanoclaw-webchat is designed for **local development use**:
 
 **Do not expose the web chat port on `0.0.0.0` or the public internet** without replacing the authentication model. The default setup assumes a trusted local operator on the same machine as the NanoClaw host.
 
+WebSocket connections authenticate via a `?token=` query parameter because browser WebSocket APIs cannot set `Authorization` headers. That token may appear in local access logs — scrub or rotate `WEBCHAT_SECRET` if your log pipeline retains query strings.
+
 ## MCP server
 
 The bundled MCP server (`nanoclaw-webchat-mcp`) reads `WEBCHAT_SECRET` from its environment and calls the same localhost REST API. Treat MCP config files like credentials.

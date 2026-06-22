@@ -1,6 +1,6 @@
 # Contributing to nanoclaw-webchat
 
-Thank you for contributing. This repo is the npm package that adds a browser web chat channel to [NanoClaw](https://github.com/Artificer-Innovations/nanoclaw-webchat) forks — it is not the NanoClaw host itself.
+Thank you for contributing. This repo is the npm package that adds a browser web chat channel to [NanoClaw](https://github.com/Artificer-Innovations/nanoclaw-v2) forks — it is not the NanoClaw host itself.
 
 ## Prerequisites
 

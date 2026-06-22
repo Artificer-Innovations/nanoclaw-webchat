@@ -2,6 +2,10 @@
 /**
  * Copy shared type artifacts into root dist/ for npm consumers.
  * Private workspace @nanoclaw-webchat/shared is not published.
+ *
+ * Runs twice in `pnpm run build`: once before the client tsc emit (so
+ * dist/types.* exists for index.d.ts re-exports) and again after the MCP
+ * build rewrites all dist .d.ts files that reference the workspace package.
  */
 import fs from 'node:fs';
 import path from 'node:path';

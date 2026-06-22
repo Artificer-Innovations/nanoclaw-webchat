@@ -3,6 +3,7 @@ name: Release
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -12,15 +13,15 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
           fetch-depth: 0
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@41ff72655975bd33eb8352f9c9d2da830ca59453 # v4
         with:
           version: 9
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5286caeca864e7f898cde011239369a81 # v4
         with:
           node-version: '22'
           cache: 'pnpm'
@@ -40,29 +41,65 @@ jobs:
         id: version
         run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
 
-      - name: Skip if tag exists
-        id: tag_check
+      - name: Resolve release state
+        id: state
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          if git rev-parse "v${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="v${VERSION}"
+          npm_published=false
+          tag_exists=false
+          gh_release_exists=false
+
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            tag_exists=true
+          fi
+          if npm view "nanoclaw-webchat@${VERSION}" version >/dev/null 2>&1; then
+            npm_published=true
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh_release_exists=true
+          fi
+
+          echo "npm_published=$npm_published" >> "$GITHUB_OUTPUT"
+          echo "tag_exists=$tag_exists" >> "$GITHUB_OUTPUT"
+          echo "gh_release_exists=$gh_release_exists" >> "$GITHUB_OUTPUT"
+
+          if [ "$npm_published" = true ] && [ "$tag_exists" = true ] && [ "$gh_release_exists" = true ]; then
+            echo "::notice title=Release skipped::v${VERSION} is already published, tagged, and released."
+          elif [ "$npm_published" = true ] && [ "$gh_release_exists" = false ]; then
+            echo "::notice title=Recovering release::npm package exists; will create missing GitHub Release for ${TAG}."
+          elif [ "$npm_published" = true ] && [ "$tag_exists" = false ]; then
+            echo "::notice title=Recovering tag::npm package exists; will create missing git tag ${TAG}."
           fi
 
       - name: Publish to npm
-        if: steps.tag_check.outputs.skip == 'false'
-        run: npm publish --provenance --access public
+        if: steps.state.outputs.npm_published == 'false'
+        run: pnpm run release:publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Ensure git tag
+        if: steps.state.outputs.tag_exists == 'false'
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="v${VERSION}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "$TAG"
+          git push origin "$TAG"
 
       - name: Create GitHub Release
-        if: steps.tag_check.outputs.skip == 'false'
+        if: steps.state.outputs.gh_release_exists == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           TAG="v${VERSION}"
-          NOTES=$(awk -v ver="${VERSION}" '
+          ESCAPED=$(printf '%s' "$VERSION" | sed 's/[.[\^$*+?{}|()]/\\&/g')
+          NOTES=$(awk -v ver="$ESCAPED" '
             $0 ~ "^## " ver "$" { found=1; next }
             found && /^## / { exit }
             found { print }

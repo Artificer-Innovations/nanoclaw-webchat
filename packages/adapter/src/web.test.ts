@@ -71,7 +71,7 @@ vi.mock('../router.js', () => ({
   }),
 }));
 
-import { createWebAdapter, flushWebAgentDeliveryChains } from './web.js';
+import { createWebAdapter, clearWebAdapterTestState, flushWebAgentDeliveryChains } from './web.js';
 import type { ChannelSetup, InboundMessage } from './adapter.js';
 
 const SECRET = 'test-secret';
@@ -193,6 +193,7 @@ describe('web channel adapter', () => {
   let setup: ChannelSetup;
 
   beforeEach(() => {
+    clearWebAdapterTestState();
     captures.length = 0;
     testPort += 1;
     if (fs.existsSync(TEST_DATA)) {

@@ -289,6 +289,12 @@ export async function flushWebAgentDeliveryChains(): Promise<void> {
   await Promise.all([...agentDeliveryChains.values()]);
 }
 
+/** Test helper: reset module-level delivery/join state between adapter instances. */
+export function clearWebAdapterTestState(): void {
+  agentDeliveryChains.clear();
+  pendingJoinStubByThread.clear();
+}
+
 function agentRefsForFolders(folders: readonly string[], allAgents: readonly AgentNameRef[]): AgentNameRef[] {
   return folders.map((folder) => {
     const found = allAgents.find((a) => a.folder === folder);
