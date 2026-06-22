@@ -35,10 +35,14 @@ export function adapterSrcDir(startDir: string = __dirname): string {
  * Directory to copy adapter files from.
  * Monorepo: packages/adapter/src (source of truth).
  * Published npm package: skills/add-webchat/resources (synced at build time).
+ *
+ * Detection is implicit: the published tarball excludes `packages/` (see root
+ * package.json `files`), so `packages/adapter/src` is absent there and we fall
+ * back to build-synced skill resources. No separate isMonorepo flag needed.
  */
 export function resourcesDir(startDir: string = __dirname): string {
   const adapterSrc = adapterSrcDir(startDir);
-  if (fs.existsSync(adapterSrc)) {
+  if (fs.existsSync(path.join(adapterSrc, 'web.ts'))) {
     return adapterSrc;
   }
   return path.join(skillDir(startDir), 'resources');

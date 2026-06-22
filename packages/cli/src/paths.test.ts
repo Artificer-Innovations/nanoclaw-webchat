@@ -4,11 +4,16 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { adapterSrcDir, packageRoot, readPackageVersion, resourcesDir } from './paths.js';
 
-describe('packageRoot failure', () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
+const tempDirs: string[] = [];
 
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  vi.restoreAllMocks();
+});
+
+describe('packageRoot failure', () => {
   it('throws when package root cannot be located', () => {
     vi.spyOn(fs, 'existsSync').mockReturnValue(false);
     expect(() => packageRoot()).toThrow('Could not locate');
@@ -34,17 +39,34 @@ describe('readPackageVersion', () => {
 });
 
 describe('resourcesDir', () => {
+  it('resolves packages/adapter/src in monorepo', () => {
+    expect(resourcesDir()).toBe(path.join(packageRoot(), 'packages/adapter/src'));
+    expect(fs.existsSync(path.join(resourcesDir(), 'web.ts'))).toBe(true);
+  });
+
   it('falls back to skill resources when adapter src is absent', () => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'resources-dir-'));
+    tempDirs.push(temp);
     fs.writeFileSync(
       path.join(temp, 'package.json'),
       JSON.stringify({ name: '@artificer-innovations/nanoclaw-webchat' }),
     );
     fs.mkdirSync(path.join(temp, 'skills/add-webchat/resources'), { recursive: true });
     fs.writeFileSync(path.join(temp, 'skills/add-webchat/resources/web.ts'), 'export {};\n');
-    expect(resourcesDir()).toBe(path.join(packageRoot(), 'packages/adapter/src'));
     expect(resourcesDir(temp)).toBe(path.join(temp, 'skills/add-webchat/resources'));
-    fs.rmSync(temp, { recursive: true, force: true });
+  });
+
+  it('falls back when adapter src exists but web.ts is missing', () => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'resources-dir-empty-'));
+    tempDirs.push(temp);
+    fs.writeFileSync(
+      path.join(temp, 'package.json'),
+      JSON.stringify({ name: '@artificer-innovations/nanoclaw-webchat' }),
+    );
+    fs.mkdirSync(path.join(temp, 'packages/adapter/src'), { recursive: true });
+    fs.mkdirSync(path.join(temp, 'skills/add-webchat/resources'), { recursive: true });
+    fs.writeFileSync(path.join(temp, 'skills/add-webchat/resources/web.ts'), 'export {};\n');
+    expect(resourcesDir(temp)).toBe(path.join(temp, 'skills/add-webchat/resources'));
   });
 
   it('adapterSrcDir resolves under package root', () => {
