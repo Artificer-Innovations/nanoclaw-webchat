@@ -13,15 +13,15 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - uses: pnpm/action-setup@41ff72655975bd33eb8352f9c9d2da830ca59453 # v4
+      - uses: pnpm/action-setup@v4
         with:
           version: 9
 
-      - uses: actions/setup-node@49933ea5286caeca864e7f898cde011239369a81 # v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: 'pnpm'
