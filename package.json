@@ -1,6 +1,6 @@
 {
   "name": "nanoclaw-webchat",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Web chat interface for NanoClaw AI agent framework",
   "type": "module",
   "license": "MIT",
@@ -45,7 +45,7 @@
     }
   },
   "scripts": {
-    "build": "pnpm --filter @nanoclaw-webchat/shared build && node scripts/copy-shared-types.mjs && node scripts/sync-adapter-resources.mjs && pnpm --filter @nanoclaw-webchat/client build && pnpm --filter @nanoclaw-webchat/cli build && pnpm --filter @nanoclaw-webchat/mcp build && node scripts/copy-shared-types.mjs",
+    "build": "pnpm --filter @nanoclaw-webchat/shared build && node scripts/copy-shared-types.mjs && node scripts/sync-adapter-resources.mjs && pnpm --filter @nanoclaw-webchat/client build && pnpm --filter @nanoclaw-webchat/cli build && pnpm --filter @nanoclaw-webchat/mcp build && node scripts/copy-shared-types.mjs && node scripts/verify-publish-entry.mjs",
     "typecheck": "pnpm --filter @nanoclaw-webchat/shared build && pnpm -r typecheck",
     "dev": "pnpm --filter @nanoclaw-webchat/client dev",
     "test:unit": "pnpm -r test:unit",
@@ -71,5 +71,11 @@
     "@changesets/changelog-github": "^0.5.1",
     "@changesets/cli": "^2.29.4",
     "playwright": "^1.61.0"
+  },
+  "pnpm": {
+    "overrides": {
+      "js-yaml": "4.2.0",
+      "read-yaml-file": "2.1.0"
+    }
   }
 }

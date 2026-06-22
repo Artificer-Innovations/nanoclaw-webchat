@@ -4,13 +4,12 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { spawnSyncMock } from './test/spawn-mock.js';
 import { parseArgs, runCommand, main, isCliEntry } from './bin.js';
-import { printInstallNextSteps, runInstall, runUninstall, runUpgrade, runVerify } from './install.js';
+import { runVerify } from './install.js';
 import {
   appendBarrelImport,
   copyAdapterFiles,
   insertWebchatBootBlock,
   findWebchatBootInsertIndex,
-  hasWebchatBootBlock,
   removeAdapterFiles,
   removeBarrelImport,
   removeEnvVars,
@@ -305,6 +304,21 @@ describe('patch edge cases', () => {
     appendBarrelImport(root);
     expect(removeBarrelImport(root)).toBe(true);
     expect(fs.readFileSync(path.join(root, 'src/channels/index.ts'), 'utf8').endsWith('\n')).toBe(true);
+  });
+
+  it('removeBarrelImport normalizes trailing newline when file lacked one', () => {
+    const root = makeNanoclawFixture();
+    const indexPath = path.join(root, 'src/channels/index.ts');
+    fs.writeFileSync(indexPath, "import './telegram.js';\nimport './web.js';");
+    expect(removeBarrelImport(root)).toBe(true);
+    expect(fs.readFileSync(indexPath, 'utf8')).toBe("import './telegram.js';\n");
+  });
+
+  it('removeEnvVars normalizes trailing newline when .env lacked one', () => {
+    const root = makeNanoclawFixture();
+    fs.writeFileSync(path.join(root, '.env'), 'WEBCHAT_ENABLED=true\nOTHER=1');
+    expect(removeEnvVars(root)).toEqual(['WEBCHAT_ENABLED']);
+    expect(fs.readFileSync(path.join(root, '.env'), 'utf8')).toBe('OTHER=1\n');
   });
 
   it('findWebchatBootInsertIndex matches tab-indented initChannelAdapters', () => {

@@ -17,6 +17,7 @@ import {
   createThread,
   deleteThreadData,
   ensureWebchatSchema,
+  enrichMessagesWithAttachmentData,
   getEngagedAgents,
   getMessageAttachmentPath,
   getMessages,
@@ -28,6 +29,7 @@ import {
   removeEngagedAgent,
   upsertThread,
   webchatDbPath,
+  webchatFilesDir,
 } from './webchat-store.js';
 
 function resetStore(): void {
@@ -223,5 +225,439 @@ describe('webchat-store', () => {
     expect(listThreads('lobby').some((t) => t.id === thread.id)).toBe(false);
     expect(getMessages('lobby', thread.id)).toHaveLength(0);
     expect(fs.existsSync(path.join(TEST_DATA, 'webchat', 'files', 'web-del'))).toBe(false);
+  });
+
+  it('exposes webchat files directory under DATA_DIR', () => {
+    ensureWebchatSchema();
+    expect(webchatFilesDir()).toBe(path.join(TEST_DATA, 'webchat', 'files'));
+  });
+
+  it('calls ensureWebchatSchema twice without error', () => {
+    ensureWebchatSchema();
+    expect(() => ensureWebchatSchema()).not.toThrow();
+  });
+
+  it('filters getMessages by sinceMs', () => {
+    appendMessage({
+      id: 'web-old',
+      direction: 'inbound',
+      text: 'old',
+      timestamp: 1000,
+      platformId: 'lobby',
+      threadId: MAIN_THREAD,
+    });
+    appendMessage({
+      id: 'web-new',
+      direction: 'inbound',
+      text: 'new',
+      timestamp: 5000,
+      platformId: 'lobby',
+      threadId: MAIN_THREAD,
+    });
+    expect(getMessages('lobby', MAIN_THREAD, 2000).map((m) => m.text)).toEqual(['new']);
+  });
+
+  it('returns early from addEngagedAgents when folders array is empty', () => {
+    addEngagedAgents('lobby', MAIN_THREAD, ['sarah']);
+    expect(addEngagedAgents('lobby', MAIN_THREAD, [])).toEqual(['sarah']);
+  });
+
+  it('skips attachment entries with empty data on appendMessage', () => {
+    appendMessage({
+      id: 'web-no-data',
+      direction: 'inbound',
+      text: 'files',
+      timestamp: 1000,
+      platformId: 'lobby',
+      threadId: MAIN_THREAD,
+      attachments: [{ name: 'empty.bin', mimeType: 'application/octet-stream', type: 'file', size: 0, data: '' }],
+    });
+    expect(getMessages('lobby', MAIN_THREAD)[0]!.attachments).toBeUndefined();
+  });
+
+  it('returns null for attachment lookup on bad storageName or missing file', () => {
+    appendMessage({
+      id: 'web-att-lookup',
+      direction: 'inbound',
+      text: 'pic',
+      timestamp: 1000,
+      platformId: 'lobby',
+      threadId: MAIN_THREAD,
+      attachments: [{ name: 'photo.png', mimeType: 'image/png', type: 'image', size: 4, data: Buffer.from('x').toString('base64') }],
+    });
+    expect(getMessageAttachmentPath('web-att-lookup', '../evil.png')).toBeNull();
+    expect(getMessageAttachmentPath('web-att-lookup', 'missing.png')).toBeNull();
+    const dirPath = path.join(webchatFilesDir(), 'web-att-lookup', 'subdir');
+    fs.mkdirSync(dirPath, { recursive: true });
+    expect(getMessageAttachmentPath('web-att-lookup', 'subdir')).toBeNull();
+  });
+
+  it('throws on appendMessage with invalid message id when writing attachments', () => {
+    expect(() =>
+      appendMessage({
+        id: '../bad',
+        direction: 'inbound',
+        text: 'x',
+        timestamp: 1,
+        platformId: 'lobby',
+        threadId: MAIN_THREAD,
+        attachments: [{ name: 'a.png', mimeType: 'image/png', type: 'image', size: 1, data: Buffer.from('x').toString('base64') }],
+      }),
+    ).toThrow('Invalid message id');
+  });
+
+  it('parses corrupt attachments_json as empty attachments on read', () => {
+    ensureWebchatSchema();
+    const db = new Database(webchatDbPath());
+    try {
+      db.prepare(
+        `INSERT INTO web_messages (id, platform_id, thread_id, thread_seq, direction, text, timestamp_ms, attachments_json)
+         VALUES ('bad-json', 'lobby', 'main', 1, 'inbound', 'x', 1, '{not-json')`,
+      ).run();
+    } finally {
+      db.close();
+    }
+    expect(getMessages('lobby', MAIN_THREAD)[0]!.attachments).toBeUndefined();
+  });
+
+  it('sanitizes attachment filenames with special characters', () => {
+    appendMessage({
+      id: 'web-sanitize',
+      direction: 'inbound',
+      text: 'doc',
+      timestamp: 1000,
+      platformId: 'lobby',
+      threadId: MAIN_THREAD,
+      attachments: [
+        {
+          name: '../../etc/passwd',
+          mimeType: 'text/plain',
+          type: 'file',
+          size: 3,
+          data: Buffer.from('abc').toString('base64'),
+        },
+      ],
+    });
+    const msgs = getMessages('lobby', MAIN_THREAD);
+    expect(msgs[0]!.attachments?.[0]?.url).toContain('/api/attachments/web-sanitize/');
+    expect(msgs[0]!.attachments?.[0]?.url).not.toContain('..');
+  });
+
+  it('uses fallback storage name when attachment name is empty', () => {
+    appendMessage({
+      id: 'web-empty-name',
+      direction: 'inbound',
+      text: 'doc',
+      timestamp: 1000,
+      platformId: 'lobby',
+      threadId: MAIN_THREAD,
+      attachments: [
+        {
+          name: '',
+          mimeType: 'text/plain',
+          type: 'file',
+          size: 3,
+          data: Buffer.from('abc').toString('base64'),
+        },
+      ],
+    });
+    const filePath = getMessageAttachmentPath('web-empty-name', '0-file-0');
+    expect(filePath).toBeTruthy();
+  });
+
+  it('enrichMessagesWithAttachmentData embeds base64 from disk when file exists', () => {
+    appendMessage({
+      id: 'web-enrich',
+      direction: 'inbound',
+      text: 'pic',
+      timestamp: 1000,
+      platformId: 'lobby',
+      threadId: MAIN_THREAD,
+      attachments: [{ name: 'photo.png', mimeType: 'image/png', type: 'image', size: 4, data: Buffer.from('abcd').toString('base64') }],
+    });
+    const stored = getMessages('lobby', MAIN_THREAD);
+    const enriched = enrichMessagesWithAttachmentData(stored);
+    expect(enriched[0]!.attachments?.[0]?.data).toBe(Buffer.from('abcd').toString('base64'));
+  });
+
+  it('removes attachment files when deleting a thread with uploads', () => {
+    appendMessage({
+      id: 'web-att-del',
+      direction: 'inbound',
+      text: 'pic',
+      timestamp: 1000,
+      platformId: 'lobby',
+      threadId: 'thread_del',
+      attachments: [{ name: 'photo.png', mimeType: 'image/png', type: 'image', size: 4, data: Buffer.from('abcd').toString('base64') }],
+    });
+    expect(fs.existsSync(path.join(webchatFilesDir(), 'web-att-del'))).toBe(true);
+    deleteThreadData('lobby', 'thread_del');
+    expect(fs.existsSync(path.join(webchatFilesDir(), 'web-att-del'))).toBe(false);
+  });
+
+  it('deleteMessageFiles is safe when attachment dir is missing', () => {
+    appendMessage({
+      id: 'web-no-files',
+      direction: 'inbound',
+      text: 'plain',
+      timestamp: 1000,
+      platformId: 'lobby',
+      threadId: MAIN_THREAD,
+    });
+    deleteThreadData('lobby', MAIN_THREAD);
+    expect(getMessages('lobby', MAIN_THREAD)).toHaveLength(0);
+  });
+
+  it('enrichMessagesWithAttachmentData falls back to url when disk read fails', () => {
+    appendMessage({
+      id: 'web-enrich-fail',
+      direction: 'inbound',
+      text: 'pic',
+      timestamp: 1000,
+      platformId: 'lobby',
+      threadId: MAIN_THREAD,
+      attachments: [{ name: 'photo.png', mimeType: 'image/png', type: 'image', size: 4, data: Buffer.from('abcd').toString('base64') }],
+    });
+    const readSpy = vi.spyOn(fs, 'readFileSync').mockImplementation(() => {
+      throw new Error('read failed');
+    });
+    try {
+      const stored = getMessages('lobby', MAIN_THREAD);
+      const enriched = enrichMessagesWithAttachmentData(stored);
+      expect(enriched[0]!.attachments?.[0]?.url).toContain('/api/attachments/web-enrich-fail/');
+      expect(enriched[0]!.attachments?.[0]?.data).toBeUndefined();
+    } finally {
+      readSpy.mockRestore();
+    }
+  });
+
+  it('enrichMessagesWithAttachmentData returns message unchanged when no stored attachments', () => {
+    appendMessage({
+      id: 'web-no-att-json',
+      direction: 'inbound',
+      text: 'plain',
+      timestamp: 1000,
+      platformId: 'lobby',
+      threadId: MAIN_THREAD,
+    });
+    const db = new Database(webchatDbPath());
+    try {
+      db.prepare('UPDATE web_messages SET attachments_json = NULL WHERE id = ?').run('web-no-att-json');
+    } finally {
+      db.close();
+    }
+    const stored = getMessages('lobby', MAIN_THREAD);
+    expect(enrichMessagesWithAttachmentData(stored)).toEqual(stored);
+  });
+
+  it('enrichMessagesWithAttachmentData returns message unchanged when row is missing', () => {
+    const ghost = {
+      id: 'ghost-message',
+      direction: 'inbound' as const,
+      text: 'ghost',
+      timestamp: 1000,
+      platformId: 'lobby',
+      threadId: MAIN_THREAD,
+      attachments: [{ name: 'x.png', mimeType: 'image/png', type: 'image' as const, url: '/api/x' }],
+    };
+    expect(enrichMessagesWithAttachmentData([ghost])).toEqual([ghost]);
+  });
+
+  it('getMessageAttachmentPath rejects unsafe ids and storage names', () => {
+    expect(getMessageAttachmentPath('../evil', 'file.png')).toBeNull();
+    expect(getMessageAttachmentPath('web-safe', '../evil.png')).toBeNull();
+    expect(getMessageAttachmentPath('web-safe', 'missing.png')).toBeNull();
+    expect(getMessageAttachmentPath('web-safe', '.')).toBeNull();
+    expect(getMessageAttachmentPath('web-safe', '..')).toBeNull();
+  });
+
+  it('getMessages includes senderName and threadSeq when present', () => {
+    appendMessage({
+      id: 'web-meta',
+      direction: 'outbound',
+      text: 'from agent',
+      timestamp: 1000,
+      platformId: 'lobby',
+      threadId: MAIN_THREAD,
+      senderName: 'Sarah',
+    });
+    const msg = getMessages('lobby', MAIN_THREAD).find((m) => m.id === 'web-meta');
+    expect(msg).toMatchObject({ senderName: 'Sarah', threadSeq: 1 });
+  });
+
+  it('getRecentMessages includes attachment urls from stored metadata', () => {
+    appendMessage({
+      id: 'web-recent-att',
+      direction: 'inbound',
+      text: 'pic',
+      timestamp: 1000,
+      platformId: 'lobby',
+      threadId: MAIN_THREAD,
+      attachments: [{ name: 'photo.png', mimeType: 'image/png', type: 'image', size: 4, data: Buffer.from('abcd').toString('base64') }],
+    });
+    const recent = getRecentMessages('lobby', MAIN_THREAD, 10);
+    expect(recent[0]!.attachments?.[0]?.url).toContain('/api/attachments/');
+  });
+
+  it('skips attachment files when inbound data is empty', () => {
+    appendMessage({
+      id: 'web-empty-att',
+      direction: 'inbound',
+      text: 'no file',
+      timestamp: 1000,
+      platformId: 'lobby',
+      threadId: MAIN_THREAD,
+      attachments: [{ name: 'empty.png', mimeType: 'image/png', type: 'image', size: 0, data: '' }],
+    });
+    expect(fs.readdirSync(path.join(webchatFilesDir(), 'web-empty-att'))).toHaveLength(0);
+  });
+
+  it('enrichMessagesWithAttachmentData uses url when stored path is unsafe', () => {
+    appendMessage({
+      id: 'web-unsafe-path',
+      direction: 'inbound',
+      text: 'pic',
+      timestamp: 1000,
+      platformId: 'lobby',
+      threadId: MAIN_THREAD,
+      attachments: [{ name: 'photo.png', mimeType: 'image/png', type: 'image', size: 4, data: Buffer.from('abcd').toString('base64') }],
+    });
+    const db = new Database(webchatDbPath());
+    try {
+      db.prepare('UPDATE web_messages SET attachments_json = ? WHERE id = ?').run(
+        JSON.stringify([
+          {
+            name: 'photo.png',
+            mimeType: 'image/png',
+            type: 'image',
+            size: 4,
+            storageName: '../evil.png',
+          },
+        ]),
+        'web-unsafe-path',
+      );
+    } finally {
+      db.close();
+    }
+    const stored = getMessages('lobby', MAIN_THREAD).filter((m) => m.id === 'web-unsafe-path');
+    const enriched = enrichMessagesWithAttachmentData(stored);
+    expect(enriched[0]!.attachments?.[0]?.url).toContain('/api/attachments/web-unsafe-path/');
+  });
+
+  it('getMessages omits threadSeq when legacy rows have null seq', () => {
+    appendMessage({
+      id: 'web-get-null-seq',
+      direction: 'inbound',
+      text: 'legacy',
+      timestamp: 1000,
+      platformId: 'lobby',
+      threadId: MAIN_THREAD,
+    });
+    const db = new Database(webchatDbPath());
+    try {
+      db.prepare('UPDATE web_messages SET thread_seq = NULL WHERE id = ?').run('web-get-null-seq');
+    } finally {
+      db.close();
+    }
+    const msg = getMessages('lobby', MAIN_THREAD).find((m) => m.id === 'web-get-null-seq');
+    expect(msg?.threadSeq).toBeUndefined();
+  });
+
+  it('stores attachment size from decoded bytes when size is omitted', () => {
+    appendMessage({
+      id: 'web-no-size',
+      direction: 'inbound',
+      text: 'pic',
+      timestamp: 1000,
+      platformId: 'lobby',
+      threadId: MAIN_THREAD,
+      attachments: [{ name: 'photo.png', mimeType: 'image/png', type: 'image', data: Buffer.from('abcd').toString('base64') }],
+    });
+    const db = new Database(webchatDbPath());
+    try {
+      const row = db
+        .prepare('SELECT attachments_json FROM web_messages WHERE id = ?')
+        .get('web-no-size') as { attachments_json: string };
+      const stored = JSON.parse(row.attachments_json) as Array<{ size: number }>;
+      expect(stored[0]!.size).toBe(4);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('rejects message ids that are not plain basenames', () => {
+    expect(getMessageAttachmentPath('nested/id', 'file.png')).toBeNull();
+  });
+
+  it('skips writing files when attachment payload omits data', () => {
+    appendMessage({
+      id: 'web-no-data-field',
+      direction: 'inbound',
+      text: 'no payload',
+      timestamp: 1000,
+      platformId: 'lobby',
+      threadId: MAIN_THREAD,
+      attachments: [{ name: 'empty.png', mimeType: 'image/png', type: 'image' }],
+    });
+    expect(fs.readdirSync(path.join(webchatFilesDir(), 'web-no-data-field'))).toHaveLength(0);
+  });
+
+  it('getRecentMessages omits threadSeq when legacy rows have null seq', () => {
+    appendMessage({
+      id: 'web-legacy-seq',
+      direction: 'inbound',
+      text: 'legacy',
+      timestamp: 1000,
+      platformId: 'lobby',
+      threadId: MAIN_THREAD,
+    });
+    const db = new Database(webchatDbPath());
+    try {
+      db.prepare('UPDATE web_messages SET thread_seq = NULL WHERE id = ?').run('web-legacy-seq');
+    } finally {
+      db.close();
+    }
+    const recent = getRecentMessages('lobby', MAIN_THREAD, 10).find((m) => m.id === 'web-legacy-seq');
+    expect(recent?.threadSeq).toBeUndefined();
+  });
+
+  it('backfillThreadSeqForExistingMessages skips threads with no null-seq rows', () => {
+    const run = vi.fn();
+    const db = {
+      prepare: vi.fn((sql: string) => ({
+        all: (...args: unknown[]) => {
+          if (sql.includes('DISTINCT')) return [{ platform_id: 'lobby', thread_id: MAIN_THREAD }];
+          if (sql.includes('thread_seq IS NULL') && sql.includes('ORDER BY')) return [];
+          return [];
+        },
+        get: () => ({ max_seq: 0 }),
+        run,
+      })),
+    };
+    backfillThreadSeqForExistingMessages(db as unknown as Database.Database);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('getMessageAttachmentPath rejects resolved paths outside the message directory', () => {
+    appendMessage({
+      id: 'web-path-escape',
+      direction: 'inbound',
+      text: 'file',
+      timestamp: 1000,
+      platformId: 'lobby',
+      threadId: MAIN_THREAD,
+      attachments: [{ name: 'escape.png', mimeType: 'image/png', type: 'image', data: Buffer.from('x').toString('base64') }],
+    });
+    const origResolve = path.resolve;
+    const resolveSpy = vi.spyOn(path, 'resolve').mockImplementation((...args) => {
+      const resolved = origResolve(...args);
+      if (String(args[0]).includes('escape.png')) return '/outside/escape.png';
+      return resolved;
+    });
+    try {
+      expect(getMessageAttachmentPath('web-path-escape', '0-escape.png')).toBeNull();
+    } finally {
+      resolveSpy.mockRestore();
+    }
   });
 });
