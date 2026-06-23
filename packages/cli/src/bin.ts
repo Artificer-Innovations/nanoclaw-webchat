@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { realpathSync } from 'node:fs';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findNanoclawRoot } from './paths.js';
 import {
@@ -82,7 +84,12 @@ Commands:
 export { parseArgs };
 
 export function isCliEntry(entryPath: string, argv: string[]): boolean {
-  return Boolean(argv[1] && entryPath === argv[1]);
+  if (!argv[1]) return false;
+  try {
+    return realpathSync(entryPath) === realpathSync(path.resolve(argv[1]));
+  } catch {
+    return entryPath === argv[1];
+  }
 }
 
 function main(): void {
