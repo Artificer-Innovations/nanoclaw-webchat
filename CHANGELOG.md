@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.2
+
+### Fixed
+
+- **CLI (`install` / `upgrade`)** — Entry detection now compares `realpath`-resolved paths instead of literal `argv[1]`. Fixes a silent no-op when running `pnpm exec nanoclaw-webchat install` or `upgrade` against a `file:` dependency (pnpm resolves the bin through symlinks).
+- **Host fork compatibility** — Adapter tests copied into a host fork's `src/` now compile under strict `tsc`:
+  - `webchat-sync.test.ts`: use `vi.mocked(readEnvFile)` so mocks are not referenced before initialization (TDZ/hoisting failure during `verify`).
+  - `web.test.ts`: type the `Buffer.from` spy with an `unknown` delegate and `bind(Buffer)` so overload/tuple errors do not fail host builds.
+- **`nanoclaw-webchat verify`** — `webchat-sync.test.ts` mocks `DATA_DIR` to a temp directory and resets schema in `beforeEach`, so tests no longer write to the host's persistent `data/webchat.db` and hit `UNIQUE constraint failed: web_messages.id`.
+- **Integration CI** — Web adapter tests reserve an OS-assigned port per test instead of a fixed incrementing counter, flush agent deliveries before teardown, and integration runs with `fileParallelism: false`. Fixes flaky `listen EADDRINUSE` failures in CI.
+
 ## 0.1.1
 
 ### Fixed
