@@ -1,19 +1,26 @@
+import fs from 'node:fs';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-const readEnvFileMock = vi.fn<(keys: string[]) => Record<string, string>>(() => ({
-  WEBCHAT_ENABLED: 'true',
-  WEBCHAT_USER_ID: 'web:local',
-  WEBCHAT_DISPLAY_NAME: 'Local',
-}));
+vi.mock('./config.js', async () => {
+  const actual = await vi.importActual<typeof import('./config.js')>('./config.js');
+  return { ...actual, DATA_DIR: '/tmp/nanoclaw-webchat-sync-test' };
+});
+
+const TEST_DATA = '/tmp/nanoclaw-webchat-sync-test';
 
 vi.mock('./env.js', () => ({
-  readEnvFile: (keys: string[]) => readEnvFileMock(keys),
+  readEnvFile: vi.fn(() => ({
+    WEBCHAT_ENABLED: 'true',
+    WEBCHAT_USER_ID: 'web:local',
+    WEBCHAT_DISPLAY_NAME: 'Local',
+  })),
 }));
 
 vi.mock('./log.js', () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
+import { readEnvFile } from './env.js';
 import { initTestDb, closeDb, runMigrations, createAgentGroup } from './db/index.js';
 import {
   createMessagingGroup,
@@ -31,6 +38,14 @@ import {
 } from './webchat-sync.js';
 import { appendMessage, createThread, ensureWebchatSchema, MAIN_THREAD } from './webchat-store.js';
 
+const readEnvFileMock = vi.mocked(readEnvFile);
+
+function resetWebchatData(): void {
+  if (fs.existsSync(TEST_DATA)) {
+    fs.rmSync(TEST_DATA, { recursive: true, force: true });
+  }
+}
+
 function now(): string {
   return new Date().toISOString();
 }
@@ -42,8 +57,10 @@ beforeEach(() => {
     WEBCHAT_DISPLAY_NAME: 'Local',
   });
   process.env.WEBCHAT_ENABLED = 'true';
+  resetWebchatData();
   const db = initTestDb();
   runMigrations(db);
+  ensureWebchatSchema();
 });
 
 afterEach(() => {
@@ -52,6 +69,7 @@ afterEach(() => {
   delete process.env.WEBCHAT_USER_ID;
   delete process.env.WEBCHAT_DISPLAY_NAME;
   closeDb();
+  resetWebchatData();
 });
 
 describe('readTeamFolder', () => {
