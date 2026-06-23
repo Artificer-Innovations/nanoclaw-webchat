@@ -229,7 +229,8 @@ describe('findNodeBinDirForMajor', () => {
   });
 
   it('uses default fnm directory on macOS when FNM_DIR is unset', () => {
-    if (process.platform !== 'darwin') return;
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'darwin' });
     const home = makeRoot();
     const fnmDir = path.join(home, 'Library', 'Application Support', 'fnm');
     const binDir = path.join(fnmDir, 'node-versions/v22.1.0/bin');
@@ -238,7 +239,11 @@ describe('findNodeBinDirForMajor', () => {
     vi.stubEnv('HOME', home);
     vi.stubEnv('NVM_DIR', path.join(home, 'missing-nvm'));
     vi.stubEnv('FNM_DIR', undefined);
-    expect(findNodeBinDirForMajor(22)).toBe(binDir);
+    try {
+      expect(findNodeBinDirForMajor(22)).toBe(binDir);
+    } finally {
+      if (platform) Object.defineProperty(process, 'platform', platform);
+    }
   });
 
   it('uses default fnm directory on linux when FNM_DIR is unset', () => {
