@@ -1,4 +1,12 @@
+import fs from 'node:fs';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+vi.mock('./config.js', async () => {
+  const actual = await vi.importActual<typeof import('./config.js')>('./config.js');
+  return { ...actual, DATA_DIR: '/tmp/nanoclaw-webchat-sync-test' };
+});
+
+const TEST_DATA = '/tmp/nanoclaw-webchat-sync-test';
 
 vi.mock('./env.js', () => ({
   readEnvFile: vi.fn(() => ({
@@ -32,6 +40,12 @@ import { appendMessage, createThread, ensureWebchatSchema, MAIN_THREAD } from '.
 
 const readEnvFileMock = vi.mocked(readEnvFile);
 
+function resetWebchatData(): void {
+  if (fs.existsSync(TEST_DATA)) {
+    fs.rmSync(TEST_DATA, { recursive: true, force: true });
+  }
+}
+
 function now(): string {
   return new Date().toISOString();
 }
@@ -43,8 +57,10 @@ beforeEach(() => {
     WEBCHAT_DISPLAY_NAME: 'Local',
   });
   process.env.WEBCHAT_ENABLED = 'true';
+  resetWebchatData();
   const db = initTestDb();
   runMigrations(db);
+  ensureWebchatSchema();
 });
 
 afterEach(() => {
@@ -53,6 +69,7 @@ afterEach(() => {
   delete process.env.WEBCHAT_USER_ID;
   delete process.env.WEBCHAT_DISPLAY_NAME;
   closeDb();
+  resetWebchatData();
 });
 
 describe('readTeamFolder', () => {
