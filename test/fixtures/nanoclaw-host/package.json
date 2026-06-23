@@ -18,8 +18,8 @@
     "vitest": "^4.0.18"
   },
   "pnpm": {
-    "allowBuilds": {
-      "better-sqlite3": true
-    }
+    "onlyBuiltDependencies": [
+      "better-sqlite3"
+    ]
   }
 }

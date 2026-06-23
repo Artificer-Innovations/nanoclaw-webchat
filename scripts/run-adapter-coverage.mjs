@@ -59,7 +59,8 @@ if (!nanoclawRoot) {
 
 console.log(`Adapter tests target: ${nanoclawRoot}`);
 
-const fixturePnpm = (args) => run('pnpm', args, { cwd: nanoclawRoot });
+const fixturePnpm = (args) =>
+  run('pnpm', ['--ignore-workspace', ...args], { cwd: nanoclawRoot });
 
 try {
   if (!process.env.NANOCLAW_ROOT) {
@@ -76,7 +77,7 @@ try {
     run('node', [cliBin, 'install', '--path', nanoclawRoot]);
   }
 
-  const vitestArgs = ['exec', 'vitest', 'run', ...ADAPTER_TESTS];
+  const vitestArgs = ['--ignore-workspace', 'exec', 'vitest', 'run', ...ADAPTER_TESTS];
   if (withCoverage) {
     vitestArgs.splice(4, 0, '--coverage');
   }
