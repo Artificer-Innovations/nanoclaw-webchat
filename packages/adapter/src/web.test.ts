@@ -99,6 +99,8 @@ const SECRET = 'test-secret';
 let testPort = 0;
 
 async function reservePort(): Promise<number> {
+  // Probe-and-release: OS may reassign the port before adapter.setup() binds it (TOCTOU).
+  // Acceptable for tests; fixed incrementing ports caused EADDRINUSE flakes on CI.
   return new Promise((resolve, reject) => {
     const probe = createNetServer();
     probe.once('error', reject);
@@ -1716,11 +1718,10 @@ describe('web channel adapter', () => {
     const origFrom = Buffer.from.bind(Buffer);
     // Only intercept base64 decodes in validateInboundAttachments, not other Buffer.from callers.
     const fromSpy = vi.spyOn(Buffer, 'from').mockImplementation(((
-      input: unknown,
-      encoding?: unknown,
+      ...args: unknown[]
     ) => {
-      if (encoding === 'base64') throw new Error('invalid base64');
-      return (origFrom as (i: unknown, e?: unknown) => Buffer)(input, encoding);
+      if (args[1] === 'base64') throw new Error('invalid base64');
+      return (origFrom as (...a: unknown[]) => Buffer)(...args);
     }) as typeof Buffer.from);
     try {
       const status = await httpPost('/api/rooms/lobby/threads/main/messages', {

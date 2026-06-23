@@ -153,13 +153,16 @@ describe('runCommand', () => {
 
   it('isCliEntry matches symlink argv to real entry path', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nanoclaw-bin-entry-'));
-    const realBin = path.join(root, 'real', 'bin.js');
-    const linkBin = path.join(root, 'link-bin.js');
-    fs.mkdirSync(path.dirname(realBin), { recursive: true });
-    fs.writeFileSync(realBin, '// stub');
-    fs.symlinkSync(realBin, linkBin);
-    expect(isCliEntry(realBin, ['node', linkBin])).toBe(true);
-    fs.rmSync(root, { recursive: true, force: true });
+    try {
+      const realBin = path.join(root, 'real', 'bin.js');
+      const linkBin = path.join(root, 'link-bin.js');
+      fs.mkdirSync(path.dirname(realBin), { recursive: true });
+      fs.writeFileSync(realBin, '// stub');
+      fs.symlinkSync(realBin, linkBin);
+      expect(isCliEntry(realBin, ['node', linkBin])).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('reports non-Error throws', () => {
