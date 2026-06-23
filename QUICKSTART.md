@@ -5,8 +5,11 @@ Install the browser web chat channel into an **existing, working NanoClaw fork**
 ## Prerequisites
 
 - A NanoClaw fork already running (agents, `.env`, host service)
-- Node.js ≥ 20 and pnpm
+- **Node.js 22 LTS** (matches package CI and verify). Node 26+ requires host `better-sqlite3@>=12.10.0`
+- **pnpm** — the host fork already depends on **`better-sqlite3`** (native module used for webchat message storage)
 - Claude Code (optional — for `/add-webchat`)
+
+If `verify` fails with native module errors, the CLI (0.1.3+) auto-rebuilds under your project's Node version (`.nvmrc`). On first install, the CLI also scaffolds `.nvmrc` and a pnpm `onlyBuiltDependencies` hint for `better-sqlite3`.
 
 ## What gets installed where
 
@@ -76,7 +79,7 @@ WEBCHAT_DISPLAY_NAME=Local
 
 ```bash
 pnpm run build
-pnpm exec nanoclaw-webchat verify    # optional
+pnpm exec nanoclaw-webchat verify    # recommended — runs adapter tests; handles native deps
 # restart your NanoClaw host service
 ```
 
@@ -160,6 +163,19 @@ See bundled [skills/add-webchat/REMOVE.md](./skills/add-webchat/REMOVE.md).
 | Agent not engaging in lobby | Message must include `@folder` (e.g. `@sarah`) |
 | Port in use | Change `WEBCHAT_PORT` in `.env` |
 | Package missing at build | Run `pnpm add nanoclaw-webchat` |
+| `verify` fails: bindings / `NODE_MODULE_VERSION` | Run `pnpm exec nanoclaw-webchat verify` again (CLI rebuilds native deps). Install Node 22: `nvm install 22` |
+| `verify` fails: Node 26 + better-sqlite3 11.x | Use Node 22, **or** `pnpm add better-sqlite3@^12.10.0` in the host fork |
+| `verify` passes but host won't start | Check `WEBCHAT_SECRET`, run `pnpm run build`, restart the host service |
+
+### If verify still fails (Mac + Homebrew Node)
+
+Some Mac setups keep Homebrew Node ahead of nvm even after `nvm use`. Until your shell is fixed, run:
+
+```bash
+nvm exec 22 pnpm exec nanoclaw-webchat verify
+```
+
+Permanent fix: `brew unlink node`, or load nvm after Homebrew in `~/.zshrc`.
 
 ## Testing before publish (developers)
 

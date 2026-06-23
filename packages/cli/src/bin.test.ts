@@ -131,6 +131,117 @@ describe('runCommand', () => {
     }
   });
 
+  it('prints verify notice when preflight reports one', () => {
+    const root = makeNanoclawFixture();
+    fs.writeFileSync(
+      path.join(root, 'package.json'),
+      JSON.stringify({ dependencies: { 'better-sqlite3': '11.10.0' } }),
+    );
+    const nvmDir = path.join(root, 'nvm');
+    const binDir = path.join(nvmDir, 'versions/node/v22.23.0/bin');
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.writeFileSync(path.join(binDir, 'node'), '');
+    vi.stubEnv('NVM_DIR', nvmDir);
+
+    spawnSyncMock.mockReturnValue({
+      status: 0,
+      stdout: 'ok',
+      stderr: '',
+      output: [null, 'ok', ''],
+      pid: 0,
+      signal: null,
+    });
+    const verifyLog = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'version');
+    Object.defineProperty(process, 'version', { configurable: true, value: 'v26.0.0' });
+    try {
+      expect(runCommand(['node', 'bin.js', 'verify', '--path', root])).toBe(0);
+      expect(verifyLog.mock.calls.some((call) => String(call[0]).includes('Node v22'))).toBe(true);
+    } finally {
+      if (descriptor) Object.defineProperty(process, 'version', descriptor);
+    }
+    write.mockRestore();
+    verifyLog.mockRestore();
+  });
+
+  it('verify preflight failure prints message once without notice', () => {
+    const root = makeNanoclawFixture();
+    fs.writeFileSync(
+      path.join(root, 'package.json'),
+      JSON.stringify({ dependencies: { 'better-sqlite3': '11.10.0' } }),
+    );
+    fs.writeFileSync(path.join(root, '.nvmrc'), '26\n');
+    const nvmDir = path.join(root, 'nvm');
+    const binDir = path.join(nvmDir, 'versions/node/v22.23.0/bin');
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.writeFileSync(path.join(binDir, 'node'), '');
+    vi.stubEnv('NVM_DIR', nvmDir);
+
+    spawnSyncMock.mockReturnValue({
+      status: 1,
+      stdout: 'compile error',
+      stderr: '',
+      output: [null, 'compile error', ''],
+      pid: 0,
+      signal: null,
+    });
+    const verifyLog = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'version');
+    Object.defineProperty(process, 'version', { configurable: true, value: 'v26.0.0' });
+    try {
+      expect(runCommand(['node', 'bin.js', 'verify', '--path', root])).toBe(1);
+      expect(verifyLog).not.toHaveBeenCalled();
+      expect(String(write.mock.calls[0]?.[0])).toContain('better-sqlite3');
+    } finally {
+      if (descriptor) Object.defineProperty(process, 'version', descriptor);
+    }
+    write.mockRestore();
+    verifyLog.mockRestore();
+  });
+
+  it('prints verify host reminder on success when shell differs from project', () => {
+    const root = makeNanoclawFixture();
+    fs.writeFileSync(path.join(root, '.nvmrc'), '22\n');
+    spawnSyncMock.mockReturnValue({
+      status: 0,
+      stdout: 'ok',
+      stderr: '',
+      output: [null, 'ok', ''],
+      pid: 0,
+      signal: null,
+    });
+    const verifyLog = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'version');
+    Object.defineProperty(process, 'version', { configurable: true, value: 'v26.0.0' });
+    try {
+      expect(runCommand(['node', 'bin.js', 'verify', '--path', root])).toBe(0);
+      expect(verifyLog.mock.calls.some((call) => String(call[0]).includes('nvm use'))).toBe(true);
+    } finally {
+      if (descriptor) Object.defineProperty(process, 'version', descriptor);
+    }
+    write.mockRestore();
+    verifyLog.mockRestore();
+  });
+
+  it('verify succeeds with empty vitest output', () => {
+    const root = makeNanoclawFixture();
+    spawnSyncMock.mockReturnValue({
+      status: 0,
+      stdout: '',
+      stderr: '',
+      output: [null, '', ''],
+      pid: 0,
+      signal: null,
+    });
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    expect(runCommand(['node', 'bin.js', 'verify', '--path', root])).toBe(0);
+    expect(write).not.toHaveBeenCalled();
+    write.mockRestore();
+  });
+
   it('returns 1 when command throws', () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     expect(runCommand(['node', 'bin.js', 'sync-skill', '--path', '/nonexistent/path'])).toBe(1);

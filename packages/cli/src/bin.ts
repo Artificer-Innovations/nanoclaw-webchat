@@ -49,9 +49,11 @@ export function runCommand(argv: string[]): number {
       }
       case 'verify': {
         const result = runVerify(path);
-        if (result.output.trim()) process.stdout.write(result.output);
+        if (result.output.trim()) process.stdout.write(`${result.output}\n`);
         if (!result.ok) return 1;
+        if (result.notice) console.log(result.notice);
         console.log('Verification passed.');
+        if (result.hostReminder) console.log(result.hostReminder);
         return 0;
       }
       case 'uninstall': {

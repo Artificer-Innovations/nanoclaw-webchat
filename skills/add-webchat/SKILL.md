@@ -9,6 +9,14 @@ Adds a localhost browser chat desk wired through NanoClaw's normal router/delive
 
 See also: [QUICKSTART.md](../../QUICKSTART.md) in the npm package for a human-readable install guide.
 
+## Prerequisites
+
+- **Node.js 22 LTS** (matches verify/CI). Node 26+ requires host `better-sqlite3@>=12.10.0`
+- **pnpm** and a working NanoClaw fork with **`better-sqlite3`** (native SQLite driver)
+- Run **`pnpm exec nanoclaw-webchat verify`** after install — the CLI auto-rebuilds native bindings under your project's Node version (`.nvmrc`)
+
+`nanoclaw-webchat install` scaffolds `.nvmrc` (22) and a pnpm `onlyBuiltDependencies` hint when missing.
+
 ## Architecture
 
 ```
@@ -51,6 +59,8 @@ If the package is not yet on npm, install from a local build:
 ```bash
 pnpm add file:../nanoclaw-webchat
 ```
+
+`nanoclaw-webchat install` also scaffolds `.nvmrc` (Node 22) and adds `onlyBuiltDependencies[]=better-sqlite3` to `.npmrc` when missing (pnpm rebuilds native bindings on install).
 
 ### 2. Copy adapter resources into `src/`
 
@@ -103,13 +113,13 @@ Add this block inside `main()`, after DB migrations/backfill and **before** `ini
 
 ```bash
 pnpm run build
-pnpm exec vitest run src/channels/web-registration.test.ts src/channels/web.test.ts src/webchat-sync.test.ts src/webchat-wiring.test.ts
+pnpm exec nanoclaw-webchat verify    # recommended — runs adapter tests; handles native deps
 ```
 
-Or:
+Or run vitest directly:
 
 ```bash
-pnpm exec nanoclaw-webchat verify
+pnpm exec vitest run src/channels/web-registration.test.ts src/channels/web.test.ts src/webchat-sync.test.ts src/webchat-wiring.test.ts
 ```
 
 Restart your NanoClaw host service after a clean build.
@@ -160,6 +170,7 @@ UI-only updates may only require a host restart. Adapter changes require re-runn
 
 ## Troubleshooting
 
+- **`better-sqlite3` / MODULE_NOT_FOUND / NODE_MODULE_VERSION:** Run `pnpm exec nanoclaw-webchat verify` (rebuilds under project Node). Ensure Node 22 (`nvm use`) or upgrade host to `better-sqlite3@^12.10.0` on Node 26+
 - **401 in browser:** wrong `WEBCHAT_SECRET`
 - **Messages dropped:** ensure `web:local` user has member access (sync adds this automatically)
 - **Agent not engaging in lobby:** message must match `@<folder>` pattern (e.g. `@sarah`)
