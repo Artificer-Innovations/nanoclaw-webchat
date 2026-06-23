@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.3
+
+### Added
+
+- **CLI verify preflight** — `nanoclaw-webchat verify` probes `better-sqlite3`, auto-rebuilds under the project's Node version (`.nvmrc`), and runs vitest with the same Node when your shell is on a different major (nvm/fnm/mise bin path or `nvm exec` fallback).
+- **Install scaffolding** — `install` / `upgrade` create `.nvmrc` (Node 22) and append pnpm `onlyBuiltDependencies[]=better-sqlite3` to `.npmrc` when missing.
+
+### Fixed
+
+- **Node version mismatch** — Mac users with Homebrew Node 26 and nvm Node 22 no longer need manual `nvm exec 22 npm rebuild better-sqlite3`; verify handles it automatically.
+
 ## 0.1.2
 
 ### Fixed
