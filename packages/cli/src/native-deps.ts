@@ -3,6 +3,7 @@ import path from 'node:path';
 import {
   currentNodeMajor,
   findNodeBinDirForMajor,
+  projectNodeConfigLabel,
   readProjectNodeMajor,
   runUnderProjectNode,
 } from './node-runner.js';
@@ -17,21 +18,40 @@ export interface EnsureBetterSqlite3Result {
 export function readHostBetterSqlite3Version(root: string): string | undefined {
   const pkgPath = path.join(root, 'package.json');
   if (!fs.existsSync(pkgPath)) return undefined;
-  const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as {
-    dependencies?: Record<string, string>;
-  };
-  return pkg.dependencies?.['better-sqlite3'];
+  try {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as {
+      dependencies?: Record<string, string>;
+    };
+    return pkg.dependencies?.['better-sqlite3'];
+  } catch {
+    return undefined;
+  }
+}
+
+function parseSemverTuple(version: string): [number, number, number] {
+  const cleaned = version.trim().replace(/^[\^~>=<]+/, '');
+  const parts = cleaned.split('.');
+  return [
+    parseInt(parts[0], 10) || 0,
+    parseInt(parts[1], 10) || 0,
+    parseInt(parts[2], 10) || 0,
+  ];
 }
 
 export function parseSemverMajor(version: string): number {
-  const cleaned = version.trim().replace(/^[\^~>=<]+/, '');
-  const major = parseInt(cleaned.split('.')[0], 10);
-  return Number.isNaN(major) ? 0 : major;
+  return parseSemverTuple(version)[0];
+}
+
+export function semverGte(version: string, target: string): boolean {
+  const [major, minor, patch] = parseSemverTuple(version);
+  const [tMajor, tMinor, tPatch] = parseSemverTuple(target);
+  if (major !== tMajor) return major > tMajor;
+  if (minor !== tMinor) return minor > tMinor;
+  return patch >= tPatch;
 }
 
 export function isNodeSqliteCompatible(nodeMajor: number, bsqlVersion: string): boolean {
-  const bsqlMajor = parseSemverMajor(bsqlVersion);
-  if (nodeMajor >= 26 && bsqlMajor < 12) return false;
+  if (nodeMajor >= 26) return semverGte(bsqlVersion, '12.10.0');
   return true;
 }
 
@@ -66,7 +86,7 @@ function formatFailureMessage(root: string, bsqlVersion: string, detail: string)
   const lines = [
     'nanoclaw-webchat verify could not load better-sqlite3.',
     '',
-    `Project Node: ${projectMajor} (.nvmrc) · Shell Node: v${process.version.slice(1)} · better-sqlite3@${bsqlVersion}`,
+    `Project Node: ${projectMajor} (${projectNodeConfigLabel(root)}) · Shell Node: v${process.version.slice(1)} · better-sqlite3@${bsqlVersion}`,
   ];
 
   if (shellMajor !== projectMajor && !hasProjectNode) {

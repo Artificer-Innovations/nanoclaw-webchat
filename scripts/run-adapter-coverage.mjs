@@ -79,7 +79,8 @@ try {
 
   const vitestArgs = ['--ignore-workspace', 'exec', 'vitest', 'run', ...ADAPTER_TESTS];
   if (withCoverage) {
-    vitestArgs.splice(4, 0, '--coverage');
+    const runIdx = vitestArgs.indexOf('run');
+    vitestArgs.splice(runIdx + 1, 0, '--coverage');
   }
 
   run('pnpm', vitestArgs, { cwd: nanoclawRoot });

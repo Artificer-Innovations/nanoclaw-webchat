@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { printInstallNextSteps, runInstall, runUninstall, runUpgrade, runVerify } from './install.js';
+import * as nativeDeps from './native-deps.js';
 import { spawnSyncMock } from './test/spawn-mock.js';
 import { resourcesDir, skillDir } from './paths.js';
 
@@ -28,7 +29,7 @@ afterEach(() => {
 });
 
 describe('install', () => {
-  it('runInstall scaffolds .nvmrc and .npmrc', () => {
+  it('runInstall copies adapter, patches host, and scaffolds node config', () => {
     const root = makeNanoclawFixture();
     const result = runInstall(root);
     expect(result.copied).toHaveLength(14);
@@ -203,7 +204,17 @@ describe('install', () => {
     log.mockRestore();
   });
 
-  it('runVerify returns early when better-sqlite3 preflight fails', () => {
+  it('runVerify returns empty output when preflight fails without message', () => {
+    const root = makeNanoclawFixture();
+    vi.spyOn(nativeDeps, 'ensureBetterSqlite3').mockReturnValue({ ok: false });
+    expect(runVerify(root)).toEqual({
+      root,
+      ok: false,
+      output: '',
+    });
+  });
+
+  it('runVerify returns early when better-sqlite3 preflight fails without notice', () => {
     const root = makeNanoclawFixture();
     fs.writeFileSync(
       path.join(root, 'package.json'),
@@ -224,6 +235,29 @@ describe('install', () => {
       const result = runVerify(root);
       expect(result.ok).toBe(false);
       expect(result.output).toContain('better-sqlite3');
+      expect(result.notice).toBeUndefined();
+    } finally {
+      if (descriptor) Object.defineProperty(process, 'version', descriptor);
+    }
+  });
+
+  it('runVerify includes hostReminder on success when shell differs from project', () => {
+    const root = makeNanoclawFixture();
+    fs.writeFileSync(path.join(root, '.nvmrc'), '22\n');
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'version');
+    Object.defineProperty(process, 'version', { configurable: true, value: 'v26.0.0' });
+    spawnSyncMock.mockReturnValue({
+      status: 0,
+      stdout: 'ok',
+      stderr: '',
+      output: [null, 'ok', ''],
+      pid: 0,
+      signal: null,
+    });
+    try {
+      const result = runVerify(root);
+      expect(result.ok).toBe(true);
+      expect(result.hostReminder).toContain('nvm use');
     } finally {
       if (descriptor) Object.defineProperty(process, 'version', descriptor);
     }

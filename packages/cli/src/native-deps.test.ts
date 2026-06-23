@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { spawnSyncMock } from './test/spawn-mock.js';
+import { withShellNodeMajor } from './test/with-shell-node-major.js';
 import {
   ensureBetterSqlite3,
   isNodeSqliteCompatible,
@@ -10,20 +11,8 @@ import {
   probeBetterSqlite3,
   readHostBetterSqlite3Version,
   rebuildBetterSqlite3,
+  semverGte,
 } from './native-deps.js';
-
-function withShellNodeMajor(major: number, run: () => void): void {
-  const version = `v${major}.0.0`;
-  const descriptor = Object.getOwnPropertyDescriptor(process, 'version');
-  Object.defineProperty(process, 'version', { configurable: true, value: version });
-  try {
-    run();
-  } finally {
-    if (descriptor) {
-      Object.defineProperty(process, 'version', descriptor);
-    }
-  }
-}
 
 const tempDirs: string[] = [];
 
@@ -62,14 +51,33 @@ describe('parseSemverMajor', () => {
   it('parses semver prefixes', () => {
     expect(parseSemverMajor('^11.10.0')).toBe(11);
     expect(parseSemverMajor('12.10.0')).toBe(12);
+    expect(parseSemverMajor('12')).toBe(12);
+    expect(parseSemverMajor('0.10.0')).toBe(0);
+    expect(parseSemverMajor('12.a.0')).toBe(12);
     expect(parseSemverMajor('bad')).toBe(0);
     expect(parseSemverMajor('')).toBe(0);
   });
 });
 
+describe('semverGte', () => {
+  it('compares patch versions', () => {
+    expect(semverGte('12.10.0', '12.10.0')).toBe(true);
+    expect(semverGte('12.9.0', '12.10.0')).toBe(false);
+    expect(semverGte('^12.10.0', '12.10.0')).toBe(true);
+    expect(semverGte('12.10', '12.10.0')).toBe(true);
+    expect(semverGte('12', '12.0.0')).toBe(true);
+    expect(semverGte('13.0.0', '12.10.0')).toBe(true);
+    expect(semverGte('12.11.0', '12.10.0')).toBe(true);
+    expect(semverGte('12.10.0', '12.10.1')).toBe(false);
+  });
+});
+
 describe('isNodeSqliteCompatible', () => {
-  it('flags node 26 with better-sqlite3 11.x', () => {
+  it('flags node 26 with better-sqlite3 below 12.10.0', () => {
     expect(isNodeSqliteCompatible(26, '11.10.0')).toBe(false);
+    expect(isNodeSqliteCompatible(26, '12.0.0')).toBe(false);
+    expect(isNodeSqliteCompatible(26, '12.9.9')).toBe(false);
+    expect(isNodeSqliteCompatible(26, '12.10.0')).toBe(true);
     expect(isNodeSqliteCompatible(26, '^12.10.0')).toBe(true);
     expect(isNodeSqliteCompatible(22, '11.10.0')).toBe(true);
   });
@@ -85,6 +93,12 @@ describe('readHostBetterSqlite3Version', () => {
   it('returns undefined when package.json is missing', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-deps-missing-'));
     tempDirs.push(root);
+    expect(readHostBetterSqlite3Version(root)).toBeUndefined();
+  });
+
+  it('returns undefined when package.json is malformed', () => {
+    const root = makeRoot();
+    fs.writeFileSync(path.join(root, 'package.json'), '{not json');
     expect(readHostBetterSqlite3Version(root)).toBeUndefined();
   });
 });

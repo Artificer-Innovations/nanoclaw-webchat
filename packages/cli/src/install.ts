@@ -12,7 +12,7 @@ import {
   scaffoldEnv,
   syncSkillToFork,
 } from './patch.js';
-import { readProjectNodeMajor, runUnderProjectNode, scaffoldProjectNodeFiles } from './node-runner.js';
+import { readProjectNodeMajor, runUnderProjectNode, scaffoldProjectNodeFiles, verifyHostReminder } from './node-runner.js';
 import { findNanoclawRoot, readPackageVersion, VERIFY_TESTS } from './paths.js';
 
 export interface InstallResult {
@@ -71,12 +71,16 @@ export function runVerify(root?: string): {
   ok: boolean;
   output: string;
   notice?: string;
+  hostReminder?: string;
 } {
   const nanoclawRoot = root ?? findNanoclawRoot();
   const prep = ensureBetterSqlite3(nanoclawRoot);
   if (!prep.ok) {
-    const chunks = [prep.notice, prep.message].filter(Boolean);
-    return { root: nanoclawRoot, ok: false, output: chunks.join('\n\n'), notice: prep.notice };
+    return {
+      root: nanoclawRoot,
+      ok: false,
+      output: prep.message ?? '',
+    };
   }
 
   const result = runUnderProjectNode(nanoclawRoot, 'pnpm', ['exec', 'vitest', 'run', ...VERIFY_TESTS]);
@@ -87,6 +91,7 @@ export function runVerify(root?: string): {
     ok: result.status === 0,
     output,
     notice,
+    hostReminder: result.status === 0 ? verifyHostReminder(nanoclawRoot) : undefined,
   };
 }
 
@@ -107,7 +112,7 @@ export function printInstallNextSteps(result: InstallResult): void {
   console.log('  pnpm exec nanoclaw-webchat verify');
   console.log('  # restart your NanoClaw host service');
   console.log('  open http://127.0.0.1:3200   # auth token is injected automatically');
-  const projectMajor = readProjectNodeMajor(result.root);
+  const projectMajor = readProjectNodeMajor(result.root, console.warn);
   if (projectMajor !== parseInt(process.version.slice(1).split('.')[0], 10)) {
     console.log(
       `\nNote: this project targets Node ${projectMajor}. Run \`nvm use\` (or fnm/mise equivalent) if verify fails.`,

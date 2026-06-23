@@ -3,30 +3,21 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { spawnSyncMock } from './test/spawn-mock.js';
+import { withShellNodeMajor } from './test/with-shell-node-major.js';
 import * as nodeRunner from './node-runner.js';
 import {
   findNodeBinDirForMajor,
+  projectNodeConfigLabel,
   readNodeVersionFile,
   readProjectNodeMajor,
   RECOMMENDED_NODE_MAJOR,
   runUnderProjectNode,
   scaffoldProjectNodeFiles,
+  SPAWN_TIMEOUT_MS,
+  verifyHostReminder,
 } from './node-runner.js';
 
 const tempDirs: string[] = [];
-
-function withShellNodeMajor(major: number, run: () => void): void {
-  const version = `v${major}.0.0`;
-  const descriptor = Object.getOwnPropertyDescriptor(process, 'version');
-  Object.defineProperty(process, 'version', { configurable: true, value: version });
-  try {
-    run();
-  } finally {
-    if (descriptor) {
-      Object.defineProperty(process, 'version', descriptor);
-    }
-  }
-}
 
 function makeRoot(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'node-runner-'));
@@ -94,6 +85,67 @@ describe('readProjectNodeMajor', () => {
     const root = makeRoot();
     fs.writeFileSync(path.join(root, '.nvmrc'), 'lts\n');
     expect(readProjectNodeMajor(root)).toBe(RECOMMENDED_NODE_MAJOR);
+  });
+
+  it('warns on unparseable nvm aliases', () => {
+    const root = makeRoot();
+    fs.writeFileSync(path.join(root, '.nvmrc'), 'lts/iron\n');
+    const warn = vi.fn();
+    expect(readProjectNodeMajor(root, warn)).toBe(RECOMMENDED_NODE_MAJOR);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('lts/iron'));
+  });
+
+  it('warns via console.warn on unparseable aliases by default', () => {
+    const root = makeRoot();
+    fs.writeFileSync(path.join(root, '.nvmrc'), 'lts/hydrogen\n');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(readProjectNodeMajor(root, warn)).toBe(RECOMMENDED_NODE_MAJOR);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('lts/hydrogen'));
+    warn.mockRestore();
+  });
+
+  it('stays silent on unparseable aliases when no warn callback is passed', () => {
+    const root = makeRoot();
+    fs.writeFileSync(path.join(root, '.nvmrc'), 'lts/hydrogen\n');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(readProjectNodeMajor(root)).toBe(RECOMMENDED_NODE_MAJOR);
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+});
+
+describe('projectNodeConfigLabel', () => {
+  it('prefers .nvmrc over .node-version', () => {
+    const root = makeRoot();
+    fs.writeFileSync(path.join(root, '.nvmrc'), '22\n');
+    fs.writeFileSync(path.join(root, '.node-version'), '20\n');
+    expect(projectNodeConfigLabel(root)).toBe('.nvmrc');
+  });
+
+  it('uses .node-version when .nvmrc is absent', () => {
+    const root = makeRoot();
+    fs.writeFileSync(path.join(root, '.node-version'), '20\n');
+    expect(projectNodeConfigLabel(root)).toBe('.node-version');
+  });
+
+  it('falls back to default label', () => {
+    expect(projectNodeConfigLabel(makeRoot())).toBe('default (Node 22)');
+  });
+});
+
+describe('verifyHostReminder', () => {
+  it('returns reminder when shell and project majors differ', () => {
+    withShellNodeMajor(26, () => {
+      const root = makeRoot();
+      fs.writeFileSync(path.join(root, '.nvmrc'), '22\n');
+      expect(verifyHostReminder(root)).toContain('nvm use');
+    });
+  });
+
+  it('returns undefined when majors match', () => {
+    const root = makeRoot();
+    fs.writeFileSync(path.join(root, '.nvmrc'), `${nodeRunner.currentNodeMajor()}\n`);
+    expect(verifyHostReminder(root)).toBeUndefined();
   });
 });
 
@@ -176,6 +228,56 @@ describe('findNodeBinDirForMajor', () => {
     expect(findNodeBinDirForMajor(22)).toBe(binDir);
   });
 
+  it('uses default fnm directory on macOS when FNM_DIR is unset', () => {
+    if (process.platform !== 'darwin') return;
+    const home = makeRoot();
+    const fnmDir = path.join(home, 'Library', 'Application Support', 'fnm');
+    const binDir = path.join(fnmDir, 'node-versions/v22.1.0/bin');
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.writeFileSync(path.join(binDir, 'node'), '');
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('NVM_DIR', path.join(home, 'missing-nvm'));
+    vi.stubEnv('FNM_DIR', undefined);
+    expect(findNodeBinDirForMajor(22)).toBe(binDir);
+  });
+
+  it('uses default fnm directory on linux when FNM_DIR is unset', () => {
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'linux' });
+    const home = makeRoot();
+    const fnmDir = path.join(home, '.local/share/fnm');
+    const binDir = path.join(fnmDir, 'node-versions/v22.1.0/bin');
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.writeFileSync(path.join(binDir, 'node'), '');
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('NVM_DIR', path.join(home, 'missing-nvm'));
+    vi.stubEnv('FNM_DIR', undefined);
+    try {
+      expect(findNodeBinDirForMajor(22)).toBe(binDir);
+    } finally {
+      if (platform) Object.defineProperty(process, 'platform', platform);
+    }
+  });
+
+  it('uses default fnm directory on win32 when FNM_DIR is unset', () => {
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' });
+    const home = makeRoot();
+    const fnmDir = path.join(home, '.local/share/fnm');
+    const binDir = path.join(fnmDir, 'node-versions/v22.1.0/bin');
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.writeFileSync(path.join(binDir, 'node'), '');
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('USERPROFILE', home);
+    vi.stubEnv('NVM_DIR', path.join(home, 'missing-nvm'));
+    vi.stubEnv('FNM_DIR', undefined);
+    try {
+      expect(findNodeBinDirForMajor(22)).toBe(binDir);
+    } finally {
+      if (platform) Object.defineProperty(process, 'platform', platform);
+    }
+  });
+
   it('returns null when no version manager install exists', () => {
     vi.stubEnv('NVM_DIR', path.join(makeRoot(), 'missing-nvm'));
     vi.stubEnv('FNM_DIR', path.join(makeRoot(), 'missing-fnm'));
@@ -186,6 +288,13 @@ describe('findNodeBinDirForMajor', () => {
 
 describe('runUnderProjectNode', () => {
   beforeEach(() => mockSpawnOk());
+
+  it('passes spawn timeout to child processes', () => {
+    const root = makeRoot();
+    fs.writeFileSync(path.join(root, '.nvmrc'), `${nodeRunner.currentNodeMajor()}\n`);
+    runUnderProjectNode(root, 'node', ['-v']);
+    expect(spawnSyncMock.mock.calls.at(-1)?.[2]?.timeout).toBe(SPAWN_TIMEOUT_MS);
+  });
 
   it('runs directly when shell major matches project major', () => {
     const root = makeRoot();
@@ -231,24 +340,33 @@ describe('runUnderProjectNode', () => {
     });
   });
 
-  it('treats nvm exec stderr output as success signal', () => {
+  it('does not treat nvm exec stderr as success when status is non-zero', () => {
     if (process.platform === 'win32') return;
     withShellNodeMajor(26, () => {
       const root = makeRoot();
       fs.writeFileSync(path.join(root, '.nvmrc'), '22\n');
       vi.stubEnv('NVM_DIR', path.join(root, 'empty-nvm'));
-      spawnSyncMock.mockReturnValueOnce({
-        status: 1,
-        stdout: '',
-        stderr: 'nvm using 22',
-        output: [null, '', 'nvm using 22'],
-        pid: 0,
-        signal: null,
-      });
+      spawnSyncMock
+        .mockReturnValueOnce({
+          status: 1,
+          stdout: '',
+          stderr: 'nvm using 22',
+          output: [null, '', 'nvm using 22'],
+          pid: 0,
+          signal: null,
+        })
+        .mockReturnValueOnce({
+          status: 0,
+          stdout: 'fallback',
+          stderr: '',
+          output: [null, 'fallback', ''],
+          pid: 0,
+          signal: null,
+        });
 
       const result = runUnderProjectNode(root, 'npm', ['rebuild', 'better-sqlite3']);
-      expect(result.usedProjectNode).toBe(true);
-      expect(result.notice).toContain('nvm exec');
+      expect(result.usedProjectNode).toBe(false);
+      expect(result.stdout).toBe('fallback');
     });
   });
 
@@ -258,6 +376,14 @@ describe('runUnderProjectNode', () => {
       const root = makeRoot();
       fs.writeFileSync(path.join(root, '.nvmrc'), '22\n');
       vi.stubEnv('NVM_DIR', path.join(root, 'empty-nvm'));
+      spawnSyncMock.mockReturnValueOnce({
+        status: 0,
+        stdout: 'ok',
+        stderr: '',
+        output: [null, 'ok', ''],
+        pid: 0,
+        signal: null,
+      });
 
       const result = runUnderProjectNode(root, 'npm', ['rebuild', 'better-sqlite3']);
       expect(spawnSyncMock.mock.calls[0]?.[0]).toBe('bash');
@@ -304,27 +430,6 @@ describe('runUnderProjectNode', () => {
       expect(spawnSyncMock.mock.calls[0]?.[0]).toBe('bash');
       expect(String(spawnSyncMock.mock.calls[0]?.[1]?.[1])).toContain(path.join(home, '.nvm', 'nvm.sh'));
       expect(result.usedProjectNode).toBe(true);
-    });
-  });
-
-  it('treats nvm exec stdout output as success signal', () => {
-    if (process.platform === 'win32') return;
-    withShellNodeMajor(26, () => {
-      const root = makeRoot();
-      fs.writeFileSync(path.join(root, '.nvmrc'), '22\n');
-      vi.stubEnv('NVM_DIR', path.join(root, 'empty-nvm'));
-      spawnSyncMock.mockReturnValueOnce({
-        status: 1,
-        stdout: 'Running node v22.0.0',
-        stderr: '',
-        output: [null, 'Running node v22.0.0', ''],
-        pid: 0,
-        signal: null,
-      });
-
-      const result = runUnderProjectNode(root, 'npm', ['rebuild', 'better-sqlite3']);
-      expect(result.usedProjectNode).toBe(true);
-      expect(result.notice).toContain('nvm exec');
     });
   });
 
@@ -378,6 +483,19 @@ describe('runUnderProjectNode', () => {
       expect(result.stdout).toBe('fallback');
       expect(result.usedProjectNode).toBe(false);
     });
+  });
+
+  it('uses shell spawn on win32 when shell major matches project major', () => {
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' });
+    const root = makeRoot();
+    fs.writeFileSync(path.join(root, '.nvmrc'), `${nodeRunner.currentNodeMajor()}\n`);
+    try {
+      runUnderProjectNode(root, 'node', ['-v']);
+      expect(spawnSyncMock.mock.calls.at(-1)?.[2]?.shell).toBe(true);
+    } finally {
+      if (platform) Object.defineProperty(process, 'platform', platform);
+    }
   });
 
   it('falls back to direct spawn on win32 when bin dir is missing', () => {

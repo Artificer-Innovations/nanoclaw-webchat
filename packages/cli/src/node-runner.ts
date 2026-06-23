@@ -3,7 +3,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+// Node 22 LTS — update when the project adopts the next LTS (EOL April 2027).
 export const RECOMMENDED_NODE_MAJOR = 22;
+export const SPAWN_TIMEOUT_MS = 120_000;
 
 export interface RunUnderProjectNodeResult {
   status: number | null;
@@ -23,11 +25,23 @@ export function readNodeVersionFile(root: string): string | undefined {
   return undefined;
 }
 
-export function readProjectNodeMajor(root: string): number {
+export function projectNodeConfigLabel(root: string): string {
+  if (fs.existsSync(path.join(root, '.nvmrc'))) return '.nvmrc';
+  if (fs.existsSync(path.join(root, '.node-version'))) return '.node-version';
+  return 'default (Node 22)';
+}
+
+export function readProjectNodeMajor(
+  root: string,
+  warn?: (message: string) => void,
+): number {
   const fromFile = readNodeVersionFile(root);
   if (fromFile) {
     const major = parseInt(fromFile.split('.')[0], 10);
     if (!Number.isNaN(major)) return major;
+    warn?.(
+      `Unrecognized Node version "${fromFile}" in project config; defaulting to Node ${RECOMMENDED_NODE_MAJOR}.`,
+    );
   }
   return RECOMMENDED_NODE_MAJOR;
 }
@@ -36,12 +50,19 @@ export function currentNodeMajor(): number {
   return parseInt(process.version.slice(1).split('.')[0], 10);
 }
 
+function defaultFnmDir(): string {
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Application Support', 'fnm');
+  }
+  return path.join(os.homedir(), '.local/share/fnm');
+}
+
 export function findNodeBinDirForMajor(major: number): string | null {
   const nvmDir = process.env.NVM_DIR ?? path.join(os.homedir(), '.nvm');
   const nvmBin = pickLatestVersionBin(path.join(nvmDir, 'versions/node'), major);
   if (nvmBin) return nvmBin;
 
-  const fnmDir = process.env.FNM_DIR ?? path.join(os.homedir(), '.local/share/fnm');
+  const fnmDir = process.env.FNM_DIR ?? defaultFnmDir();
   const fnmBin = pickLatestVersionBin(path.join(fnmDir, 'node-versions'), major);
   if (fnmBin) return fnmBin;
 
@@ -75,6 +96,7 @@ function spawnWithEnv(
     encoding: 'utf8',
     env,
     shell: process.platform === 'win32',
+    timeout: SPAWN_TIMEOUT_MS,
   });
 }
 
@@ -90,6 +112,13 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+export function verifyHostReminder(root: string): string | undefined {
+  const projectMajor = readProjectNodeMajor(root);
+  const shellMajor = currentNodeMajor();
+  if (projectMajor === shellMajor) return undefined;
+  return 'Note: run `nvm use` (or fnm/mise equivalent) in the shell that starts your NanoClaw host.';
+}
+
 export function runUnderProjectNode(
   root: string,
   command: string,
@@ -97,6 +126,7 @@ export function runUnderProjectNode(
 ): RunUnderProjectNodeResult {
   const projectMajor = readProjectNodeMajor(root);
   const shellMajor = currentNodeMajor();
+  const configLabel = projectNodeConfigLabel(root);
 
   if (shellMajor === projectMajor) {
     const result = spawnWithEnv(command, args, root, process.env);
@@ -111,16 +141,13 @@ export function runUnderProjectNode(
       npm_node_execpath: path.join(binDir, 'node'),
     };
     const result = spawnWithEnv(command, args, root, env);
-    const notice = `Using Node v${projectMajor} from project config (.nvmrc); your shell is on v${shellMajor}.`;
+    const notice = `Using Node v${projectMajor} from ${configLabel}; your shell is on v${shellMajor}.`;
     return wrapSpawnResult(result, true, notice);
   }
 
   if (process.platform !== 'win32') {
     const result = spawnWithEnv('bash', nvmExecArgs(projectMajor, command, args), root, process.env);
-    const stdoutLen = (result.stdout ?? '').length;
-    const stderrLen = (result.stderr ?? '').length;
-    const accepted = result.status === 0 || stdoutLen > 0 || stderrLen > 0;
-    if (accepted) {
+    if (result.status === 0) {
       const notice = `Using Node v${projectMajor} via nvm exec; your shell is on v${shellMajor}.`;
       return wrapSpawnResult(result, true, notice);
     }
