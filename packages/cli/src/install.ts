@@ -1,6 +1,6 @@
-import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { ensureBetterSqlite3 } from './native-deps.js';
 import {
   appendBarrelImport,
   copyAdapterFiles,
@@ -12,6 +12,7 @@ import {
   scaffoldEnv,
   syncSkillToFork,
 } from './patch.js';
+import { readProjectNodeMajor, runUnderProjectNode, scaffoldProjectNodeFiles } from './node-runner.js';
 import { findNanoclawRoot, readPackageVersion, VERIFY_TESTS } from './paths.js';
 
 export interface InstallResult {
@@ -21,6 +22,8 @@ export interface InstallResult {
   bootPatched: boolean;
   env: { created: string[]; skipped: string[] };
   version: string;
+  nvmrcCreated: boolean;
+  npmrcUpdated: boolean;
 }
 
 export function runInstall(root?: string): InstallResult {
@@ -30,6 +33,7 @@ export function runInstall(root?: string): InstallResult {
   const barrelPatched = appendBarrelImport(nanoclawRoot);
   const bootPatched = insertWebchatBootBlock(nanoclawRoot);
   const env = scaffoldEnv(nanoclawRoot);
+  const { nvmrcCreated, npmrcUpdated } = scaffoldProjectNodeFiles(nanoclawRoot);
   return {
     root: nanoclawRoot,
     copied,
@@ -37,6 +41,8 @@ export function runInstall(root?: string): InstallResult {
     bootPatched,
     env,
     version: readPackageVersion(),
+    nvmrcCreated,
+    npmrcUpdated,
   };
 }
 
@@ -60,15 +66,28 @@ export function runUninstall(root?: string): {
   return { root: nanoclawRoot, removedFiles, barrelRemoved, bootRemoved, envRemoved };
 }
 
-export function runVerify(root?: string): { root: string; ok: boolean; output: string } {
+export function runVerify(root?: string): {
+  root: string;
+  ok: boolean;
+  output: string;
+  notice?: string;
+} {
   const nanoclawRoot = root ?? findNanoclawRoot();
-  const result = spawnSync('pnpm', ['exec', 'vitest', 'run', ...VERIFY_TESTS], {
-    cwd: nanoclawRoot,
-    encoding: 'utf8',
-    shell: process.platform === 'win32',
-  });
-  const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
-  return { root: nanoclawRoot, ok: result.status === 0, output };
+  const prep = ensureBetterSqlite3(nanoclawRoot);
+  if (!prep.ok) {
+    const chunks = [prep.notice, prep.message].filter(Boolean);
+    return { root: nanoclawRoot, ok: false, output: chunks.join('\n\n'), notice: prep.notice };
+  }
+
+  const result = runUnderProjectNode(nanoclawRoot, 'pnpm', ['exec', 'vitest', 'run', ...VERIFY_TESTS]);
+  const output = `${result.stdout}${result.stderr}`.trim();
+  const notice = prep.notice ?? result.notice;
+  return {
+    root: nanoclawRoot,
+    ok: result.status === 0,
+    output,
+    notice,
+  };
 }
 
 export function printInstallNextSteps(result: InstallResult): void {
@@ -77,11 +96,23 @@ export function printInstallNextSteps(result: InstallResult): void {
   if (result.env.created.length > 0) {
     console.log(`Added .env: ${result.env.created.join(', ')}`);
   }
+  if (result.nvmrcCreated) {
+    console.log('Added .nvmrc (Node 22 — matches verify/CI)');
+  }
+  if (result.npmrcUpdated) {
+    console.log('Updated .npmrc for better-sqlite3 native rebuilds');
+  }
   console.log('\nNext steps:');
   console.log('  pnpm run build');
-  console.log('  pnpm exec nanoclaw-webchat verify   # optional');
+  console.log('  pnpm exec nanoclaw-webchat verify');
   console.log('  # restart your NanoClaw host service');
   console.log('  open http://127.0.0.1:3200   # auth token is injected automatically');
+  const projectMajor = readProjectNodeMajor(result.root);
+  if (projectMajor !== parseInt(process.version.slice(1).split('.')[0], 10)) {
+    console.log(
+      `\nNote: this project targets Node ${projectMajor}. Run \`nvm use\` (or fnm/mise equivalent) if verify fails.`,
+    );
+  }
   const dep = readHostWebchatDependency(result.root);
   if (dep?.startsWith('file:')) {
     console.log('\nLocal file: link — after rebuilding nanoclaw-webchat, run `pnpm install` here to refresh UI assets.');

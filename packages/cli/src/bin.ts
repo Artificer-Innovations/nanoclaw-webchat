@@ -49,7 +49,8 @@ export function runCommand(argv: string[]): number {
       }
       case 'verify': {
         const result = runVerify(path);
-        if (result.output.trim()) process.stdout.write(result.output);
+        if (result.notice) console.log(result.notice);
+        if (result.output.trim()) process.stdout.write(`${result.output}\n`);
         if (!result.ok) return 1;
         console.log('Verification passed.');
         return 0;

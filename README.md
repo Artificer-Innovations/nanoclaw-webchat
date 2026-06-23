@@ -8,6 +8,8 @@
 
 **→ [Get started — QUICKSTART.md](./QUICKSTART.md)**
 
+Prerequisites: **Node.js 22 LTS**, pnpm, and a working NanoClaw fork. See [QUICKSTART.md](./QUICKSTART.md#prerequisites).
+
 ```bash
 pnpm add nanoclaw-webchat ws
 pnpm exec nanoclaw-webchat install

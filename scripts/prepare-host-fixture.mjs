@@ -90,7 +90,9 @@ write(
         vitest: '^4.0.18',
       },
       pnpm: {
-        onlyBuiltDependencies: ['better-sqlite3'],
+        allowBuilds: {
+          'better-sqlite3': true,
+        },
       },
     },
     null,
@@ -105,6 +107,13 @@ data/
 dist/
 .env
 pnpm-lock.yaml
+`,
+);
+
+write(
+  'pnpm-workspace.yaml',
+  `allowBuilds:
+  better-sqlite3: true
 `,
 );
 

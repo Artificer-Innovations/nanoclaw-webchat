@@ -1,6 +1,6 @@
 {
   "name": "nanoclaw-webchat",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Web chat interface for NanoClaw AI agent framework",
   "type": "module",
   "license": "MIT",
