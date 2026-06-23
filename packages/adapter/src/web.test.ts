@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import http from 'http';
+import { createServer as createNetServer } from 'node:net';
 import path from 'path';
 import WebSocket from 'ws';
 
@@ -95,7 +96,19 @@ const getMessagingGroupMock = vi.mocked(getMessagingGroupByPlatform);
 const getAssetDirMock = vi.mocked(getAssetDir);
 
 const SECRET = 'test-secret';
-let testPort = 38462;
+let testPort = 0;
+
+async function reservePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const probe = createNetServer();
+    probe.once('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const addr = probe.address();
+      const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
+      probe.close((err) => (err ? reject(err) : resolve(port)));
+    });
+  });
+}
 
 function httpPost(path: string, body: unknown, port = testPort): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -212,10 +225,10 @@ describe('web channel adapter', () => {
   const captures = routeCaptures;
   let setup: ChannelSetup;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     clearWebAdapterTestState();
     captures.length = 0;
-    testPort += 1;
+    testPort = await reservePort();
     if (fs.existsSync(TEST_DATA)) {
       fs.rmSync(TEST_DATA, { recursive: true, force: true });
     }
@@ -240,7 +253,8 @@ describe('web channel adapter', () => {
   });
 
   afterEach(async () => {
-    if (adapter.isConnected()) await adapter.teardown();
+    await flushAgentDeliveries();
+    await adapter.teardown();
     if (fs.existsSync(TEST_DATA)) {
       fs.rmSync(TEST_DATA, { recursive: true, force: true });
     }
