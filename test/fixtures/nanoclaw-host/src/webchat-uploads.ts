@@ -7,6 +7,8 @@ import fs from 'fs';
 import http from 'http';
 import os from 'os';
 import path from 'path';
+import { pipeline as pipelineCallback } from 'stream';
+import { pipeline as pipelinePromise } from 'stream/promises';
 
 import { DATA_DIR } from './config.js';
 
@@ -175,6 +177,7 @@ export async function parseMultipartUpload(
 
     let fileWriteStream: fs.WriteStream | null = null;
     let fileWriteDone: Promise<void> | null = null;
+    let fileMeta: { name: string; mimeType: string } | null = null;
     let settled = false;
     const settle = (value: { upload: StagedUpload } | { error: string; status: number }) => {
       if (settled) return;
@@ -185,21 +188,23 @@ export async function parseMultipartUpload(
     busboy.on('file', (_field: string, stream: NodeJS.ReadableStream, info: { filename?: string; mimeType?: string }) => {
       fs.mkdirSync(uploadDir, { recursive: true });
       partialPath = finalPath;
-      let size = 0;
+      fileMeta = {
+        name: info.filename || 'upload',
+        mimeType: info.mimeType || 'application/octet-stream',
+      };
       const ws = fs.createWriteStream(finalPath);
       fileWriteStream = ws;
-      fileWriteDone = new Promise<void>((resolveWrite, rejectWrite) => {
-        ws.on('finish', () => resolveWrite());
-        ws.on('error', (err) => {
-          writeError = true;
-          rejectWrite(err);
+      fileWriteDone = new Promise<void>((resolveWrite) => {
+        pipelineCallback(stream, ws, (err) => {
+          if (err && !limitHit) writeError = true;
+          resolveWrite();
         });
       });
 
-      stream.on('data', (chunk: Buffer) => {
-        size += chunk.length;
+      stream.on('error', () => {
+        writeError = true;
+        ws.destroy();
       });
-      stream.pipe(ws);
 
       stream.on('limit', () => {
         limitHit = true;
@@ -211,26 +216,12 @@ export async function parseMultipartUpload(
           // ignore
         }
       });
-
-      stream.on('end', () => {
-        if (!limitHit) {
-          fileInfo = {
-            name: info.filename || 'upload',
-            mimeType: info.mimeType || 'application/octet-stream',
-            size,
-          };
-        }
-      });
     });
 
     busboy.on('finish', () => {
       void (async () => {
         if (fileWriteDone) {
-          try {
-            await fileWriteDone;
-          } catch {
-            writeError = true;
-          }
+          await fileWriteDone;
         }
         if (limitHit || writeError) {
           cleanupPartial();
@@ -245,18 +236,21 @@ export async function parseMultipartUpload(
           });
           return;
         }
-        if (!fileInfo) {
+        if (!fileMeta) {
           settle({ error: 'No file uploaded', status: 400 });
           return;
         }
         partialPath = null;
+        let size = 0;
         try {
           assertRegularFile(finalPath);
+          size = fs.statSync(finalPath).size;
         } catch {
           cleanupPartial();
           settle({ error: 'Upload failed', status: 500 });
           return;
         }
+        fileInfo = { ...fileMeta, size };
         const upload = registerCompletedUpload({
           uploadId,
           name: fileInfo.name,
@@ -412,17 +406,11 @@ export async function acceptChunk(
   fs.mkdirSync(uploadDir, { recursive: true });
   const finalPath = stagedFilePath(uploadId);
   const writeStream = fs.createWriteStream(finalPath);
-  writeStream.on('error', () => {});
 
   try {
     for (let i = 0; i < upload.totalChunks; i++) {
       const partPath = path.join(upload.tempDir, String(i));
-      await new Promise<void>((resolvePart, rejectPart) => {
-        const rs = fs.createReadStream(partPath);
-        rs.on('error', rejectPart);
-        rs.on('end', resolvePart);
-        rs.pipe(writeStream, { end: false });
-      });
+      await pipelinePromise(fs.createReadStream(partPath), writeStream, { end: false });
     }
     await new Promise<void>((resolveWrite, rejectWrite) => {
       writeStream.on('finish', resolveWrite);

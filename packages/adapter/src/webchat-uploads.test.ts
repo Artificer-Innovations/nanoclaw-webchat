@@ -297,6 +297,26 @@ describe('webchat-uploads', () => {
     }
   });
 
+  it('returns 500 when multipart source stream errors', async () => {
+    const boundary = '----SourceErrorBoundary';
+    const stream = new PassThrough();
+    stream.on('error', () => {});
+    const req = stream as unknown as http.IncomingMessage;
+    req.headers = {
+      'content-type': `multipart/form-data; boundary=${boundary}`,
+    };
+    const promise = parseMultipartUpload(req, 'lobby', 'main');
+    stream.write(
+      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="err.txt"\r\nContent-Type: text/plain\r\n\r\npartial`,
+    );
+    await new Promise((r) => setImmediate(r));
+    stream.destroy(new Error('connection reset'));
+    const result = await promise;
+    expect(result).toMatchObject({ error: 'Upload failed', status: 500 });
+    const stagingEntries = fs.existsSync(uploadsStagingRoot()) ? fs.readdirSync(uploadsStagingRoot()) : [];
+    expect(stagingEntries).toHaveLength(0);
+  });
+
   it('returns 500 when multipart write fails without hitting size limit', async () => {
     const boundary = '----WriteFailBoundary';
     const payload = Buffer.concat([

@@ -3,6 +3,7 @@
  */
 import fs from 'fs';
 import http from 'http';
+import { pipeline } from 'stream';
 
 const EXT_TO_MIME: Record<string, string> = {
   '.jpg': 'image/jpeg',
@@ -28,6 +29,14 @@ const EXT_TO_MIME: Record<string, string> = {
 export function mimeTypeFromFilename(filename: string): string {
   const ext = filename.includes('.') ? `.${filename.split('.').pop()!.toLowerCase()}` : '';
   return EXT_TO_MIME[ext] ?? 'application/octet-stream';
+}
+
+function streamFileToResponse(readStream: fs.ReadStream, res: http.ServerResponse): void {
+  pipeline(readStream, res, (err) => {
+    if (err) {
+      readStream.destroy();
+    }
+  });
 }
 
 export function serveAttachmentFile(
@@ -77,7 +86,7 @@ export function serveAttachmentFile(
         'Content-Length': clampedEnd - start + 1,
         'Content-Range': `bytes ${start}-${clampedEnd}/${stat.size}`,
       });
-      fs.createReadStream(filePath, { start, end: clampedEnd }).pipe(res);
+      streamFileToResponse(fs.createReadStream(filePath, { start, end: clampedEnd }), res);
       return;
     }
   }
@@ -86,5 +95,5 @@ export function serveAttachmentFile(
     ...baseHeaders,
     'Content-Length': stat.size,
   });
-  fs.createReadStream(filePath).pipe(res);
+  streamFileToResponse(fs.createReadStream(filePath), res);
 }
