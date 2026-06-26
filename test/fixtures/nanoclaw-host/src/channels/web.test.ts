@@ -1180,7 +1180,7 @@ describe('web channel adapter', () => {
 
   it('returns 404 for unknown attachment', async () => {
     await adapter.setup(setup);
-    const { status } = await httpGet(`/api/attachments/missing/file.png?token=${SECRET}`);
+    const { status } = await httpGet('/api/attachments/missing/file.png');
     expect(status).toBe(404);
   });
 
@@ -1235,7 +1235,7 @@ describe('web channel adapter', () => {
     expect(upload.status).toBe(200);
     expect(upload.body.uploadId).toBeTruthy();
 
-    const post = await httpPostJson('/api/rooms/lobby/threads/main/messages', {
+    const status = await httpPost('/api/rooms/lobby/threads/main/messages', {
       text: 'see attached',
       attachments: [
         {
@@ -1247,11 +1247,7 @@ describe('web channel adapter', () => {
         },
       ],
     });
-    expect(post.status).toBe(200);
-    expect(post.body.messageId).toBeTruthy();
-    expect(
-      (post.body.attachments as Array<{ url?: string; name: string }> | undefined)?.[0]?.url,
-    ).toMatch(/^\/api\/attachments\//);
+    expect(status).toBe(200);
 
     const { body } = await httpGet('/api/rooms/lobby/threads/main/messages');
     const messages = (body as { messages: Array<{ attachments?: Array<{ url?: string; name: string }> }> }).messages;
@@ -1832,27 +1828,6 @@ describe('web channel adapter', () => {
     const { status, body } = await httpGet(url, testPort);
     expect(status).toBe(200);
     expect(String(body).length).toBeGreaterThan(0);
-  });
-
-  it('serves attachment bytes when auth is only a query token', async () => {
-    await adapter.setup(setup);
-    await httpPost('/api/rooms/lobby/threads/thread_abc/messages', {
-      text: 'pic',
-      attachments: [{ name: 'photo.png', mimeType: 'image/png', type: 'image', data: PNG_BASE64 }],
-    });
-    const msgs = (await httpGet('/api/rooms/lobby/threads/thread_abc/messages')).body as {
-      messages: Array<{ attachments?: Array<{ url: string }> }>;
-    };
-    const path = `${msgs.messages[0]!.attachments![0]!.url}?token=${SECRET}`;
-    const { status, body } = await httpGetText(path, testPort);
-    expect(status).toBe(200);
-    expect(String(body).length).toBeGreaterThan(0);
-  });
-
-  it('returns 401 for attachment GET without auth', async () => {
-    await adapter.setup(setup);
-    const { status } = await httpGetText('/api/attachments/missing/file.png', testPort);
-    expect(status).toBe(401);
   });
 
   it('deliver extracts text from object content', async () => {

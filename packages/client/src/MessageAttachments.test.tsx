@@ -16,7 +16,7 @@ describe('MessageAttachments', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it('skips attachments without encoded data', () => {
+  it('skips attachments without a display source', () => {
     const { container } = render(
       <MessageAttachments
         attachments={[{ name: 'missing.bin', mimeType: 'application/octet-stream', type: 'file' }]}
@@ -24,6 +24,39 @@ describe('MessageAttachments', () => {
       />,
     );
     expect(container.querySelector('.msg-attachments')?.children.length).toBe(0);
+  });
+
+  it('renders file attachments from server URLs without inline data', () => {
+    render(
+      <MessageAttachments
+        attachments={[
+          {
+            name: 'notes.md',
+            mimeType: 'text/markdown',
+            type: 'file',
+            url: '/api/attachments/msg-1/notes.md',
+          },
+        ]}
+        onOpenAttachment={onOpenAttachment}
+      />,
+    );
+    expect(screen.getByRole('button', { name: 'notes.md' })).toBeInTheDocument();
+  });
+
+  it('skips image attachments without a preview source', () => {
+    const { container } = render(
+      <MessageAttachments
+        attachments={[
+          {
+            name: 'photo.png',
+            mimeType: 'image/png',
+            type: 'image',
+          },
+        ]}
+        onOpenAttachment={onOpenAttachment}
+      />,
+    );
+    expect(container.querySelector('.msg-attachment-image')).toBeNull();
   });
 
   it('renders image attachments as view buttons', () => {

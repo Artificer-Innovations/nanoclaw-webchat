@@ -15,6 +15,8 @@ import {
   sendMessage,
   storeToken,
   submitAction,
+  uploadAttachmentChunk,
+  uploadAttachmentMultipart,
 } from './api';
 import type { BootstrapPayload, WebChatMessage, WsEvent } from './types';
 
@@ -796,6 +798,115 @@ describe('api', () => {
       await expect(disengageAgent('token', 'lobby', 'main', 'sarah')).rejects.toThrow(
         'disengage failed: 500',
       );
+    });
+  });
+
+  describe('uploadAttachmentMultipart', () => {
+    it('returns upload metadata on success', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () =>
+          ({
+            ok: true,
+            json: async () => ({
+              uploadId: 'upload-id',
+              name: 'a.txt',
+              mimeType: 'text/plain',
+              type: 'file',
+              size: 5,
+            }),
+          }) as Response,
+        ),
+      );
+      const result = await uploadAttachmentMultipart(
+        'token',
+        'lobby',
+        'main',
+        new File(['hello'], 'a.txt', { type: 'text/plain' }),
+      );
+      expect(result.uploadId).toBe('upload-id');
+    });
+
+    it('throws with server error text when upload fails', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () =>
+          ({
+            ok: false,
+            status: 413,
+            json: async () => ({ error: 'too big' }),
+          }) as Response,
+        ),
+      );
+      await expect(
+        uploadAttachmentMultipart('token', 'lobby', 'main', new File(['x'], 'a.txt')),
+      ).rejects.toThrow('too big');
+    });
+
+    it('throws with fallback message when upload error body is unreadable', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () =>
+          ({
+            ok: false,
+            status: 413,
+            json: async () => {
+              throw new Error('bad json');
+            },
+          }) as Response,
+        ),
+      );
+      await expect(
+        uploadAttachmentMultipart('token', 'lobby', 'main', new File(['x'], 'a.txt')),
+      ).rejects.toThrow('upload failed: 413');
+    });
+  });
+
+  describe('uploadAttachmentChunk', () => {
+    it('returns chunk progress or final upload metadata', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () =>
+          ({
+            ok: true,
+            json: async () => ({ ok: true, received: 1, total: 2 }),
+          }) as Response,
+        ),
+      );
+      const result = await uploadAttachmentChunk('token', 'lobby', 'main', {
+        uploadId: '550e8400-e29b-41d4-a716-446655440000',
+        chunkIndex: 0,
+        totalChunks: 2,
+        filename: 'big.bin',
+        mimeType: 'application/octet-stream',
+        data: 'YQ==',
+      });
+      expect(result).toEqual({ ok: true, received: 1, total: 2 });
+    });
+
+    it('throws with fallback message when chunk upload fails', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () =>
+          ({
+            ok: false,
+            status: 500,
+            json: async () => {
+              throw new Error('bad json');
+            },
+          }) as Response,
+        ),
+      );
+      await expect(
+        uploadAttachmentChunk('token', 'lobby', 'main', {
+          uploadId: '550e8400-e29b-41d4-a716-446655440000',
+          chunkIndex: 0,
+          totalChunks: 1,
+          filename: 'a.txt',
+          mimeType: 'text/plain',
+          data: 'YQ==',
+        }),
+      ).rejects.toThrow('upload failed: 500');
     });
   });
 });

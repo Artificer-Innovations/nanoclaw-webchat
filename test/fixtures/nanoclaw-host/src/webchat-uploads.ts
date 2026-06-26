@@ -1,0 +1,390 @@
+/**
+ * Staged attachment uploads for the web channel (multipart + chunked JSON).
+ */
+import Busboy from 'busboy';
+import crypto from 'crypto';
+import fs from 'fs';
+import http from 'http';
+import os from 'os';
+import path from 'path';
+
+import { DATA_DIR } from './config.js';
+
+export const MAX_UPLOAD_BYTES =
+  Number.parseInt(process.env.WEBCHAT_MAX_UPLOAD_BYTES ?? '', 10) || 1024 * 1024 * 1024;
+export const CHUNK_SIZE = 512 * 1024;
+export const CHUNK_UPLOAD_TIMEOUT = 5 * 60 * 1000;
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export interface StagedUpload {
+  uploadId: string;
+  name: string;
+  mimeType: string;
+  type: 'image' | 'file';
+  size: number;
+  filePath: string;
+  platformId: string;
+  threadId: string;
+}
+
+interface PendingChunkUpload {
+  filename: string;
+  mimeType: string;
+  totalChunks: number;
+  receivedChunks: Set<number>;
+  tempDir: string;
+  cumulativeSize: number;
+  timer: ReturnType<typeof setTimeout>;
+  platformId: string;
+  threadId: string;
+}
+
+const completedUploads = new Map<string, StagedUpload>();
+const pendingChunkedUploads = new Map<string, PendingChunkUpload>();
+
+export function uploadsStagingRoot(): string {
+  return path.join(DATA_DIR, 'webchat-uploads');
+}
+
+function stagedUploadDir(uploadId: string): string {
+  return path.join(uploadsStagingRoot(), uploadId);
+}
+
+function stagedFilePath(uploadId: string): string {
+  return path.join(stagedUploadDir(uploadId), 'file');
+}
+
+export function isValidUploadId(uploadId: string): boolean {
+  return UUID_RE.test(uploadId);
+}
+
+function attachmentTypeFromMime(mimeType: string): 'image' | 'file' {
+  return mimeType.startsWith('image/') ? 'image' : 'file';
+}
+
+function assertRegularFile(filePath: string): void {
+  const st = fs.lstatSync(filePath);
+  if (!st.isFile()) throw new Error('not a file');
+}
+
+function assertUnderRoot(filePath: string, root: string): void {
+  const resolvedRoot = path.resolve(root);
+  const resolved = path.resolve(filePath);
+  if (resolved !== resolvedRoot && !resolved.startsWith(resolvedRoot + path.sep)) {
+    throw new Error('path escape');
+  }
+}
+
+function registerCompletedUpload(upload: StagedUpload): StagedUpload {
+  completedUploads.set(upload.uploadId, upload);
+  setTimeout(() => {
+    if (completedUploads.get(upload.uploadId) !== upload) return;
+    completedUploads.delete(upload.uploadId);
+    try {
+      fs.rmSync(path.dirname(upload.filePath), { recursive: true, force: true });
+    } catch {
+      // ignore cleanup failures
+    }
+  }, CHUNK_UPLOAD_TIMEOUT);
+  return upload;
+}
+
+export function getStagedUpload(uploadId: string): StagedUpload | undefined {
+  return completedUploads.get(uploadId);
+}
+
+export function consumeStagedUpload(uploadId: string): StagedUpload | undefined {
+  const upload = completedUploads.get(uploadId);
+  if (upload) completedUploads.delete(uploadId);
+  return upload;
+}
+
+export function cleanupChunkedUpload(uploadId: string): void {
+  const upload = pendingChunkedUploads.get(uploadId);
+  if (!upload) return;
+  clearTimeout(upload.timer);
+  pendingChunkedUploads.delete(uploadId);
+  try {
+    fs.rmSync(upload.tempDir, { recursive: true, force: true });
+  } catch {
+    // ignore cleanup failures
+  }
+}
+
+export function resetUploadStateForTests(): void {
+  for (const uploadId of pendingChunkedUploads.keys()) {
+    cleanupChunkedUpload(uploadId);
+  }
+  for (const upload of completedUploads.values()) {
+    try {
+      fs.rmSync(path.dirname(upload.filePath), { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  }
+  completedUploads.clear();
+}
+
+export async function parseMultipartUpload(
+  req: http.IncomingMessage,
+  platformId: string,
+  threadId: string,
+): Promise<{ upload: StagedUpload } | { error: string; status: number }> {
+  const contentType = req.headers['content-type'] ?? '';
+  if (!contentType.includes('multipart/form-data')) {
+    return { error: 'Content-Type must be multipart/form-data', status: 400 };
+  }
+
+  return new Promise((resolve) => {
+    const uploadId = crypto.randomUUID();
+    const uploadDir = stagedUploadDir(uploadId);
+    const finalPath = stagedFilePath(uploadId);
+    let partialPath: string | null = null;
+    let limitHit = false;
+    let fileInfo: { name: string; mimeType: string; size: number } | null = null;
+
+    const cleanupPartial = () => {
+      if (!partialPath) return;
+      fs.promises.unlink(partialPath).catch(() => {});
+      partialPath = null;
+    };
+
+    const busboy = Busboy({
+      headers: req.headers,
+      limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 },
+    });
+
+    let fileWriteStream: fs.WriteStream | null = null;
+
+    busboy.on('file', (_field: string, stream: NodeJS.ReadableStream, info: { filename?: string; mimeType?: string }) => {
+      fs.mkdirSync(uploadDir, { recursive: true });
+      partialPath = finalPath;
+      let size = 0;
+      const ws = fs.createWriteStream(finalPath);
+      fileWriteStream = ws;
+      ws.on('error', () => {});
+
+      stream.on('data', (chunk: Buffer) => {
+        size += chunk.length;
+      });
+      stream.pipe(ws);
+
+      stream.on('limit', () => {
+        limitHit = true;
+        ws.destroy();
+        cleanupPartial();
+        try {
+          fs.rmSync(uploadDir, { recursive: true, force: true });
+        } catch {
+          // ignore
+        }
+      });
+
+      stream.on('end', () => {
+        if (!limitHit) {
+          fileInfo = {
+            name: info.filename || 'upload',
+            mimeType: info.mimeType || 'application/octet-stream',
+            size,
+          };
+        }
+      });
+    });
+
+    busboy.on('finish', () => {
+      if (limitHit) {
+        resolve({ error: `File exceeds ${(MAX_UPLOAD_BYTES / 1024 / 1024 / 1024).toFixed(1)}GB limit`, status: 413 });
+        return;
+      }
+      if (!fileInfo) {
+        resolve({ error: 'No file uploaded', status: 400 });
+        return;
+      }
+      partialPath = null;
+      try {
+        assertRegularFile(finalPath);
+      } catch {
+        cleanupPartial();
+        resolve({ error: 'Upload failed', status: 500 });
+        return;
+      }
+      const upload = registerCompletedUpload({
+        uploadId,
+        name: fileInfo.name,
+        mimeType: fileInfo.mimeType,
+        type: attachmentTypeFromMime(fileInfo.mimeType),
+        size: fileInfo.size,
+        filePath: finalPath,
+        platformId,
+        threadId,
+      });
+      resolve({ upload });
+    });
+
+    busboy.on('error', () => {
+      cleanupPartial();
+      try {
+        fs.rmSync(uploadDir, { recursive: true, force: true });
+      } catch {
+        // ignore
+      }
+      resolve({ error: 'Upload failed', status: 500 });
+    });
+
+    req.on('aborted', () => {
+      fileWriteStream?.destroy();
+      cleanupPartial();
+      try {
+        fs.rmSync(uploadDir, { recursive: true, force: true });
+      } catch {
+        // ignore
+      }
+    });
+
+    req.pipe(busboy);
+  });
+}
+
+export interface ChunkUploadBody {
+  uploadId: string;
+  chunkIndex: number;
+  totalChunks: number;
+  filename: string;
+  mimeType?: string;
+  data: string;
+}
+
+export type AcceptChunkResult =
+  | { ok: true; upload?: StagedUpload; received: number; total: number }
+  | { ok: false; error: string; status: number };
+
+export function isAcceptChunkOk(
+  result: AcceptChunkResult,
+): result is Extract<AcceptChunkResult, { ok: true }> {
+  return result.ok;
+}
+
+export async function acceptChunk(
+  body: ChunkUploadBody,
+  platformId: string,
+  threadId: string,
+): Promise<AcceptChunkResult> {
+  const { uploadId, chunkIndex, totalChunks, filename, data } = body;
+  const mimeType = body.mimeType?.trim() || 'application/octet-stream';
+
+  if (
+    !uploadId ||
+    !filename ||
+    !data ||
+    !Number.isInteger(totalChunks) ||
+    totalChunks <= 0 ||
+    !Number.isInteger(chunkIndex) ||
+    chunkIndex < 0 ||
+    chunkIndex >= totalChunks
+  ) {
+    return { ok: false, error: 'Missing or invalid required fields', status: 400 };
+  }
+
+  if (!isValidUploadId(uploadId)) {
+    return { ok: false, error: 'Invalid uploadId format', status: 400 };
+  }
+
+  let upload = pendingChunkedUploads.get(uploadId);
+  if (!upload) {
+    const tempDir = path.join(os.tmpdir(), `nanoclaw-webchat-chunk-${uploadId}`);
+    fs.mkdirSync(tempDir, { recursive: true });
+    upload = {
+      filename,
+      mimeType,
+      totalChunks,
+      receivedChunks: new Set(),
+      tempDir,
+      cumulativeSize: 0,
+      timer: setTimeout(() => cleanupChunkedUpload(uploadId), CHUNK_UPLOAD_TIMEOUT),
+      platformId,
+      threadId,
+    };
+    pendingChunkedUploads.set(uploadId, upload);
+  } else if (totalChunks !== upload.totalChunks) {
+    return { ok: false, error: 'totalChunks mismatch', status: 400 };
+  }
+
+  let chunkBuf: Buffer;
+  try {
+    chunkBuf = Buffer.from(data, 'base64');
+  } catch {
+    return { ok: false, error: 'invalid chunk data', status: 400 };
+  }
+
+  upload.cumulativeSize += chunkBuf.length;
+  if (upload.cumulativeSize > MAX_UPLOAD_BYTES) {
+    cleanupChunkedUpload(uploadId);
+    return { ok: false, error: `File exceeds ${(MAX_UPLOAD_BYTES / 1024 / 1024 / 1024).toFixed(1)}GB limit`, status: 413 };
+  }
+
+  const chunkPath = path.join(upload.tempDir, String(chunkIndex));
+  assertUnderRoot(chunkPath, upload.tempDir);
+  await fs.promises.writeFile(chunkPath, chunkBuf);
+  upload.receivedChunks.add(chunkIndex);
+
+  if (upload.receivedChunks.size < upload.totalChunks) {
+    return { ok: true, received: upload.receivedChunks.size, total: upload.totalChunks };
+  }
+
+  clearTimeout(upload.timer);
+  pendingChunkedUploads.delete(uploadId);
+
+  const uploadDir = stagedUploadDir(uploadId);
+  fs.mkdirSync(uploadDir, { recursive: true });
+  const finalPath = stagedFilePath(uploadId);
+  const writeStream = fs.createWriteStream(finalPath);
+  writeStream.on('error', () => {});
+
+  try {
+    for (let i = 0; i < upload.totalChunks; i++) {
+      const partPath = path.join(upload.tempDir, String(i));
+      await new Promise<void>((resolvePart, rejectPart) => {
+        const rs = fs.createReadStream(partPath);
+        rs.on('error', rejectPart);
+        rs.on('end', resolvePart);
+        rs.pipe(writeStream, { end: false });
+      });
+    }
+    await new Promise<void>((resolveWrite, rejectWrite) => {
+      writeStream.on('finish', resolveWrite);
+      writeStream.on('error', rejectWrite);
+      writeStream.end();
+    });
+    fs.rmSync(upload.tempDir, { recursive: true, force: true });
+    assertRegularFile(finalPath);
+  } catch {
+    writeStream.destroy();
+    try {
+      fs.rmSync(finalPath, { force: true });
+    } catch {
+      // ignore
+    }
+    cleanupChunkedUpload(uploadId);
+    try {
+      fs.rmSync(uploadDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+    return { ok: false, error: 'Upload assembly failed', status: 500 };
+  }
+
+  const stat = fs.statSync(finalPath);
+  const staged = registerCompletedUpload({
+    uploadId,
+    name: upload.filename,
+    mimeType: upload.mimeType,
+    type: attachmentTypeFromMime(upload.mimeType),
+    size: stat.size,
+    filePath: finalPath,
+    platformId: upload.platformId,
+    threadId: upload.threadId,
+  });
+
+  return { ok: true, upload: staged, received: upload.totalChunks, total: upload.totalChunks };
+}

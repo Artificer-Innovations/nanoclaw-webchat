@@ -30,10 +30,12 @@ import {
   formatAttachmentRejections,
   MAX_ATTACHMENTS,
   mergePendingAttachments,
+  optimisticAttachmentsFromPending,
   readAttachmentFiles,
   removePendingAtIndex,
   revokeAttachmentPreviews,
-  toSendAttachments,
+  toSendAttachmentsFromUploads,
+  uploadPendingAttachments,
   type PendingAttachment,
 } from './attachments';
 import { isNearBottom, scrollToBottom, scrollToUnreadAnchor } from './chat-scroll';
@@ -267,7 +269,6 @@ export function App() {
               threadIdRef.current,
               pendingId,
             );
-            if (next === prev) return prev;
             trackSeenMessageId(seenIds, msg.id);
             return next;
           });
@@ -540,14 +541,30 @@ export function App() {
     setSending(true);
     setError(null);
     const text = draft.trim();
-    const attachments = toSendAttachments(pendingAttachments);
+    const pending = pendingAttachments;
     const hadNoMessages = messages.length === 0;
     const activeRoom = room;
     const activeThread = threadId;
     const activeThreads = threadsFromState(threadsByRoom, activeRoom.platformId);
     setDraft('');
-    revokeAttachmentPreviews(pendingAttachments);
-    setPendingAttachments([]);
+
+    let sendAttachments: ReturnType<typeof toSendAttachmentsFromUploads> = [];
+    if (pending.length > 0) {
+      const { uploads, failed } = await uploadPendingAttachments(
+        token,
+        activeRoom.platformId,
+        activeThread,
+        pending,
+      );
+      const rejectionMessage = formatAttachmentRejections(failed);
+      if (rejectionMessage) {
+        setError(rejectionMessage);
+        setSending(false);
+        return;
+      }
+      sendAttachments = toSendAttachmentsFromUploads(uploads);
+    }
+
     const optimisticId = `local-${Date.now()}`;
     const optimistic: WebChatMessage = {
       id: optimisticId,
@@ -556,7 +573,7 @@ export function App() {
       timestamp: Date.now(),
       platformId: activeRoom.platformId,
       threadId: activeThread,
-      ...(attachments.length > 0 ? { attachments } : {}),
+      ...(pending.length > 0 ? { attachments: optimisticAttachmentsFromPending(pending) } : {}),
     };
     setMessages((prev) => [...prev, optimistic]);
     const lobbyEngagedKey =
@@ -580,8 +597,11 @@ export function App() {
         activeRoom.platformId,
         activeThread,
         text,
-        attachments.length > 0 ? attachments : undefined,
+        sendAttachments.length > 0 ? sendAttachments : undefined,
       );
+      setMessages((prev) => reconcileOptimisticMessage(prev, optimisticId, sent));
+      revokeAttachmentPreviews(pending);
+      setPendingAttachments([]);
       dropPendingOptimisticId(
         pendingOptimisticByThreadRef.current,
         activeRoom.platformId,
@@ -589,7 +609,6 @@ export function App() {
         optimisticId,
       );
       trackSeenMessageId(seenMessageIdsRef.current, sent.messageId);
-      setMessages((prev) => reconcileOptimisticMessage(prev, optimisticId, sent));
       syncCursorRef.current = updateSyncCursor(
         syncCursorRef.current,
         activeRoom.platformId,

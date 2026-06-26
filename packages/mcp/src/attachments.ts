@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { WebChatAttachment } from './types.js';
 
-export const MAX_ATTACHMENTS = 4;
+export const MAX_ATTACHMENTS = 10;
 export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 
 const EXT_TO_MIME: Record<string, string> = {

@@ -1,4 +1,4 @@
-import { attachmentDataUrl, normalizeAttachment } from './attachments';
+import { attachmentPreviewUrl, normalizeAttachment } from './attachments';
 import type { WebChatAttachment } from './types';
 
 export function MessageAttachments({
@@ -14,11 +14,11 @@ export function MessageAttachments({
     <div className="msg-attachments">
       {attachments.map((raw, index) => {
         const att = normalizeAttachment(raw);
-        const dataUrl = attachmentDataUrl(att);
-        if (!dataUrl) return null;
+        const previewUrl = attachmentPreviewUrl(att);
         const key = `${index}-${att.name}-${att.size ?? 0}`;
 
         if (att.type === 'image') {
+          if (!previewUrl) return null;
           return (
             <button
               key={key}
@@ -27,10 +27,12 @@ export function MessageAttachments({
               aria-label={`View ${att.name}`}
               onClick={() => onOpenAttachment(att)}
             >
-              <img src={dataUrl} alt="" loading="lazy" />
+              <img src={previewUrl} alt="" loading="lazy" />
             </button>
           );
         }
+
+        if (!previewUrl && !att.url && !att.data) return null;
 
         return (
           <button

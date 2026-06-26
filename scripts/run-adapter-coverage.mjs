@@ -20,6 +20,7 @@ const ADAPTER_TESTS = [
   'src/webchat-sync.test.ts',
   'src/webchat-wiring.test.ts',
   'src/webchat-store.test.ts',
+  'src/webchat-uploads.test.ts',
   'src/webchat-routing.test.ts',
   'src/webchat-mentions.test.ts',
 ];

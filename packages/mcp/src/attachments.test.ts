@@ -71,13 +71,13 @@ describe('attachments', () => {
   });
 
   it('readAttachmentPaths caps at max attachments', () => {
-    const paths = Array.from({ length: 5 }, (_, i) => {
+    const paths = Array.from({ length: 11 }, (_, i) => {
       const p = path.join(tmpDir, `f${i}.txt`);
       fs.writeFileSync(p, 'x');
       return p;
     });
     const result = readAttachmentPaths(paths);
-    expect(result.errors[0]).toContain('Only 4 attachments');
-    expect(result.attachments).toHaveLength(4);
+    expect(result.errors[0]).toContain('Only 10 attachments');
+    expect(result.attachments).toHaveLength(10);
   });
 });

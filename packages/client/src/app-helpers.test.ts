@@ -436,6 +436,28 @@ describe('app-helpers', () => {
       const persisted = { ...message, id: 'web-1', direction: 'inbound' as const, text: 'hello' };
       expect(applyLiveMessage([persisted], persisted, room, 'main', 'local-1')).toEqual([persisted]);
     });
+
+    it('replaces an existing row when the websocket echo adds attachment URLs', () => {
+      const reconciled = {
+        ...message,
+        id: 'web-1',
+        direction: 'inbound' as const,
+        text: 'hello',
+        attachments: [{ name: 'photo.png', mimeType: 'image/png', type: 'image' as const }],
+      };
+      const echoed = {
+        ...reconciled,
+        attachments: [
+          {
+            name: 'photo.png',
+            mimeType: 'image/png',
+            type: 'image' as const,
+            url: '/api/attachments/web-1/photo.png',
+          },
+        ],
+      };
+      expect(applyLiveMessage([reconciled], echoed, room, 'main', null)).toEqual([echoed]);
+    });
   });
 
   describe('applyMessageUpdate', () => {
@@ -502,6 +524,78 @@ describe('app-helpers', () => {
 
   describe('reconcileOptimisticMessage', () => {
     it('updates the optimistic row when the server message is not already present', () => {
+      const optimistic = {
+        ...message,
+        id: 'local-1',
+        direction: 'inbound' as const,
+        text: 'hello',
+        attachments: [
+          {
+            name: 'photo.png',
+            mimeType: 'image/png',
+            type: 'image' as const,
+            previewUrl: 'blob:preview',
+          },
+        ],
+      };
+      expect(
+        reconcileOptimisticMessage([optimistic], 'local-1', {
+          messageId: 'web-1',
+          timestamp: 2,
+          attachments: [
+            {
+              name: 'photo.png',
+              mimeType: 'image/png',
+              type: 'image',
+              url: '/api/attachments/web-1/0-photo.png',
+            },
+          ],
+        }),
+      ).toEqual([
+        {
+          ...optimistic,
+          id: 'web-1',
+          timestamp: 2,
+          attachments: [
+            {
+              name: 'photo.png',
+              mimeType: 'image/png',
+              type: 'image',
+              url: '/api/attachments/web-1/0-photo.png',
+            },
+          ],
+        },
+      ]);
+    });
+
+    it('strips preview URLs when POST response omits attachments', () => {
+      const optimistic = {
+        ...message,
+        id: 'local-1',
+        direction: 'inbound' as const,
+        text: 'hello',
+        attachments: [
+          {
+            name: 'photo.png',
+            mimeType: 'image/png',
+            type: 'image' as const,
+            previewUrl: 'blob:preview',
+          },
+        ],
+      };
+      expect(
+        reconcileOptimisticMessage([optimistic], 'local-1', { messageId: 'web-1', timestamp: 2 }),
+      ).toEqual([
+        {
+          ...optimistic,
+          id: 'web-1',
+          timestamp: 2,
+          attachments: [{ name: 'photo.png', mimeType: 'image/png', type: 'image' }],
+        },
+      ]);
+    });
+
+    it('omits attachments when the optimistic row had none', () => {
       const optimistic = { ...message, id: 'local-1', direction: 'inbound' as const, text: 'hello' };
       expect(
         reconcileOptimisticMessage([optimistic], 'local-1', { messageId: 'web-1', timestamp: 2 }),
