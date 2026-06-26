@@ -36,6 +36,7 @@ export function InteractiveCard({ message, token, onUpdated }: InteractiveCardPr
     } catch (err) {
       onUpdated(message);
       setError(err instanceof Error ? err.message : 'Action failed');
+    } finally {
       setSubmitting(false);
     }
   };

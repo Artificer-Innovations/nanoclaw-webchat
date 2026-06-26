@@ -29,6 +29,10 @@ function generateId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function now(): string {
+  return new Date().toISOString();
+}
+
 function dmPlatformId(folder: string): string {
   return `dm:${folder}`;
 }
@@ -48,7 +52,7 @@ function ensureLobbyMessagingGroup(): string {
       name: 'Lobby',
       is_group: 1,
       unknown_sender_policy: 'strict',
-      created_at: new Date().toISOString(),
+      created_at: now(),
     });
     mg = getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, WEB_LOBBY_PLATFORM_ID)!;
     log.info('Webchat sync: created lobby messaging group', { id: mg.id });
@@ -67,7 +71,7 @@ function ensureInboxMessagingGroup(): string {
       name: 'Inbox',
       is_group: 0,
       unknown_sender_policy: 'strict',
-      created_at: new Date().toISOString(),
+      created_at: now(),
     });
     mg = getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, WEB_INBOX_PLATFORM_ID)!;
     log.info('Webchat sync: created inbox messaging group', { id: mg.id });
@@ -90,7 +94,7 @@ function ensureDmMessagingGroup(agent: AgentGroup): string {
       name: agent.name,
       is_group: 0,
       unknown_sender_policy: 'strict',
-      created_at: new Date().toISOString(),
+      created_at: now(),
     });
     mg = getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, platformId)!;
     log.info('Webchat sync: created DM messaging group', { platformId, id: mg.id });

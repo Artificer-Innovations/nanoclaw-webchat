@@ -22,6 +22,7 @@ import {
   getMessageAttachmentPath,
   findMessageByQuestionId,
   findMessagesByQuestionId,
+  answerCardsByQuestionId,
   getMessages,
   getRecentMessages,
   hasBackfillDelivered,
@@ -722,6 +723,89 @@ describe('webchat-store', () => {
     });
     expect(updated?.card?.status).toBe('answered');
     expect(getMessages('inbox', MAIN_THREAD)[0]?.card?.selectedValue).toBe('approve');
+  });
+
+  it('defaults missing card status to pending when reading', () => {
+    appendMessage({
+      id: 'web-card-no-status',
+      direction: 'outbound',
+      text: 'Restart',
+      timestamp: 4050,
+      platformId: 'inbox',
+      threadId: MAIN_THREAD,
+    });
+    const db = new Database(webchatDbPath());
+    try {
+      db.prepare('UPDATE web_messages SET card_json = ? WHERE id = ?').run(
+        JSON.stringify({
+          type: 'ask_question',
+          questionId: 'q-no-status',
+          title: 'Restart',
+          question: 'Allow restart?',
+          options: [{ label: 'Approve', value: 'approve' }],
+        }),
+        'web-card-no-status',
+      );
+    } finally {
+      db.close();
+    }
+
+    const found = findMessageByQuestionId('inbox', MAIN_THREAD, 'q-no-status');
+    expect(found?.card?.status).toBe('pending');
+  });
+
+  it('answerCardsByQuestionId updates all pending copies atomically', () => {
+    appendMessage({
+      id: 'web-card-inbox-answer',
+      direction: 'outbound',
+      text: 'Restart',
+      timestamp: 4110,
+      platformId: 'inbox',
+      threadId: MAIN_THREAD,
+      card: {
+        type: 'ask_question',
+        questionId: 'q-answer',
+        title: 'Restart',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', selectedLabel: '✅ Approved', value: 'approve' }],
+        status: 'pending',
+      },
+    });
+    appendMessage({
+      id: 'web-card-dm-answer',
+      direction: 'outbound',
+      text: 'Restart',
+      timestamp: 4111,
+      platformId: 'dm:sarah',
+      threadId: MAIN_THREAD,
+      card: {
+        type: 'ask_question',
+        questionId: 'q-answer',
+        title: 'Restart',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', selectedLabel: '✅ Approved', value: 'approve' }],
+        status: 'pending',
+      },
+    });
+
+    const result = answerCardsByQuestionId('q-answer', 'approve', '✅ Approved');
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.messages).toHaveLength(2);
+      expect(result.messages.every((m) => m.card?.status === 'answered')).toBe(true);
+    }
+
+    expect(answerCardsByQuestionId('q-answer', 'approve', '✅ Approved')).toEqual({
+      ok: false,
+      reason: 'already_answered',
+    });
+  });
+
+  it('answerCardsByQuestionId returns not_found for unknown questionId', () => {
+    expect(answerCardsByQuestionId('missing-question', 'yes', 'Yes')).toEqual({
+      ok: false,
+      reason: 'not_found',
+    });
   });
 
   it('finds all mirrored messages by questionId across rooms', () => {

@@ -310,6 +310,7 @@ describe('web channel adapter', () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await flushAgentDeliveries();
     await adapter.teardown();
     if (fs.existsSync(TEST_DATA)) {
@@ -2304,6 +2305,86 @@ describe('web channel adapter', () => {
   it('openDM returns inbox platform id', async () => {
     await adapter.setup(setup);
     await expect(adapter.openDM!('web:local')).resolves.toBe('inbox');
+  });
+
+  it('POST actions returns 500 when onAction throws', async () => {
+    setup = {
+      ...setup,
+      onAction() {
+        throw new Error('handler failed');
+      },
+    };
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-fail',
+        title: 'Restart container',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', value: 'approve' }],
+      },
+    });
+
+    const status = await httpPost('/api/rooms/inbox/threads/main/actions', {
+      questionId: 'approval-fail',
+      value: 'approve',
+    });
+    expect(status).toBe(500);
+
+    const { body } = await httpGet('/api/rooms/inbox/threads/main/messages');
+    const msg = (body as { messages: Array<{ card?: { status?: string } }> }).messages.at(-1);
+    expect(msg?.card?.status).toBe('pending');
+  });
+
+  it('POST actions returns 409 when card is answered after onAction (race)', async () => {
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-race-answered',
+        title: 'Restart container',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', value: 'approve' }],
+      },
+    });
+
+    vi.spyOn(webchatStore, 'answerCardsByQuestionId').mockReturnValue({
+      ok: false,
+      reason: 'already_answered',
+    });
+
+    const status = await httpPost('/api/rooms/inbox/threads/main/actions', {
+      questionId: 'approval-race-answered',
+      value: 'approve',
+    });
+    expect(status).toBe(409);
+  });
+
+  it('POST actions returns 404 when card disappears after onAction (race)', async () => {
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-race-missing',
+        title: 'Restart container',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', value: 'approve' }],
+      },
+    });
+
+    vi.spyOn(webchatStore, 'answerCardsByQuestionId').mockReturnValue({
+      ok: false,
+      reason: 'not_found',
+    });
+
+    const status = await httpPost('/api/rooms/inbox/threads/main/actions', {
+      questionId: 'approval-race-missing',
+      value: 'approve',
+    });
+    expect(status).toBe(404);
   });
 
   it('POST actions returns 404 when card is missing', async () => {

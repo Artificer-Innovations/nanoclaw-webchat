@@ -92,7 +92,7 @@ export interface WebchatAskQuestionCard {
   title: string;
   question: string;
   options: WebchatCardOption[];
-  status?: 'pending' | 'answered';
+  status: 'pending' | 'answered';
   selectedValue?: string;
   selectedLabel?: string;
 }
@@ -330,7 +330,13 @@ function parseStoredAttachments(raw: string | null): StoredAttachmentMeta[] {
 function parseStoredCard(raw: string | null): WebchatAskQuestionCard | undefined {
   if (!raw) return undefined;
   try {
-    return JSON.parse(raw) as WebchatAskQuestionCard;
+    const parsed = JSON.parse(raw) as WebchatAskQuestionCard;
+    if (parsed.type !== 'ask_question') return undefined;
+    if (typeof parsed.questionId !== 'string') return undefined;
+    return {
+      ...parsed,
+      status: parsed.status ?? 'pending',
+    };
   } catch {
     return undefined;
   }
@@ -637,9 +643,11 @@ export function findMessagesByQuestionId(questionId: string): WebchatStoredMessa
                 platform_id, thread_id
          FROM web_messages
          WHERE card_json IS NOT NULL
+           AND json_valid(card_json)
+           AND json_extract(card_json, '$.questionId') = ?
          ORDER BY timestamp_ms DESC`,
       )
-      .all() as Array<{
+      .all(questionId) as Array<{
       id: string;
       direction: 'inbound' | 'outbound';
       text: string;
@@ -665,21 +673,55 @@ export function findMessagesByQuestionId(questionId: string): WebchatStoredMessa
   }
 }
 
-export function findMessageByQuestionId(
-  platformId: string,
-  threadId: string,
+export type AnswerCardsResult =
+  | { ok: true; messages: WebchatStoredMessage[] }
+  | { ok: false; reason: 'already_answered' | 'not_found' };
+
+export function answerCardsByQuestionId(
   questionId: string,
-): WebchatStoredMessage | undefined {
+  selectedValue: string,
+  selectedLabel: string,
+): AnswerCardsResult {
   const db = openDb();
   try {
+    const patch = JSON.stringify({ status: 'answered', selectedValue, selectedLabel });
+    const result = db
+      .prepare(
+        `UPDATE web_messages
+         SET card_json = json_patch(card_json, json(?))
+         WHERE card_json IS NOT NULL
+           AND json_valid(card_json)
+           AND json_extract(card_json, '$.questionId') = ?
+           AND (json_extract(card_json, '$.status') IS NULL OR json_extract(card_json, '$.status') = 'pending')`,
+      )
+      .run(patch, questionId);
+
+    if (result.changes === 0) {
+      const answered = db
+        .prepare(
+          `SELECT 1 AS ok FROM web_messages
+           WHERE card_json IS NOT NULL
+             AND json_valid(card_json)
+             AND json_extract(card_json, '$.questionId') = ?
+             AND json_extract(card_json, '$.status') = 'answered'
+           LIMIT 1`,
+        )
+        .get(questionId) as { ok: number } | undefined;
+      if (answered) return { ok: false, reason: 'already_answered' };
+      return { ok: false, reason: 'not_found' };
+    }
+
     const rows = db
       .prepare(
-        `SELECT id, direction, text, timestamp_ms, sender_name, attachments_json, thread_seq, card_json
+        `SELECT id, direction, text, timestamp_ms, sender_name, attachments_json, thread_seq, card_json,
+                platform_id, thread_id
          FROM web_messages
-         WHERE platform_id = ? AND thread_id = ? AND card_json IS NOT NULL
+         WHERE card_json IS NOT NULL
+           AND json_valid(card_json)
+           AND json_extract(card_json, '$.questionId') = ?
          ORDER BY timestamp_ms DESC`,
       )
-      .all(platformId, threadId) as Array<{
+      .all(questionId) as Array<{
       id: string;
       direction: 'inbound' | 'outbound';
       text: string;
@@ -688,15 +730,58 @@ export function findMessageByQuestionId(
       attachments_json: string | null;
       thread_seq: number | null;
       card_json: string | null;
+      platform_id: string;
+      thread_id: string;
     }>;
 
-    for (const row of rows) {
-      const card = parseStoredCard(row.card_json);
-      if (card?.questionId === questionId) {
-        return rowToMessage(row, platformId, threadId);
-      }
-    }
-    return undefined;
+    const messages = rows
+      .map((row) => {
+        const card = parseStoredCard(row.card_json);
+        if (card?.questionId !== questionId) return undefined;
+        return rowToMessage(row, row.platform_id, row.thread_id);
+      })
+      .filter((message): message is WebchatStoredMessage => message !== undefined);
+
+    return { ok: true, messages };
+  } finally {
+    db.close();
+  }
+}
+
+export function findMessageByQuestionId(
+  platformId: string,
+  threadId: string,
+  questionId: string,
+): WebchatStoredMessage | undefined {
+  const db = openDb();
+  try {
+    const row = db
+      .prepare(
+        `SELECT id, direction, text, timestamp_ms, sender_name, attachments_json, thread_seq, card_json
+         FROM web_messages
+         WHERE platform_id = ? AND thread_id = ?
+           AND json_valid(card_json)
+           AND json_extract(card_json, '$.questionId') = ?
+         ORDER BY timestamp_ms DESC
+         LIMIT 1`,
+      )
+      .get(platformId, threadId, questionId) as
+      | {
+          id: string;
+          direction: 'inbound' | 'outbound';
+          text: string;
+          timestamp_ms: number;
+          sender_name: string | null;
+          attachments_json: string | null;
+          thread_seq: number | null;
+          card_json: string | null;
+        }
+      | undefined;
+
+    if (!row) return undefined;
+    const card = parseStoredCard(row.card_json);
+    if (card?.questionId !== questionId) return undefined;
+    return rowToMessage(row, platformId, threadId);
   } finally {
     db.close();
   }

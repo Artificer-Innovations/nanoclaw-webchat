@@ -52,8 +52,8 @@ import {
   removeEngagedAgent,
   upsertThread,
   findMessageByQuestionId,
+  answerCardsByQuestionId,
   findMessagesByQuestionId,
-  updateMessageCard,
   type WebchatAskQuestionCard,
   type WebchatAttachmentInput,
   type WebchatCardOption,
@@ -183,7 +183,8 @@ function resolveApprovalSessionOrigin(questionId: string): ApprovalSessionOrigin
       threadId: session.thread_id ?? MAIN_THREAD,
       agentName: agent?.name,
     };
-  } catch {
+  } catch (err) {
+    log.warn('resolveApprovalSessionOrigin failed', { questionId, err });
     return undefined;
   }
 }
@@ -928,8 +929,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
       return;
     }
 
-    const threadId = threadIdRaw === MAIN_THREAD ? MAIN_THREAD : threadIdRaw;
-    const message = findMessageByQuestionId(platformId, threadId, questionId);
+    const message = findMessageByQuestionId(platformId, threadIdRaw, questionId);
     if (!message?.card) {
       json(res, 404, { error: 'card not found' });
       return;
@@ -946,19 +946,27 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
       return;
     }
 
-    setupConfig?.onAction(questionId, value, opts.userId);
+    try {
+      await Promise.resolve(setupConfig?.onAction(questionId, value, opts.userId));
+    } catch (err) {
+      log.error('Approval action handler failed', { questionId, err });
+      json(res, 500, { error: 'action failed' });
+      return;
+    }
 
-    const updatedCard: WebchatAskQuestionCard = {
-      ...message.card,
-      status: 'answered',
-      selectedValue: value,
-      selectedLabel: selectedOption.selectedLabel ?? selectedOption.label,
-    };
-    for (const cardMessage of findMessagesByQuestionId(questionId)) {
-      const updated = updateMessageCard(cardMessage.id, updatedCard);
-      if (updated) {
-        broadcastMessageUpdate(updated);
+    const selectedLabel = selectedOption.selectedLabel ?? selectedOption.label;
+    const result = answerCardsByQuestionId(questionId, value, selectedLabel);
+    if (!result.ok) {
+      if (result.reason === 'already_answered') {
+        json(res, 409, { error: 'card already answered' });
+        return;
       }
+      json(res, 404, { error: 'card not found' });
+      return;
+    }
+
+    for (const updated of result.messages) {
+      broadcastMessageUpdate(updated);
     }
 
     json(res, 200, { ok: true });
@@ -1298,6 +1306,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
       return id;
     },
 
+    /** Host approval DMs always land in the shared Inbox room (single local-user model). */
     async openDM(_userHandle: string): Promise<string> {
       return WEB_INBOX_PLATFORM_ID;
     },

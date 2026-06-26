@@ -60,7 +60,7 @@ export interface WebChatAskQuestionCard {
   title: string;
   question: string;
   options: WebChatCardOption[];
-  status?: 'pending' | 'answered';
+  status: 'pending' | 'answered';
   selectedValue?: string;
   selectedLabel?: string;
 }
