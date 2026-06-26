@@ -1322,6 +1322,12 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
   };
 }
 
+/** Resolve listen port from process env and optional `.env` values (exported for tests). */
+export function resolveWebchatPort(env: Record<string, string | undefined>): number {
+  const portStr = process.env.WEBCHAT_PORT || env.WEBCHAT_PORT || '3200';
+  return parseInt(portStr, 10);
+}
+
 registerChannelAdapter('web', {
   factory: () => {
     const env = readEnvFile([
@@ -1340,8 +1346,7 @@ registerChannelAdapter('web', {
       return null;
     }
 
-    const portStr = process.env.WEBCHAT_PORT || env.WEBCHAT_PORT || '3200';
-    const port = parseInt(portStr, 10);
+    const port = resolveWebchatPort(env);
     const userId = process.env.WEBCHAT_USER_ID || env.WEBCHAT_USER_ID || 'web:local';
     const displayName = process.env.WEBCHAT_DISPLAY_NAME || env.WEBCHAT_DISPLAY_NAME || 'Local';
 

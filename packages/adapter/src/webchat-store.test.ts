@@ -929,6 +929,96 @@ describe('webchat-store', () => {
     expect(findMessagesByQuestionId('q-filter').map((m) => m.id)).toEqual(['web-card-valid']);
   });
 
+  it('findMessagesByQuestionId skips rows that fail card validation after SQL match', () => {
+    appendMessage({
+      id: 'web-card-invalid-type',
+      direction: 'outbound',
+      text: 'Restart',
+      timestamp: 4202,
+      platformId: 'inbox',
+      threadId: MAIN_THREAD,
+    });
+    const db = new Database(webchatDbPath());
+    try {
+      db.prepare('UPDATE web_messages SET card_json = ? WHERE id = ?').run(
+        JSON.stringify({ type: 'not_question', questionId: 'q-invalid-type' }),
+        'web-card-invalid-type',
+      );
+    } finally {
+      db.close();
+    }
+
+    expect(findMessagesByQuestionId('q-invalid-type')).toEqual([]);
+  });
+
+  it('findMessageByQuestionId returns undefined when parsed card fails validation', () => {
+    appendMessage({
+      id: 'web-card-find-invalid',
+      direction: 'outbound',
+      text: 'Restart',
+      timestamp: 4203,
+      platformId: 'inbox',
+      threadId: MAIN_THREAD,
+    });
+    const db = new Database(webchatDbPath());
+    try {
+      db.prepare('UPDATE web_messages SET card_json = ? WHERE id = ?').run(
+        JSON.stringify({ type: 'ask_question', questionId: 12345 }),
+        'web-card-find-invalid',
+      );
+    } finally {
+      db.close();
+    }
+
+    expect(findMessageByQuestionId('inbox', MAIN_THREAD, '12345')).toBeUndefined();
+  });
+
+  it('answerCardsByQuestionId omits rows that fail card validation in the result set', () => {
+    appendMessage({
+      id: 'web-card-answer-valid',
+      direction: 'outbound',
+      text: 'Restart',
+      timestamp: 4210,
+      platformId: 'inbox',
+      threadId: MAIN_THREAD,
+      card: {
+        type: 'ask_question',
+        questionId: 'q-answer-filter',
+        title: 'Restart',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', value: 'approve' }],
+        status: 'pending',
+      },
+    });
+    appendMessage({
+      id: 'web-card-answer-invalid',
+      direction: 'outbound',
+      text: 'Restart',
+      timestamp: 4211,
+      platformId: 'dm:sarah',
+      threadId: MAIN_THREAD,
+    });
+    const db = new Database(webchatDbPath());
+    try {
+      db.prepare('UPDATE web_messages SET card_json = ? WHERE id = ?').run(
+        JSON.stringify({
+          type: 'not_question',
+          questionId: 'q-answer-filter',
+          status: 'pending',
+        }),
+        'web-card-answer-invalid',
+      );
+    } finally {
+      db.close();
+    }
+
+    const result = answerCardsByQuestionId('q-answer-filter', 'approve', '✅ Approved');
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.messages.map((m) => m.id)).toEqual(['web-card-answer-valid']);
+    }
+  });
+
   it('ignores corrupt card_json when reading messages', () => {
     appendMessage({
       id: 'web-bad-card',
