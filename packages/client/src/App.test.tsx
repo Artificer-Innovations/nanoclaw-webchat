@@ -141,6 +141,9 @@ function createFetchMock(handlers: {
       }
       return jsonResponse({ messageId: 'web-test', timestamp: Date.now() });
     }
+    if (url.includes('/actions') && init?.method === 'POST') {
+      return jsonResponse({ ok: true });
+    }
     if (url.includes('/messages')) {
       if (handlers.messagesError) {
         return jsonResponse(null, false, handlers.messagesError);
@@ -2673,5 +2676,167 @@ describe('App', () => {
     expect(localStorage.getItem('webchat_attachment_drawer_width')).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Show sidebar' }));
     expect(document.querySelector('.layout--sidebar-collapsed')).not.toBeInTheDocument();
+  });
+
+  it('applies message_update websocket events to interactive cards', async () => {
+    const cardMessage: WebChatMessage = {
+      ...messageFixture,
+      id: 'card-1',
+      platformId: 'inbox',
+      text: 'Approve MCP',
+      card: {
+        type: 'ask_question',
+        questionId: 'q-1',
+        title: 'MCP',
+        question: 'Add server?',
+        options: [{ label: 'Approve', value: 'approve' }],
+        status: 'pending',
+      },
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          bootstrap: {
+            ...bootstrapFixture,
+            rooms: [
+              { platformId: 'inbox', name: 'Inbox', kind: 'inbox', threads: [...defaultThreads] },
+              ...bootstrapFixture.rooms,
+            ],
+          },
+          messagesForThread: (platformId, threadId) => {
+            if (platformId === 'inbox' && threadId === 'main') {
+              return { messages: [cardMessage] };
+            }
+            return { messages: [] };
+          },
+        }),
+      ),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+    const MockWebSocket = createWebSocketMock();
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByRole('button', { name: 'Inbox' }));
+    await screen.findByRole('button', { name: 'Approve' });
+
+    const ws = await waitForWebSocket(MockWebSocket);
+    ws.onmessage?.({
+      data: JSON.stringify({
+        type: 'message_update',
+        message: {
+          ...cardMessage,
+          card: {
+            ...cardMessage.card!,
+            status: 'answered',
+            selectedLabel: 'Approved',
+            selectedValue: 'approve',
+          },
+        },
+      }),
+    } as MessageEvent);
+
+    await screen.findByText('Approved');
+    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
+  });
+
+  it('ignores message_update events for inactive conversations', async () => {
+    vi.stubGlobal('fetch', vi.fn(createFetchMock({})));
+    sessionStorage.setItem('webchat_token', 'secret');
+    const MockWebSocket = createWebSocketMock();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const ws = await waitForWebSocket(MockWebSocket);
+    ws.onmessage?.({
+      data: JSON.stringify({
+        type: 'message_update',
+        message: {
+          ...messageFixture,
+          id: 'card-other',
+          platformId: 'inbox',
+          threadId: 'main',
+          card: {
+            type: 'ask_question',
+            questionId: 'q-other',
+            title: 'Other',
+            question: 'Other?',
+            options: [{ label: 'Yes', value: 'yes' }],
+            status: 'answered',
+            selectedLabel: 'Yes',
+          },
+        },
+      }),
+    } as MessageEvent);
+
+    expect(screen.queryByText('Yes')).not.toBeInTheDocument();
+  });
+
+  it('shows inbox hint instead of composer in inbox room', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          bootstrap: {
+            ...bootstrapFixture,
+            rooms: [
+              { platformId: 'inbox', name: 'Inbox', kind: 'inbox', threads: [...defaultThreads] },
+              ...bootstrapFixture.rooms,
+            ],
+          },
+        }),
+      ),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByRole('button', { name: 'Inbox' }));
+    expect(
+      screen.getByText(/Approvals and system notifications appear here/),
+    ).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(/Message… use @folder/)).not.toBeInTheDocument();
+  });
+
+  it('updates message state when an interactive card action succeeds', async () => {
+    const cardMessage: WebChatMessage = {
+      ...messageFixture,
+      id: 'card-2',
+      platformId: 'inbox',
+      text: 'Approve MCP',
+      card: {
+        type: 'ask_question',
+        questionId: 'q-2',
+        title: 'MCP',
+        question: 'Add server?',
+        options: [{ label: 'Approve', selectedLabel: 'Approved', value: 'approve' }],
+        status: 'pending',
+      },
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          bootstrap: {
+            ...bootstrapFixture,
+            rooms: [
+              { platformId: 'inbox', name: 'Inbox', kind: 'inbox', threads: [...defaultThreads] },
+              ...bootstrapFixture.rooms,
+            ],
+          },
+          messagesForThread: (platformId, threadId) => {
+            if (platformId === 'inbox' && threadId === 'main') {
+              return { messages: [cardMessage] };
+            }
+            return { messages: [] };
+          },
+        }),
+      ),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByRole('button', { name: 'Inbox' }));
+    await user.click(await screen.findByRole('button', { name: 'Approve' }));
+    await screen.findByText('Approved');
   });
 });

@@ -19,6 +19,12 @@ Returns rooms (with thread lists), agents, and user identity for the sidebar.
   "user": { "id": "web:local", "displayName": "Local" },
   "rooms": [
     {
+      "platformId": "inbox",
+      "name": "Inbox",
+      "kind": "inbox",
+      "threads": [{ "id": "main", "title": "Main" }]
+    },
+    {
       "platformId": "lobby",
       "name": "Lobby",
       "kind": "lobby",
@@ -81,7 +87,18 @@ Returns persisted history for a thread from `data/webchat.db` (newest last).
           "size": 12345,
           "url": "/api/attachments/web-out-123/0-screenshot.png"
         }
-      ]
+      ],
+      "card": {
+        "type": "ask_question",
+        "questionId": "approval-abc",
+        "title": "Install MCP server",
+        "question": "Agent requests adding @modelcontextprotocol/server-memory",
+        "options": [
+          { "label": "Approve", "selectedLabel": "✅ Approved", "value": "approve" },
+          { "label": "Reject", "selectedLabel": "❌ Rejected", "value": "reject" }
+        ],
+        "status": "pending"
+      }
     }
   ],
   "engagedAgents": ["sarah", "diego"]
@@ -89,6 +106,28 @@ Returns persisted history for a thread from `data/webchat.db` (newest last).
 ```
 
 - `engagedAgents`: agent **folder** strings for agents previously @'d in this lobby thread. Omitted or `[]` when none. DM rooms may omit or return `[]`.
+- `card`: optional interactive `ask_question` payload on outbound messages (approvals, agent questions). Omitted on plain chat messages.
+
+### `POST /api/rooms/:platformId/threads/:threadId/actions`
+
+Submit a button click on an interactive `ask_question` card.
+
+Body:
+
+```json
+{
+  "questionId": "approval-abc",
+  "value": "approve"
+}
+```
+
+- `questionId` must match the `card.questionId` on a pending message in that thread.
+- Returns HTTP 409 if the card was already answered (idempotent guard).
+- Returns HTTP 404 if no matching pending card exists.
+
+Response: `{ "ok": true }`
+
+Broadcasts a `message_update` WebSocket event with the card marked `status: "answered"`.
 
 ### `POST /api/rooms/:platformId/threads/:threadId/messages`
 
@@ -169,6 +208,35 @@ Engaged-agent updates (lobby threads — when agents are @'d or removed via UI):
 }
 ```
 
+Interactive card updates (after a button click on an `ask_question` card):
+
+```json
+{
+  "type": "message_update",
+  "message": {
+    "id": "web-out-123",
+    "direction": "outbound",
+    "text": "Install MCP server\nAgent requests adding @modelcontextprotocol/server-memory",
+    "timestamp": 1710000000000,
+    "platformId": "inbox",
+    "threadId": "main",
+    "card": {
+      "type": "ask_question",
+      "questionId": "approval-abc",
+      "title": "Install MCP server",
+      "question": "Agent requests adding @modelcontextprotocol/server-memory",
+      "options": [
+        { "label": "Approve", "selectedLabel": "✅ Approved", "value": "approve" },
+        { "label": "Reject", "selectedLabel": "❌ Rejected", "value": "reject" }
+      ],
+      "status": "answered",
+      "selectedValue": "approve",
+      "selectedLabel": "✅ Approved"
+    }
+  }
+}
+```
+
 ### `DELETE /api/rooms/:platformId/threads/:threadId/engaged/:agentFolder`
 
 Lobby only. Removes one agent from the thread engaged set (UI × chip). Response: `{ "agents": ["diego"] }`. Broadcasts the same `engaged` WebSocket event.
@@ -183,6 +251,7 @@ Lobby only. Removes one agent from the thread engaged set (UI × chip). Response
 
 | ID | Purpose |
 |----|---------|
+| `inbox` | Host-initiated notifications and interactive approval cards (MCP install, restarts, permissions) |
 | `lobby` | Multi-agent @ routing room |
 | `dm:<folder>` | 1:1 room with one agent |
 

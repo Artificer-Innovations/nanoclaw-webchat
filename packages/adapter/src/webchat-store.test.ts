@@ -20,6 +20,8 @@ import {
   enrichMessagesWithAttachmentData,
   getEngagedAgents,
   getMessageAttachmentPath,
+  findMessageByQuestionId,
+  findMessagesByQuestionId,
   getMessages,
   getRecentMessages,
   hasBackfillDelivered,
@@ -27,6 +29,7 @@ import {
   MAIN_THREAD,
   markBackfillDelivered,
   removeEngagedAgent,
+  updateMessageCard,
   upsertThread,
   webchatDbPath,
   webchatFilesDir,
@@ -589,6 +592,12 @@ describe('webchat-store', () => {
     expect(getMessageAttachmentPath('nested/id', 'file.png')).toBeNull();
   });
 
+  it('rejects message ids when basename normalization would change the id', () => {
+    const basenameSpy = vi.spyOn(path, 'basename').mockReturnValueOnce('other-id');
+    expect(getMessageAttachmentPath('plain-id', 'file.png')).toBeNull();
+    basenameSpy.mockRestore();
+  });
+
   it('skips writing files when attachment payload omits data', () => {
     appendMessage({
       id: 'web-no-data-field',
@@ -659,5 +668,182 @@ describe('webchat-store', () => {
     } finally {
       resolveSpy.mockRestore();
     }
+  });
+
+  it('round-trips interactive card_json on messages', () => {
+    appendMessage({
+      id: 'web-card',
+      direction: 'outbound',
+      text: 'Install MCP server\nAdd memory server?',
+      timestamp: 3000,
+      platformId: 'inbox',
+      threadId: MAIN_THREAD,
+      card: {
+        type: 'ask_question',
+        questionId: 'approval-1',
+        title: 'Install MCP server',
+        question: 'Add memory server?',
+        options: [{ label: 'Approve', value: 'approve' }],
+        status: 'pending',
+      },
+    });
+    const msgs = getMessages('inbox', MAIN_THREAD);
+    expect(msgs[0]?.card).toMatchObject({
+      questionId: 'approval-1',
+      status: 'pending',
+    });
+  });
+
+  it('finds and updates messages by questionId', () => {
+    appendMessage({
+      id: 'web-card-2',
+      direction: 'outbound',
+      text: 'Restart',
+      timestamp: 4000,
+      platformId: 'inbox',
+      threadId: MAIN_THREAD,
+      card: {
+        type: 'ask_question',
+        questionId: 'q-restart',
+        title: 'Restart',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', selectedLabel: '✅ Approved', value: 'approve' }],
+        status: 'pending',
+      },
+    });
+    const found = findMessageByQuestionId('inbox', MAIN_THREAD, 'q-restart');
+    expect(found?.id).toBe('web-card-2');
+
+    const updated = updateMessageCard('web-card-2', {
+      ...found!.card!,
+      status: 'answered',
+      selectedValue: 'approve',
+      selectedLabel: '✅ Approved',
+    });
+    expect(updated?.card?.status).toBe('answered');
+    expect(getMessages('inbox', MAIN_THREAD)[0]?.card?.selectedValue).toBe('approve');
+  });
+
+  it('finds all mirrored messages by questionId across rooms', () => {
+    appendMessage({
+      id: 'web-card-inbox',
+      direction: 'outbound',
+      text: 'Restart',
+      timestamp: 4100,
+      platformId: 'inbox',
+      threadId: MAIN_THREAD,
+      card: {
+        type: 'ask_question',
+        questionId: 'q-shared',
+        title: 'Restart',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', value: 'approve' }],
+        status: 'pending',
+      },
+    });
+    appendMessage({
+      id: 'web-card-dm',
+      direction: 'outbound',
+      text: 'Restart',
+      timestamp: 4101,
+      platformId: 'dm:sarah',
+      threadId: MAIN_THREAD,
+      card: {
+        type: 'ask_question',
+        questionId: 'q-shared',
+        title: 'Restart',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', value: 'approve' }],
+        status: 'pending',
+      },
+    });
+
+    const matches = findMessagesByQuestionId('q-shared');
+    expect(matches.map((m) => m.id).sort()).toEqual(['web-card-dm', 'web-card-inbox']);
+  });
+
+  it('findMessagesByQuestionId skips corrupt card_json rows', () => {
+    appendMessage({
+      id: 'web-card-valid',
+      direction: 'outbound',
+      text: 'Restart',
+      timestamp: 4200,
+      platformId: 'inbox',
+      threadId: MAIN_THREAD,
+      card: {
+        type: 'ask_question',
+        questionId: 'q-filter',
+        title: 'Restart',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', value: 'approve' }],
+        status: 'pending',
+      },
+    });
+    appendMessage({
+      id: 'web-card-corrupt',
+      direction: 'outbound',
+      text: 'bad',
+      timestamp: 4201,
+      platformId: 'inbox',
+      threadId: MAIN_THREAD,
+    });
+    const db = new Database(webchatDbPath());
+    try {
+      db.prepare('UPDATE web_messages SET card_json = ? WHERE id = ?').run('{bad json', 'web-card-corrupt');
+    } finally {
+      db.close();
+    }
+
+    expect(findMessagesByQuestionId('q-filter').map((m) => m.id)).toEqual(['web-card-valid']);
+  });
+
+  it('ignores corrupt card_json when reading messages', () => {
+    appendMessage({
+      id: 'web-bad-card',
+      direction: 'outbound',
+      text: 'bad',
+      timestamp: 5000,
+      platformId: 'inbox',
+      threadId: MAIN_THREAD,
+    });
+    const db = new Database(webchatDbPath());
+    try {
+      db.prepare('UPDATE web_messages SET card_json = ? WHERE id = ?').run('{not json', 'web-bad-card');
+    } finally {
+      db.close();
+    }
+    const msgs = getMessages('inbox', MAIN_THREAD);
+    expect(msgs.find((m) => m.id === 'web-bad-card')?.card).toBeUndefined();
+  });
+
+  it('returns undefined when questionId is not found', () => {
+    appendMessage({
+      id: 'web-other-card',
+      direction: 'outbound',
+      text: 'Other',
+      timestamp: 6000,
+      platformId: 'inbox',
+      threadId: MAIN_THREAD,
+      card: {
+        type: 'ask_question',
+        questionId: 'other-id',
+        title: 'Other',
+        question: 'Other?',
+        options: [{ label: 'Yes', value: 'yes' }],
+      },
+    });
+    expect(findMessageByQuestionId('inbox', MAIN_THREAD, 'missing')).toBeUndefined();
+  });
+
+  it('returns undefined when updateMessageCard targets a missing message', () => {
+    expect(
+      updateMessageCard('missing-id', {
+        type: 'ask_question',
+        questionId: 'q',
+        title: 't',
+        question: 'q',
+        options: [],
+      }),
+    ).toBeUndefined();
   });
 });

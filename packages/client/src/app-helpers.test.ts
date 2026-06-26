@@ -4,6 +4,7 @@ import {
   activeUnreadKey,
   appendThreadToRoomMap,
   applyLiveMessage,
+  applyMessageUpdate,
   dedupeMessagesById,
   applyUnreadFromMessages,
   canCreateThread,
@@ -74,6 +75,11 @@ describe('app-helpers', () => {
 
     it('returns true when all send preconditions are met', () => {
       expect(canSendMessage('token', room, 'hello', false)).toBe(true);
+    });
+
+    it('returns false for inbox room', () => {
+      const inbox: WebChatRoom = { platformId: 'inbox', name: 'Inbox', kind: 'inbox' };
+      expect(canSendMessage('token', inbox, 'hello', false)).toBe(false);
     });
   });
 
@@ -429,6 +435,40 @@ describe('app-helpers', () => {
     it('dedupes when the persisted message is already present', () => {
       const persisted = { ...message, id: 'web-1', direction: 'inbound' as const, text: 'hello' };
       expect(applyLiveMessage([persisted], persisted, room, 'main', 'local-1')).toEqual([persisted]);
+    });
+  });
+
+  describe('applyMessageUpdate', () => {
+    it('updates an existing message in the active conversation', () => {
+      const original = {
+        ...message,
+        id: 'web-card',
+        card: {
+          type: 'ask_question' as const,
+          questionId: 'q-1',
+          title: 'Approve',
+          question: 'Proceed?',
+          options: [{ label: 'Yes', value: 'yes' }],
+          status: 'pending' as const,
+        },
+      };
+      const updated = {
+        ...original,
+        card: { ...original.card!, status: 'answered' as const, selectedValue: 'yes', selectedLabel: 'Yes' },
+      };
+      expect(applyMessageUpdate([original], updated, room, 'main')).toEqual([updated]);
+    });
+
+    it('ignores updates for other conversations', () => {
+      const original = { ...message, id: 'web-card' };
+      const updated = { ...original, text: 'changed' };
+      expect(applyMessageUpdate([original], updated, null, 'main')).toEqual([original]);
+    });
+
+    it('returns previous messages when the target id is missing', () => {
+      const original = { ...message, id: 'web-card' };
+      const updated = { ...original, id: 'missing' };
+      expect(applyMessageUpdate([original], updated, room, 'main')).toEqual([original]);
     });
   });
 

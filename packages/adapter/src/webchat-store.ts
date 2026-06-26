@@ -80,6 +80,23 @@ export interface WebchatAttachmentInput {
   url?: string;
 }
 
+export interface WebchatCardOption {
+  label: string;
+  selectedLabel?: string;
+  value: string;
+}
+
+export interface WebchatAskQuestionCard {
+  type: 'ask_question';
+  questionId: string;
+  title: string;
+  question: string;
+  options: WebchatCardOption[];
+  status?: 'pending' | 'answered';
+  selectedValue?: string;
+  selectedLabel?: string;
+}
+
 export interface WebchatStoredMessage {
   id: string;
   direction: 'inbound' | 'outbound';
@@ -90,6 +107,7 @@ export interface WebchatStoredMessage {
   threadSeq?: number;
   senderName?: string;
   attachments?: WebchatAttachmentInput[];
+  card?: WebchatAskQuestionCard;
 }
 
 interface StoredAttachmentMeta {
@@ -138,6 +156,11 @@ export function ensureWebchatSchema(): void {
     db.exec(WEBCHAT_SCHEMA);
     try {
       db.exec('ALTER TABLE web_messages ADD COLUMN thread_seq INTEGER');
+    } catch {
+      // column already exists
+    }
+    try {
+      db.exec('ALTER TABLE web_messages ADD COLUMN card_json TEXT');
     } catch {
       // column already exists
     }
@@ -304,9 +327,50 @@ function parseStoredAttachments(raw: string | null): StoredAttachmentMeta[] {
   }
 }
 
+function parseStoredCard(raw: string | null): WebchatAskQuestionCard | undefined {
+  if (!raw) return undefined;
+  try {
+    return JSON.parse(raw) as WebchatAskQuestionCard;
+  } catch {
+    return undefined;
+  }
+}
+
+function rowToMessage(
+  row: {
+    id: string;
+    direction: 'inbound' | 'outbound';
+    text: string;
+    timestamp_ms: number;
+    sender_name: string | null;
+    attachments_json: string | null;
+    thread_seq: number | null;
+    card_json?: string | null;
+  },
+  platformId: string,
+  threadId: string,
+): WebchatStoredMessage {
+  const stored = parseStoredAttachments(row.attachments_json);
+  const attachments = stored.length > 0 ? storedToApiAttachments(row.id, stored) : undefined;
+  const card = parseStoredCard(row.card_json ?? null);
+  return {
+    id: row.id,
+    direction: row.direction,
+    text: row.text,
+    timestamp: row.timestamp_ms,
+    platformId,
+    threadId,
+    ...(row.thread_seq != null ? { threadSeq: row.thread_seq } : {}),
+    ...(row.sender_name ? { senderName: row.sender_name } : {}),
+    ...(attachments ? { attachments } : {}),
+    ...(card ? { card } : {}),
+  };
+}
+
 export function appendMessage(msg: WebchatStoredMessage): WebchatStoredMessage {
   const storedAttachments = writeAttachmentFiles(msg.id, msg.attachments ?? []);
   const attachmentsJson = storedAttachments.length > 0 ? JSON.stringify(storedAttachments) : null;
+  const cardJson = msg.card ? JSON.stringify(msg.card) : null;
 
   let threadSeq = 0;
   const db = openDb();
@@ -314,8 +378,8 @@ export function appendMessage(msg: WebchatStoredMessage): WebchatStoredMessage {
     threadSeq = allocateThreadSeq(db, msg.platformId, msg.threadId);
     db.prepare(
       `INSERT INTO web_messages
-         (id, platform_id, thread_id, thread_seq, direction, text, timestamp_ms, sender_name, attachments_json)
-       VALUES (@id, @platform_id, @thread_id, @thread_seq, @direction, @text, @timestamp_ms, @sender_name, @attachments_json)`,
+         (id, platform_id, thread_id, thread_seq, direction, text, timestamp_ms, sender_name, attachments_json, card_json)
+       VALUES (@id, @platform_id, @thread_id, @thread_seq, @direction, @text, @timestamp_ms, @sender_name, @attachments_json, @card_json)`,
     ).run({
       id: msg.id,
       platform_id: msg.platformId,
@@ -326,6 +390,7 @@ export function appendMessage(msg: WebchatStoredMessage): WebchatStoredMessage {
       timestamp_ms: msg.timestamp,
       sender_name: msg.senderName ?? null,
       attachments_json: attachmentsJson,
+      card_json: cardJson,
     });
   } finally {
     db.close();
@@ -345,7 +410,7 @@ export function getMessages(platformId: string, threadId: string, sinceMs = 0): 
   try {
     const rows = db
       .prepare(
-        `SELECT id, direction, text, timestamp_ms, sender_name, attachments_json, thread_seq
+        `SELECT id, direction, text, timestamp_ms, sender_name, attachments_json, thread_seq, card_json
          FROM web_messages
          WHERE platform_id = ? AND thread_id = ? AND timestamp_ms > ?
          ORDER BY timestamp_ms ASC`,
@@ -358,23 +423,10 @@ export function getMessages(platformId: string, threadId: string, sinceMs = 0): 
       sender_name: string | null;
       attachments_json: string | null;
       thread_seq: number | null;
+      card_json: string | null;
     }>;
 
-    return rows.map((row) => {
-      const stored = parseStoredAttachments(row.attachments_json);
-      const attachments = stored.length > 0 ? storedToApiAttachments(row.id, stored) : undefined;
-      return {
-        id: row.id,
-        direction: row.direction,
-        text: row.text,
-        timestamp: row.timestamp_ms,
-        platformId,
-        threadId,
-        ...(row.thread_seq != null ? { threadSeq: row.thread_seq } : {}),
-        ...(row.sender_name ? { senderName: row.sender_name } : {}),
-        ...(attachments ? { attachments } : {}),
-      };
-    });
+    return rows.map((row) => rowToMessage(row, platformId, threadId));
   } finally {
     db.close();
   }
@@ -525,7 +577,7 @@ export function getRecentMessages(platformId: string, threadId: string, limit: n
   try {
     const rows = db
       .prepare(
-        `SELECT id, direction, text, timestamp_ms, sender_name, attachments_json, thread_seq
+        `SELECT id, direction, text, timestamp_ms, sender_name, attachments_json, thread_seq, card_json
          FROM web_messages
          WHERE platform_id = ? AND thread_id = ?
          ORDER BY timestamp_ms DESC
@@ -539,23 +591,10 @@ export function getRecentMessages(platformId: string, threadId: string, limit: n
       sender_name: string | null;
       attachments_json: string | null;
       thread_seq: number | null;
+      card_json: string | null;
     }>;
 
-    return rows.reverse().map((row) => {
-      const stored = parseStoredAttachments(row.attachments_json);
-      const attachments = stored.length > 0 ? storedToApiAttachments(row.id, stored) : undefined;
-      return {
-        id: row.id,
-        direction: row.direction,
-        text: row.text,
-        timestamp: row.timestamp_ms,
-        platformId,
-        threadId,
-        ...(row.thread_seq != null ? { threadSeq: row.thread_seq } : {}),
-        ...(row.sender_name ? { senderName: row.sender_name } : {}),
-        ...(attachments ? { attachments } : {}),
-      };
-    });
+    return rows.reverse().map((row) => rowToMessage(row, platformId, threadId));
   } finally {
     db.close();
   }
@@ -587,4 +626,111 @@ export function deleteThreadData(platformId: string, threadId: string): string[]
     deleteMessageFiles(id);
   }
   return messageIds;
+}
+
+export function findMessagesByQuestionId(questionId: string): WebchatStoredMessage[] {
+  const db = openDb();
+  try {
+    const rows = db
+      .prepare(
+        `SELECT id, direction, text, timestamp_ms, sender_name, attachments_json, thread_seq, card_json,
+                platform_id, thread_id
+         FROM web_messages
+         WHERE card_json IS NOT NULL
+         ORDER BY timestamp_ms DESC`,
+      )
+      .all() as Array<{
+      id: string;
+      direction: 'inbound' | 'outbound';
+      text: string;
+      timestamp_ms: number;
+      sender_name: string | null;
+      attachments_json: string | null;
+      thread_seq: number | null;
+      card_json: string | null;
+      platform_id: string;
+      thread_id: string;
+    }>;
+
+    const matches: WebchatStoredMessage[] = [];
+    for (const row of rows) {
+      const card = parseStoredCard(row.card_json);
+      if (card?.questionId === questionId) {
+        matches.push(rowToMessage(row, row.platform_id, row.thread_id));
+      }
+    }
+    return matches;
+  } finally {
+    db.close();
+  }
+}
+
+export function findMessageByQuestionId(
+  platformId: string,
+  threadId: string,
+  questionId: string,
+): WebchatStoredMessage | undefined {
+  const db = openDb();
+  try {
+    const rows = db
+      .prepare(
+        `SELECT id, direction, text, timestamp_ms, sender_name, attachments_json, thread_seq, card_json
+         FROM web_messages
+         WHERE platform_id = ? AND thread_id = ? AND card_json IS NOT NULL
+         ORDER BY timestamp_ms DESC`,
+      )
+      .all(platformId, threadId) as Array<{
+      id: string;
+      direction: 'inbound' | 'outbound';
+      text: string;
+      timestamp_ms: number;
+      sender_name: string | null;
+      attachments_json: string | null;
+      thread_seq: number | null;
+      card_json: string | null;
+    }>;
+
+    for (const row of rows) {
+      const card = parseStoredCard(row.card_json);
+      if (card?.questionId === questionId) {
+        return rowToMessage(row, platformId, threadId);
+      }
+    }
+    return undefined;
+  } finally {
+    db.close();
+  }
+}
+
+export function updateMessageCard(messageId: string, card: WebchatAskQuestionCard): WebchatStoredMessage | undefined {
+  const db = openDb();
+  try {
+    const row = db
+      .prepare(
+        `SELECT id, direction, text, timestamp_ms, sender_name, attachments_json, thread_seq, card_json,
+                platform_id, thread_id
+         FROM web_messages WHERE id = ?`,
+      )
+      .get(messageId) as
+      | {
+          id: string;
+          direction: 'inbound' | 'outbound';
+          text: string;
+          timestamp_ms: number;
+          sender_name: string | null;
+          attachments_json: string | null;
+          thread_seq: number | null;
+          card_json: string | null;
+          platform_id: string;
+          thread_id: string;
+        }
+      | undefined;
+    if (!row) return undefined;
+
+    db.prepare('UPDATE web_messages SET card_json = ? WHERE id = ?').run(JSON.stringify(card), messageId);
+
+    return rowToMessage({ ...row, card_json: JSON.stringify(card) }, row.platform_id, row.thread_id);
+  } finally {
+    db.close();
+  }
 }

@@ -14,6 +14,7 @@ import {
   resolveWebSocketUrl,
   sendMessage,
   storeToken,
+  submitAction,
 } from './api';
 import type { BootstrapPayload, WebChatMessage, WsEvent } from './types';
 
@@ -740,6 +741,30 @@ describe('api', () => {
         vi.fn(async () => ({ ok: false, status: 404, json: async () => null }) as Response),
       );
       await expect(deleteThread('token', 'lobby-1', 'thread_b')).rejects.toThrow('delete thread failed: 404');
+    });
+  });
+
+  describe('submitAction', () => {
+    it('POSTs questionId and value to the actions endpoint', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+      await submitAction('secret', 'inbox', 'main', 'approval-1', 'approve');
+      expect(fetch).toHaveBeenCalledWith(
+        '/api/rooms/inbox/threads/main/actions',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ questionId: 'approval-1', value: 'approve' }),
+        }),
+      );
+    });
+
+    it('throws when the server rejects the request', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => ({ ok: false, status: 409, json: async () => null }) as Response),
+      );
+      await expect(submitAction('token', 'inbox', 'main', 'q-1', 'approve')).rejects.toThrow(
+        'action failed: 409',
+      );
     });
   });
 

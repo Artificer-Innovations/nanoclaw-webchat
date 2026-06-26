@@ -41,7 +41,13 @@ export function canSendMessage(
   sending: boolean,
   attachmentCount = 0,
 ): room is WebChatRoom {
-  return Boolean(token && room && !sending && (draft.trim() || attachmentCount > 0));
+  return Boolean(
+    token &&
+      room &&
+      room.kind !== 'inbox' &&
+      !sending &&
+      (draft.trim() || attachmentCount > 0),
+  );
 }
 
 export function canCreateThread(room: WebChatRoom | null): room is WebChatRoom {
@@ -105,6 +111,20 @@ export function applyLiveMessage(
     return withoutOptimistic;
   }
   return [...withoutOptimistic, message];
+}
+
+export function applyMessageUpdate(
+  prev: WebChatMessage[],
+  message: WebChatMessage,
+  room: WebChatRoom | null,
+  threadId: string,
+): WebChatMessage[] {
+  if (!isActiveConversation(message, room, threadId)) return prev;
+  const idx = prev.findIndex((m) => m.id === message.id);
+  if (idx < 0) return prev;
+  const next = [...prev];
+  next[idx] = message;
+  return next;
 }
 
 export function reconcileOptimisticMessage(
