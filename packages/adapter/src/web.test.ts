@@ -1401,6 +1401,37 @@ describe('web channel adapter', () => {
     expect(status).toBe(400);
   });
 
+  it('restores consumed uploads when duplicate uploadId references cannot both be consumed', async () => {
+    await adapter.setup(setup);
+    const fileBytes = Buffer.from('dup-ref');
+    const upload = await httpMultipartUpload(
+      '/api/rooms/lobby/threads/main/uploads',
+      'dup.txt',
+      fileBytes,
+    );
+    expect(upload.status).toBe(200);
+    const uploadId = upload.body.uploadId as string;
+    const dupRef = {
+      uploadId,
+      name: 'dup.txt',
+      mimeType: 'application/octet-stream',
+      type: 'file' as const,
+      size: fileBytes.length,
+    };
+    const failed = await httpPostJson('/api/rooms/lobby/threads/main/messages', {
+      text: 'duplicate refs',
+      attachments: [dupRef, dupRef],
+    });
+    expect(failed.status).toBe(400);
+    expect(failed.body.error).toBe('invalid upload reference');
+
+    const retry = await httpPostJson('/api/rooms/lobby/threads/main/messages', {
+      text: 'retry after restore',
+      attachments: [dupRef],
+    });
+    expect(retry.status).toBe(200);
+  });
+
   it('rejects upload references with mismatched metadata', async () => {
     await adapter.setup(setup);
     const fileBytes = Buffer.from('meta-check');

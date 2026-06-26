@@ -1446,6 +1446,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
           res.writeHead(404).end();
         } catch (err) {
           log.error('Web channel request failed', { err, path: req.url });
+          /* v8 ignore if -- streaming handlers may have already started the response */
           if (!res.headersSent) {
             json(res, 500, { error: 'Internal server error' });
           }

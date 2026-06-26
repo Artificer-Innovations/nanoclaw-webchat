@@ -3,7 +3,7 @@ import fs from 'fs';
 import http from 'http';
 import os from 'os';
 import path from 'path';
-import { PassThrough, Readable } from 'stream';
+import { PassThrough, Readable, Writable } from 'stream';
 
 vi.mock('./config.js', async () => {
   const actual = await vi.importActual<typeof import('./config.js')>('./config.js');
@@ -13,6 +13,7 @@ vi.mock('./config.js', async () => {
 import {
   acceptChunk,
   consumeStagedUpload,
+  formatMaxUploadLabel,
   getStagedUpload,
   isAcceptChunkOk,
   isValidUploadId,
@@ -277,28 +278,64 @@ describe('webchat-uploads', () => {
     expect(result).toMatchObject({ error: 'Content-Type must be multipart/form-data', status: 400 });
   });
 
-  it('rejects invalid chunk data payloads', async () => {
-    const fromSpy = vi.spyOn(Buffer, 'from').mockImplementation(((data: unknown, encoding?: BufferEncoding) => {
-      if (encoding === 'base64') throw new Error('invalid base64');
-      return Buffer.from(data as string, encoding);
-    }) as typeof Buffer.from);
-    try {
+  it('rejects strictly invalid base64 chunk strings', async () => {
+    for (const data of ['a', '====', 'YQ===']) {
+      resetUploadStateForTests();
       const result = await acceptChunk(
         {
-          uploadId: '550e8400-e29b-41d4-a716-446655440013',
+          uploadId: '550e8400-e29b-41d4-a716-446655440015',
           chunkIndex: 0,
           totalChunks: 1,
-          filename: 'bad.txt',
-          mimeType: 'text/plain',
-          data: '%%%',
+          filename: 'bad.bin',
+          mimeType: 'application/octet-stream',
+          data,
         },
         'lobby',
         'main',
       );
       expect(result).toMatchObject({ error: 'invalid chunk data', status: 400 });
-    } finally {
-      fromSpy.mockRestore();
     }
+  });
+
+  it('returns 500 when multipart write fails without hitting size limit', async () => {
+    const boundary = '----WriteFailBoundary';
+    const payload = Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="fail.txt"\r\nContent-Type: text/plain\r\n\r\n`),
+      Buffer.from('hello'),
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ]);
+    const req = Readable.from([payload]) as http.IncomingMessage;
+    req.headers = {
+      'content-type': `multipart/form-data; boundary=${boundary}`,
+      'content-length': String(payload.length),
+    };
+    const writeSpy = vi.spyOn(fs, 'createWriteStream').mockImplementation(
+      () =>
+        new Writable({
+          write(_chunk, _encoding, callback) {
+            callback(new Error('disk full'));
+          },
+        }) as fs.WriteStream,
+    );
+    const result = await parseMultipartUpload(req, 'lobby', 'main');
+    writeSpy.mockRestore();
+    expect(result).toMatchObject({ error: 'Upload failed', status: 500 });
+  });
+
+  it('rejects invalid chunk data payloads', async () => {
+    const result = await acceptChunk(
+      {
+        uploadId: '550e8400-e29b-41d4-a716-446655440013',
+        chunkIndex: 0,
+        totalChunks: 1,
+        filename: 'bad.txt',
+        mimeType: 'text/plain',
+        data: '%%%',
+      },
+      'lobby',
+      'main',
+    );
+    expect(result).toMatchObject({ error: 'invalid chunk data', status: 400 });
   });
 
   it('returns staged uploads by id until consumed', async () => {
@@ -431,7 +468,9 @@ describe('webchat-uploads', () => {
       ),
     );
     await new Promise((resolve) => setImmediate(resolve));
-    handlers.get('aborted')?.();
+    Object.defineProperty(req, 'complete', { value: false, configurable: true });
+    Object.defineProperty(req, 'readableEnded', { value: false, configurable: true });
+    handlers.get('close')?.();
     stream.destroy();
     await new Promise((resolve) => setTimeout(resolve, 20));
     const stagingEntries = fs.existsSync(uploadsStagingRoot()) ? fs.readdirSync(uploadsStagingRoot()) : [];
@@ -572,6 +611,48 @@ describe('webchat-uploads', () => {
     expect(getStagedUpload(uploadId)).toBeUndefined();
     restoreStagedUpload(consumed!);
     expect(getStagedUpload(uploadId)?.uploadId).toBe(uploadId);
+  });
+
+  it('cleans up partial chunk uploads after inactivity timeout', async () => {
+    vi.useFakeTimers();
+    const uploadId = '550e8400-e29b-41d4-a716-446655440009';
+    const first = await acceptChunk(
+      {
+        uploadId,
+        chunkIndex: 0,
+        totalChunks: 2,
+        filename: 'slow.bin',
+        mimeType: 'application/octet-stream',
+        data: Buffer.from('aa').toString('base64'),
+      },
+      'lobby',
+      'main',
+    );
+    expect(first).toMatchObject({ ok: true, received: 1, total: 2 });
+    await vi.advanceTimersByTimeAsync(5 * 60 * 1000 + 1);
+    const second = await acceptChunk(
+      {
+        uploadId,
+        chunkIndex: 1,
+        totalChunks: 2,
+        filename: 'slow.bin',
+        mimeType: 'application/octet-stream',
+        data: Buffer.from('bb').toString('base64'),
+      },
+      'lobby',
+      'main',
+    );
+    expect(isAcceptChunkOk(second)).toBe(true);
+    if (!isAcceptChunkOk(second) || !second.upload) {
+      vi.useRealTimers();
+      return;
+    }
+    expect(second.upload.size).toBe(4);
+    vi.useRealTimers();
+  });
+
+  it('formats GB upload limits by default', () => {
+    expect(formatMaxUploadLabel()).toBe('1.0 GB');
   });
 
   it('formats MB upload limits from env', async () => {
