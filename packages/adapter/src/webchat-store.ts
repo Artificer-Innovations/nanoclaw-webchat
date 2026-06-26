@@ -748,6 +748,27 @@ export function answerCardsByQuestionId(
   }
 }
 
+/** Revert all answered copies of a question back to pending (e.g. after onAction failure). */
+export function revertCardsByQuestionId(questionId: string): void {
+  const db = openDb();
+  try {
+    const patch = JSON.stringify({ status: 'pending' });
+    db.prepare(
+      `UPDATE web_messages
+       SET card_json = json_patch(
+         json_remove(json_remove(card_json, '$.selectedValue'), '$.selectedLabel'),
+         json(?)
+       )
+       WHERE card_json IS NOT NULL
+         AND json_valid(card_json)
+         AND json_extract(card_json, '$.questionId') = ?
+         AND json_extract(card_json, '$.status') = 'answered'`,
+    ).run(patch, questionId);
+  } finally {
+    db.close();
+  }
+}
+
 export function findMessageByQuestionId(
   platformId: string,
   threadId: string,

@@ -2337,7 +2337,7 @@ describe('web channel adapter', () => {
     expect(msg?.card?.status).toBe('pending');
   });
 
-  it('POST actions returns 409 when card is answered after onAction (race)', async () => {
+  it('POST actions returns 409 when claim loses race before onAction', async () => {
     await adapter.setup(setup);
     await adapter.deliver('inbox', null, {
       kind: 'chat-sdk',
@@ -2350,6 +2350,7 @@ describe('web channel adapter', () => {
       },
     });
 
+    actionCaptures.length = 0;
     vi.spyOn(webchatStore, 'answerCardsByQuestionId').mockReturnValue({
       ok: false,
       reason: 'already_answered',
@@ -2360,9 +2361,10 @@ describe('web channel adapter', () => {
       value: 'approve',
     });
     expect(status).toBe(409);
+    expect(actionCaptures).toHaveLength(0);
   });
 
-  it('POST actions returns 404 when card disappears after onAction (race)', async () => {
+  it('POST actions returns 404 when claim finds no pending card', async () => {
     await adapter.setup(setup);
     await adapter.deliver('inbox', null, {
       kind: 'chat-sdk',
@@ -2375,6 +2377,7 @@ describe('web channel adapter', () => {
       },
     });
 
+    actionCaptures.length = 0;
     vi.spyOn(webchatStore, 'answerCardsByQuestionId').mockReturnValue({
       ok: false,
       reason: 'not_found',
@@ -2385,6 +2388,52 @@ describe('web channel adapter', () => {
       value: 'approve',
     });
     expect(status).toBe(404);
+    expect(actionCaptures).toHaveLength(0);
+  });
+
+  it('POST actions invokes onAction only once for concurrent mirrored clicks', async () => {
+    getPendingApprovalMock.mockReturnValue({
+      approval_id: 'approval-once',
+      session_id: 'sess-sarah',
+    } as never);
+    getSessionMock.mockReturnValue({
+      id: 'sess-sarah',
+      agent_group_id: 'ag-sarah',
+      messaging_group_id: 'mg-dm-sarah',
+      thread_id: null,
+    } as never);
+    getMessagingGroupByIdMock.mockReturnValue({
+      id: 'mg-dm-sarah',
+      channel_type: 'web',
+      platform_id: 'dm:sarah',
+    } as never);
+
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-once',
+        title: 'Restart container',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', selectedLabel: '✅ Approved', value: 'approve' }],
+      },
+    });
+
+    actionCaptures.length = 0;
+    const [inboxStatus, dmStatus] = await Promise.all([
+      httpPost('/api/rooms/inbox/threads/main/actions', {
+        questionId: 'approval-once',
+        value: 'approve',
+      }),
+      httpPost('/api/rooms/dm%3Asarah/threads/main/actions', {
+        questionId: 'approval-once',
+        value: 'approve',
+      }),
+    ]);
+
+    expect(actionCaptures).toHaveLength(1);
+    expect([inboxStatus, dmStatus].sort()).toEqual([200, 409]);
   });
 
   it('POST actions returns 404 when card is missing', async () => {

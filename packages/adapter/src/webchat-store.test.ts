@@ -23,6 +23,7 @@ import {
   findMessageByQuestionId,
   findMessagesByQuestionId,
   answerCardsByQuestionId,
+  revertCardsByQuestionId,
   getMessages,
   getRecentMessages,
   hasBackfillDelivered,
@@ -806,6 +807,53 @@ describe('webchat-store', () => {
       ok: false,
       reason: 'not_found',
     });
+  });
+
+  it('revertCardsByQuestionId restores pending state on all copies', () => {
+    appendMessage({
+      id: 'web-card-revert-inbox',
+      direction: 'outbound',
+      text: 'Restart',
+      timestamp: 4120,
+      platformId: 'inbox',
+      threadId: MAIN_THREAD,
+      card: {
+        type: 'ask_question',
+        questionId: 'q-revert',
+        title: 'Restart',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', selectedLabel: '✅ Approved', value: 'approve' }],
+        status: 'pending',
+      },
+    });
+    appendMessage({
+      id: 'web-card-revert-dm',
+      direction: 'outbound',
+      text: 'Restart',
+      timestamp: 4121,
+      platformId: 'dm:sarah',
+      threadId: MAIN_THREAD,
+      card: {
+        type: 'ask_question',
+        questionId: 'q-revert',
+        title: 'Restart',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', selectedLabel: '✅ Approved', value: 'approve' }],
+        status: 'pending',
+      },
+    });
+
+    const answered = answerCardsByQuestionId('q-revert', 'approve', '✅ Approved');
+    expect(answered.ok).toBe(true);
+
+    revertCardsByQuestionId('q-revert');
+
+    const inbox = findMessageByQuestionId('inbox', MAIN_THREAD, 'q-revert');
+    const dm = findMessageByQuestionId('dm:sarah', MAIN_THREAD, 'q-revert');
+    expect(inbox?.card?.status).toBe('pending');
+    expect(inbox?.card?.selectedValue).toBeUndefined();
+    expect(dm?.card?.status).toBe('pending');
+    expect(dm?.card?.selectedLabel).toBeUndefined();
   });
 
   it('finds all mirrored messages by questionId across rooms', () => {

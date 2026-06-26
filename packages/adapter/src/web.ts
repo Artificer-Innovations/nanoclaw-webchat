@@ -53,7 +53,7 @@ import {
   upsertThread,
   findMessageByQuestionId,
   answerCardsByQuestionId,
-  findMessagesByQuestionId,
+  revertCardsByQuestionId,
   type WebchatAskQuestionCard,
   type WebchatAttachmentInput,
   type WebchatCardOption,
@@ -946,14 +946,6 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
       return;
     }
 
-    try {
-      await Promise.resolve(setupConfig?.onAction(questionId, value, opts.userId));
-    } catch (err) {
-      log.error('Approval action handler failed', { questionId, err });
-      json(res, 500, { error: 'action failed' });
-      return;
-    }
-
     const selectedLabel = selectedOption.selectedLabel ?? selectedOption.label;
     const result = answerCardsByQuestionId(questionId, value, selectedLabel);
     if (!result.ok) {
@@ -962,6 +954,15 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
         return;
       }
       json(res, 404, { error: 'card not found' });
+      return;
+    }
+
+    try {
+      await Promise.resolve(setupConfig?.onAction(questionId, value, opts.userId));
+    } catch (err) {
+      revertCardsByQuestionId(questionId);
+      log.error('Approval action handler failed', { questionId, err });
+      json(res, 500, { error: 'action failed' });
       return;
     }
 
