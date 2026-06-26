@@ -21,6 +21,12 @@ vi.mock('../webchat-sync.js', () => ({
     user: { id: 'web:local', displayName: 'Local' },
     rooms: [
       {
+        platformId: 'inbox',
+        name: 'Inbox',
+        kind: 'inbox',
+        threads: [{ id: 'main', title: 'Main' }],
+      },
+      {
         platformId: 'lobby',
         name: 'Lobby',
         kind: 'lobby',
@@ -30,6 +36,7 @@ vi.mock('../webchat-sync.js', () => ({
     agents: [{ folder: 'sarah', name: 'Sarah', mention: '@sarah' }],
   }),
   readTeamFolder: () => null,
+  WEB_INBOX_PLATFORM_ID: 'inbox',
 }));
 
 vi.mock('../db/agent-groups.js', () => ({
@@ -38,7 +45,27 @@ vi.mock('../db/agent-groups.js', () => ({
     { id: 'ag-diego', folder: 'diego', name: 'Diego', agent_provider: null, created_at: '2020-01-01' },
     { id: 'ag-rahul', folder: 'rahul', name: 'Rahul', agent_provider: null, created_at: '2020-01-01' },
   ],
+  getAgentGroup: vi.fn((id: string) => {
+    if (id === 'ag-sarah') {
+      return { id: 'ag-sarah', folder: 'sarah', name: 'Sarah', agent_provider: null, created_at: '2020-01-01' };
+    }
+    return undefined;
+  }),
 }));
+
+vi.mock('../db/connection.js', () => ({
+  getDb: vi.fn(() => ({})),
+  hasTable: vi.fn((_db: unknown, table: string) => table === 'pending_approvals'),
+}));
+
+vi.mock('../db/sessions.js', async () => {
+  const actual = await vi.importActual<typeof import('../db/sessions.js')>('../db/sessions.js');
+  return {
+    ...actual,
+    getPendingApproval: vi.fn(),
+    getSession: vi.fn(),
+  };
+});
 
 const routeCaptures: Array<{
   platformId: string;
@@ -58,6 +85,7 @@ vi.mock('../webchat-thread-cleanup.js', () => ({
 
 vi.mock('../db/messaging-groups.js', () => ({
   getMessagingGroupByPlatform: vi.fn(() => ({ id: 'mg-lobby' })),
+  getMessagingGroup: vi.fn(),
 }));
 
 vi.mock('../router.js', () => ({
@@ -84,7 +112,10 @@ import { createWebAdapter, clearWebAdapterTestState, flushWebAgentDeliveryChains
 import type { ChannelSetup, InboundMessage } from './adapter.js';
 import { routeInbound } from '../router.js';
 import { cleanupAgentSessionsForThread } from '../webchat-thread-cleanup.js';
-import { getMessagingGroupByPlatform } from '../db/messaging-groups.js';
+import { getDb, hasTable } from '../db/connection.js';
+import { getAgentGroup } from '../db/agent-groups.js';
+import { getMessagingGroupByPlatform, getMessagingGroup } from '../db/messaging-groups.js';
+import { getPendingApproval, getSession } from '../db/sessions.js';
 import { getAssetDir } from 'nanoclaw-webchat';
 import * as webchatStore from '../webchat-store.js';
 import * as agentGroups from '../db/agent-groups.js';
@@ -92,7 +123,13 @@ import * as webchatMentions from '../webchat-mentions.js';
 
 const routeInboundMock = vi.mocked(routeInbound);
 const cleanupSessionsMock = vi.mocked(cleanupAgentSessionsForThread);
+const getDbMock = vi.mocked(getDb);
+const hasTableMock = vi.mocked(hasTable);
+const getAgentGroupMock = vi.mocked(getAgentGroup);
 const getMessagingGroupMock = vi.mocked(getMessagingGroupByPlatform);
+const getMessagingGroupByIdMock = vi.mocked(getMessagingGroup);
+const getPendingApprovalMock = vi.mocked(getPendingApproval);
+const getSessionMock = vi.mocked(getSession);
 const getAssetDirMock = vi.mocked(getAssetDir);
 
 const SECRET = 'test-secret';
@@ -226,10 +263,26 @@ describe('web channel adapter', () => {
   let adapter: ReturnType<typeof createWebAdapter>;
   const captures = routeCaptures;
   let setup: ChannelSetup;
+  const actionCaptures: Array<{ questionId: string; value: string; userId: string }> = [];
 
   beforeEach(async () => {
     clearWebAdapterTestState();
     captures.length = 0;
+    actionCaptures.length = 0;
+    getDbMock.mockReset();
+    getDbMock.mockReturnValue({});
+    hasTableMock.mockReset();
+    hasTableMock.mockImplementation((_db: unknown, table: string) => table === 'pending_approvals');
+    getAgentGroupMock.mockReset();
+    getAgentGroupMock.mockImplementation((id: string) => {
+      if (id === 'ag-sarah') {
+        return { id: 'ag-sarah', folder: 'sarah', name: 'Sarah', agent_provider: null, created_at: '2020-01-01' };
+      }
+      return undefined;
+    });
+    getPendingApprovalMock.mockReset();
+    getSessionMock.mockReset();
+    getMessagingGroupByIdMock.mockReset();
     testPort = await reservePort();
     if (fs.existsSync(TEST_DATA)) {
       fs.rmSync(TEST_DATA, { recursive: true, force: true });
@@ -244,7 +297,9 @@ describe('web channel adapter', () => {
       onInbound() {},
       onInboundEvent() {},
       onMetadata() {},
-      onAction() {},
+      onAction(questionId, value, userId) {
+        actionCaptures.push({ questionId, value, userId });
+      },
     };
     adapter = createWebAdapter({
       port: testPort,
@@ -255,6 +310,7 @@ describe('web channel adapter', () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await flushAgentDeliveries();
     await adapter.teardown();
     if (fs.existsSync(TEST_DATA)) {
@@ -2082,28 +2138,6 @@ describe('web channel adapter', () => {
     expect(status).toBe(404);
   });
 
-  it('uses folder name in join stub when mentioned agent is absent from roster', async () => {
-    const mentionSpy = vi.spyOn(webchatMentions, 'mentionedAgentFolders');
-    try {
-      await adapter.setup(setup);
-      await httpPost('/api/rooms/lobby/threads/thread_abc/messages', { text: '@sarah first' });
-      await flushAgentDeliveries();
-      captures.length = 0;
-      mentionSpy.mockReturnValue(['ghost']);
-      await httpPost('/api/rooms/lobby/threads/thread_abc/messages', { text: '@ghost hello' });
-      await flushAgentDeliveries();
-      const sarahLive = captures.find(
-        (c) =>
-          c.message.id.includes('-route-') &&
-          (c.message.content as { webchatReceiver?: string }).webchatReceiver === 'sarah',
-      );
-      expect(sarahLive).toBeDefined();
-      expect((sarahLive!.message.content as { rosterStub?: string }).rosterStub).toBe('ghost has joined this thread.');
-    } finally {
-      mentionSpy.mockRestore();
-    }
-  });
-
   it('counts string request body chunks toward the max body size', async () => {
     await adapter.setup(setup);
     const status = await new Promise<number>((resolve, reject) => {
@@ -2130,5 +2164,712 @@ describe('web channel adapter', () => {
       req.end();
     });
     expect(status).toBe(200);
+  });
+
+  it('uses folder name in join stub when mentioned agent is absent from roster', async () => {
+    const mentionSpy = vi.spyOn(webchatMentions, 'mentionedAgentFolders');
+    try {
+      await adapter.setup(setup);
+      await httpPost('/api/rooms/lobby/threads/thread_abc/messages', { text: '@sarah first' });
+      await flushAgentDeliveries();
+      captures.length = 0;
+      mentionSpy.mockReturnValue(['ghost']);
+      await httpPost('/api/rooms/lobby/threads/thread_abc/messages', { text: '@ghost hello' });
+      await flushAgentDeliveries();
+      const sarahLive = captures.find(
+        (c) =>
+          c.message.id.includes('-route-') &&
+          (c.message.content as { webchatReceiver?: string }).webchatReceiver === 'sarah',
+      );
+      expect(sarahLive).toBeDefined();
+      expect((sarahLive!.message.content as { rosterStub?: string }).rosterStub).toBe('ghost has joined this thread.');
+    } finally {
+      mentionSpy.mockRestore();
+    }
+  });
+
+  it('delivers ask_question cards with card metadata over WebSocket', async () => {
+    await adapter.setup(setup);
+
+    const received: unknown[] = [];
+    await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${testPort}/api/ws?token=${SECRET}`);
+      ws.on('open', async () => {
+        await adapter.deliver('inbox', null, {
+          kind: 'chat-sdk',
+          content: {
+            type: 'ask_question',
+            questionId: 'approval-1',
+            title: 'Install MCP server',
+            question: 'Add memory server?',
+            options: [
+              { label: 'Approve', selectedLabel: '✅ Approved', value: 'approve' },
+              { label: 'Reject', selectedLabel: '❌ Rejected', value: 'reject' },
+            ],
+          },
+        });
+      });
+      ws.on('message', (data) => {
+        received.push(JSON.parse(data.toString()));
+        ws.close();
+        resolve();
+      });
+      ws.on('error', reject);
+    });
+
+    expect(received[0]).toMatchObject({
+      type: 'message',
+      message: {
+        platformId: 'inbox',
+        threadId: 'main',
+        direction: 'outbound',
+        card: {
+          type: 'ask_question',
+          questionId: 'approval-1',
+          title: 'Install MCP server',
+          status: 'pending',
+        },
+      },
+    });
+  });
+
+  it('POST actions invokes onAction and broadcasts message_update', async () => {
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-2',
+        title: 'Restart container',
+        question: 'Allow restart?',
+        options: [
+          { label: 'Approve', value: 'approve' },
+          { label: 'Reject', value: 'reject' },
+        ],
+      },
+    });
+
+    const events: unknown[] = [];
+    await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${testPort}/api/ws?token=${SECRET}`);
+      ws.on('open', () => {
+        void httpPost('/api/rooms/inbox/threads/main/actions', {
+          questionId: 'approval-2',
+          value: 'approve',
+        }).then((status) => {
+          expect(status).toBe(200);
+        });
+      });
+      ws.on('message', (data) => {
+        events.push(JSON.parse(data.toString()));
+        if (events.some((e) => (e as { type?: string }).type === 'message_update')) {
+          ws.close();
+          resolve();
+        }
+      });
+      ws.on('error', reject);
+    });
+
+    expect(actionCaptures).toEqual([
+      { questionId: 'approval-2', value: 'approve', userId: 'web:local' },
+    ]);
+    expect(events.some((e) => (e as { type?: string }).type === 'message_update')).toBe(true);
+  });
+
+  it('rejects duplicate action submissions with 409', async () => {
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-dup',
+        title: 'Duplicate test',
+        question: 'Pick one',
+        options: [{ label: 'Yes', value: 'yes' }],
+      },
+    });
+
+    const first = await httpPost('/api/rooms/inbox/threads/main/actions', {
+      questionId: 'approval-dup',
+      value: 'yes',
+    });
+    expect(first).toBe(200);
+
+    const second = await httpPost('/api/rooms/inbox/threads/main/actions', {
+      questionId: 'approval-dup',
+      value: 'yes',
+    });
+    expect(second).toBe(409);
+  });
+
+  it('openDM returns inbox platform id', async () => {
+    await adapter.setup(setup);
+    await expect(adapter.openDM!('web:local')).resolves.toBe('inbox');
+  });
+
+  it('POST actions returns 500 when onAction throws', async () => {
+    setup = {
+      ...setup,
+      onAction() {
+        throw new Error('handler failed');
+      },
+    };
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-fail',
+        title: 'Restart container',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', value: 'approve' }],
+      },
+    });
+
+    const status = await httpPost('/api/rooms/inbox/threads/main/actions', {
+      questionId: 'approval-fail',
+      value: 'approve',
+    });
+    expect(status).toBe(500);
+
+    const { body } = await httpGet('/api/rooms/inbox/threads/main/messages');
+    const msg = (body as { messages: Array<{ card?: { status?: string } }> }).messages.at(-1);
+    expect(msg?.card?.status).toBe('pending');
+  });
+
+  it('POST actions returns 409 when claim loses race before onAction', async () => {
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-race-answered',
+        title: 'Restart container',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', value: 'approve' }],
+      },
+    });
+
+    actionCaptures.length = 0;
+    vi.spyOn(webchatStore, 'answerCardsByQuestionId').mockReturnValue({
+      ok: false,
+      reason: 'already_answered',
+    });
+
+    const status = await httpPost('/api/rooms/inbox/threads/main/actions', {
+      questionId: 'approval-race-answered',
+      value: 'approve',
+    });
+    expect(status).toBe(409);
+    expect(actionCaptures).toHaveLength(0);
+  });
+
+  it('POST actions returns 404 when claim finds no pending card', async () => {
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-race-missing',
+        title: 'Restart container',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', value: 'approve' }],
+      },
+    });
+
+    actionCaptures.length = 0;
+    vi.spyOn(webchatStore, 'answerCardsByQuestionId').mockReturnValue({
+      ok: false,
+      reason: 'not_found',
+    });
+
+    const status = await httpPost('/api/rooms/inbox/threads/main/actions', {
+      questionId: 'approval-race-missing',
+      value: 'approve',
+    });
+    expect(status).toBe(404);
+    expect(actionCaptures).toHaveLength(0);
+  });
+
+  it('POST actions invokes onAction only once for concurrent mirrored clicks', async () => {
+    getPendingApprovalMock.mockReturnValue({
+      approval_id: 'approval-once',
+      session_id: 'sess-sarah',
+    } as never);
+    getSessionMock.mockReturnValue({
+      id: 'sess-sarah',
+      agent_group_id: 'ag-sarah',
+      messaging_group_id: 'mg-dm-sarah',
+      thread_id: null,
+    } as never);
+    getMessagingGroupByIdMock.mockReturnValue({
+      id: 'mg-dm-sarah',
+      channel_type: 'web',
+      platform_id: 'dm:sarah',
+    } as never);
+
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-once',
+        title: 'Restart container',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', selectedLabel: '✅ Approved', value: 'approve' }],
+      },
+    });
+
+    actionCaptures.length = 0;
+    const [inboxStatus, dmStatus] = await Promise.all([
+      httpPost('/api/rooms/inbox/threads/main/actions', {
+        questionId: 'approval-once',
+        value: 'approve',
+      }),
+      httpPost('/api/rooms/dm%3Asarah/threads/main/actions', {
+        questionId: 'approval-once',
+        value: 'approve',
+      }),
+    ]);
+
+    expect(actionCaptures).toHaveLength(1);
+    expect([inboxStatus, dmStatus].sort()).toEqual([200, 409]);
+  });
+
+  it('POST actions returns 404 when card is missing', async () => {
+    await adapter.setup(setup);
+    const status = await httpPost('/api/rooms/inbox/threads/main/actions', {
+      questionId: 'missing',
+      value: 'approve',
+    });
+    expect(status).toBe(404);
+  });
+
+  it('POST actions returns 400 for invalid option value', async () => {
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-invalid',
+        title: 'Pick',
+        question: 'Choose',
+        options: [{ label: 'Yes', value: 'yes' }],
+      },
+    });
+    const status = await httpPost('/api/rooms/inbox/threads/main/actions', {
+      questionId: 'approval-invalid',
+      value: 'nope',
+    });
+    expect(status).toBe(400);
+  });
+
+  it('POST actions returns 400 when questionId or value is missing', async () => {
+    await adapter.setup(setup);
+    expect(await httpPost('/api/rooms/inbox/threads/main/actions', { value: 'yes' })).toBe(400);
+    expect(await httpPost('/api/rooms/inbox/threads/main/actions', { questionId: 'q' })).toBe(400);
+  });
+
+  it('POST actions returns 400 for invalid JSON body', async () => {
+    await adapter.setup(setup);
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port: testPort,
+          path: '/api/rooms/inbox/threads/main/actions',
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${SECRET}`,
+            'Content-Type': 'application/json',
+            Connection: 'close',
+          },
+        },
+        (res) => {
+          res.resume();
+          res.on('end', () => resolve(res.statusCode ?? 0));
+        },
+      );
+      req.on('error', reject);
+      req.end('{bad json');
+    });
+    expect(status).toBe(400);
+  });
+
+  it('POST actions returns 400 when body read fails', async () => {
+    await adapter.setup(setup);
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port: testPort,
+          path: '/api/rooms/inbox/threads/main/actions',
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${SECRET}`,
+            'Content-Type': 'application/json',
+            'Content-Length': String(21 * 1024 * 1024),
+            Connection: 'close',
+          },
+        },
+        (res) => {
+          res.resume();
+          res.on('end', () => resolve(res.statusCode ?? 0));
+        },
+      );
+      req.on('error', reject);
+      req.write('x'.repeat(1024));
+      req.end();
+    });
+    expect(status).toBe(400);
+  });
+
+  it('isConnected is false before setup', () => {
+    expect(adapter.isConnected()).toBe(false);
+  });
+
+  it('includes senderName on ask_question deliver output', async () => {
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'q-name',
+        title: 'Title',
+        question: 'Question?',
+        options: [{ label: 'Yes', selectedLabel: 'Yes picked', value: 'yes' }],
+        senderName: 'Host',
+      },
+    });
+    const { body } = await httpGet('/api/rooms/inbox/threads/main/messages');
+    const msg = (body as { messages: Array<{ senderName?: string }> }).messages.at(-1);
+    expect(msg?.senderName).toBe('Host');
+  });
+
+  it('omits senderName when agent group cannot be resolved for approval cards', async () => {
+    getPendingApprovalMock.mockReturnValue({
+      approval_id: 'approval-no-agent',
+      session_id: 'sess-sarah',
+    } as never);
+    getSessionMock.mockReturnValue({
+      id: 'sess-sarah',
+      agent_group_id: 'ag-missing',
+      messaging_group_id: 'mg-dm-sarah',
+      thread_id: null,
+    } as never);
+    getMessagingGroupByIdMock.mockReturnValue({
+      id: 'mg-dm-sarah',
+      channel_type: 'web',
+      platform_id: 'dm:sarah',
+    } as never);
+    getAgentGroupMock.mockReturnValueOnce(undefined);
+
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-no-agent',
+        title: 'Restart container',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', value: 'approve' }],
+      },
+    });
+
+    const { body } = await httpGet('/api/rooms/inbox/threads/main/messages');
+    const msg = (body as { messages: Array<{ senderName?: string }> }).messages.at(-1);
+    expect(msg?.senderName).toBeUndefined();
+  });
+
+  it('resolves senderName from pending approval session agent when omitted', async () => {
+    getPendingApprovalMock.mockReturnValue({
+      approval_id: 'approval-agent-name',
+      session_id: 'sess-sarah',
+    } as never);
+    getSessionMock.mockReturnValue({
+      id: 'sess-sarah',
+      agent_group_id: 'ag-sarah',
+      messaging_group_id: 'mg-dm-sarah',
+      thread_id: null,
+    } as never);
+    getMessagingGroupByIdMock.mockReturnValue({
+      id: 'mg-dm-sarah',
+      channel_type: 'web',
+      platform_id: 'dm:sarah',
+    } as never);
+
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-agent-name',
+        title: 'Restart container',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', value: 'approve' }],
+      },
+    });
+
+    const { body } = await httpGet('/api/rooms/inbox/threads/main/messages');
+    const msg = (body as { messages: Array<{ senderName?: string }> }).messages.at(-1);
+    expect(msg?.senderName).toBe('Sarah');
+  });
+
+  it('delivers inbox ask_question when approval session lookup throws', async () => {
+    getDbMock.mockImplementationOnce(() => {
+      throw new Error('db unavailable');
+    });
+
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-db-error',
+        title: 'Restart container',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', value: 'approve' }],
+      },
+    });
+
+    const { body } = await httpGet('/api/rooms/inbox/threads/main/messages');
+    expect((body as { messages: unknown[] }).messages).toHaveLength(1);
+    const dm = await httpGet('/api/rooms/dm%3Asarah/threads/main/messages');
+    expect((dm.body as { messages: unknown[] }).messages).toHaveLength(0);
+  });
+
+  it('does not mirror inbox approval cards when session origin is not web', async () => {
+    getPendingApprovalMock.mockReturnValue({
+      approval_id: 'approval-telegram',
+      session_id: 'sess-telegram',
+    } as never);
+    getSessionMock.mockReturnValue({
+      id: 'sess-telegram',
+      agent_group_id: 'ag-sarah',
+      messaging_group_id: 'mg-telegram',
+      thread_id: null,
+    } as never);
+    getMessagingGroupByIdMock.mockReturnValue({
+      id: 'mg-telegram',
+      channel_type: 'telegram',
+      platform_id: '8618579250',
+    } as never);
+
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-telegram',
+        title: 'Restart container',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', value: 'approve' }],
+      },
+    });
+
+    const inbox = await httpGet('/api/rooms/inbox/threads/main/messages');
+    const dm = await httpGet('/api/rooms/dm%3Asarah/threads/main/messages');
+    expect((inbox.body as { messages: unknown[] }).messages).toHaveLength(1);
+    expect((dm.body as { messages: unknown[] }).messages).toHaveLength(0);
+  });
+
+  it('does not mirror when pending approval has no session', async () => {
+    getPendingApprovalMock.mockReturnValue({
+      approval_id: 'approval-no-session',
+    } as never);
+
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-no-session',
+        title: 'Restart container',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', value: 'approve' }],
+      },
+    });
+
+    const dm = await httpGet('/api/rooms/dm%3Asarah/threads/main/messages');
+    expect((dm.body as { messages: unknown[] }).messages).toHaveLength(0);
+  });
+
+  it('does not mirror when session has no messaging group', async () => {
+    getPendingApprovalMock.mockReturnValue({
+      approval_id: 'approval-no-mg',
+      session_id: 'sess-no-mg',
+    } as never);
+    getSessionMock.mockReturnValue({
+      id: 'sess-no-mg',
+      agent_group_id: 'ag-sarah',
+      messaging_group_id: null,
+      thread_id: null,
+    } as never);
+
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-no-mg',
+        title: 'Restart container',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', value: 'approve' }],
+      },
+    });
+
+    const dm = await httpGet('/api/rooms/dm%3Asarah/threads/main/messages');
+    expect((dm.body as { messages: unknown[] }).messages).toHaveLength(0);
+  });
+
+  it('delivers ask_question cards directly to a web room without inbox mirroring', async () => {
+    await adapter.setup(setup);
+    await adapter.deliver('dm:sarah', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-dm-only',
+        title: 'Question',
+        question: 'Pick one?',
+        options: [{ label: 'Yes', value: 'yes' }],
+        senderName: 'Sarah',
+      },
+    });
+
+    expect(getPendingApprovalMock).not.toHaveBeenCalled();
+    const dm = await httpGet('/api/rooms/dm%3Asarah/threads/main/messages');
+    expect((dm.body as { messages: unknown[] }).messages).toHaveLength(1);
+    const inbox = await httpGet('/api/rooms/inbox/threads/main/messages');
+    expect((inbox.body as { messages: unknown[] }).messages).toHaveLength(0);
+  });
+
+  it('mirrors inbox approval cards to the session origin web room', async () => {
+    getPendingApprovalMock.mockReturnValue({
+      approval_id: 'approval-mirror',
+      session_id: 'sess-sarah',
+    } as never);
+    getSessionMock.mockReturnValue({
+      id: 'sess-sarah',
+      agent_group_id: 'ag-sarah',
+      messaging_group_id: 'mg-dm-sarah',
+      thread_id: null,
+    } as never);
+    getMessagingGroupByIdMock.mockReturnValue({
+      id: 'mg-dm-sarah',
+      channel_type: 'web',
+      platform_id: 'dm:sarah',
+    } as never);
+
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-mirror',
+        title: 'Restart container',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', value: 'approve' }],
+      },
+    });
+
+    const inbox = await httpGet('/api/rooms/inbox/threads/main/messages');
+    const dm = await httpGet('/api/rooms/dm%3Asarah/threads/main/messages');
+    expect((inbox.body as { messages: unknown[] }).messages).toHaveLength(1);
+    expect((dm.body as { messages: Array<{ card?: { questionId: string }; senderName?: string }> }).messages).toHaveLength(1);
+    expect(
+      (dm.body as { messages: Array<{ card?: { questionId: string }; senderName?: string }> }).messages[0]?.card?.questionId,
+    ).toBe('approval-mirror');
+    expect(
+      (dm.body as { messages: Array<{ senderName?: string }> }).messages[0]?.senderName,
+    ).toBe('Sarah');
+  });
+
+  it('updates mirrored approval cards together when an action is taken', async () => {
+    getPendingApprovalMock.mockReturnValue({
+      approval_id: 'approval-sync',
+      session_id: 'sess-sarah',
+    } as never);
+    getSessionMock.mockReturnValue({
+      id: 'sess-sarah',
+      agent_group_id: 'ag-sarah',
+      messaging_group_id: 'mg-dm-sarah',
+      thread_id: null,
+    } as never);
+    getMessagingGroupByIdMock.mockReturnValue({
+      id: 'mg-dm-sarah',
+      channel_type: 'web',
+      platform_id: 'dm:sarah',
+    } as never);
+
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-sync',
+        title: 'Restart container',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', selectedLabel: '✅ Approved', value: 'approve' }],
+      },
+    });
+
+    const events: unknown[] = [];
+    await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${testPort}/api/ws?token=${SECRET}`);
+      ws.on('open', async () => {
+        const status = await httpPost('/api/rooms/dm%3Asarah/threads/main/actions', {
+          questionId: 'approval-sync',
+          value: 'approve',
+        });
+        expect(status).toBe(200);
+      });
+      ws.on('message', (data) => {
+        events.push(JSON.parse(data.toString()));
+        if (events.filter((e) => (e as { type?: string }).type === 'message_update').length >= 2) {
+          ws.close();
+          resolve();
+        }
+      });
+      ws.on('error', reject);
+    });
+
+    const updates = events.filter((e) => (e as { type?: string }).type === 'message_update');
+    expect(updates).toHaveLength(2);
+    expect(updates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          message: expect.objectContaining({ platformId: 'inbox', card: expect.objectContaining({ status: 'answered' }) }),
+        }),
+        expect.objectContaining({
+          message: expect.objectContaining({ platformId: 'dm:sarah', card: expect.objectContaining({ status: 'answered' }) }),
+        }),
+      ]),
+    );
+  });
+
+  it('deliver ignores malformed ask_question payloads', async () => {
+    await adapter.setup(setup);
+    const cases = [
+      { type: 'ask_question', title: 't', question: 'q', options: [] },
+      { type: 'ask_question', questionId: 'q1', question: 'q', options: [{ label: 'Yes', value: 'yes' }] },
+      {
+        type: 'ask_question',
+        questionId: 'q2',
+        title: 't',
+        question: 'q',
+        options: [{ label: 1, value: 'yes' }],
+      },
+      {
+        type: 'ask_question',
+        questionId: 'q3',
+        title: 't',
+        question: 'q',
+        options: 'nope',
+      },
+    ] as unknown[];
+    for (const content of cases) {
+      const id = await adapter.deliver('inbox', null, { kind: 'chat-sdk', content });
+      expect(id).toBeUndefined();
+    }
   });
 });

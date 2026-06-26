@@ -12,10 +12,12 @@ import path from 'path';
 import { WebSocketServer, WebSocket, type WebSocket as WebSocketClient } from 'ws';
 
 import { readEnvFile } from '../env.js';
-import { getAllAgentGroups } from '../db/agent-groups.js';
-import { getMessagingGroupByPlatform } from '../db/messaging-groups.js';
+import { getAgentGroup, getAllAgentGroups } from '../db/agent-groups.js';
+import { getDb, hasTable } from '../db/connection.js';
+import { getMessagingGroup, getMessagingGroupByPlatform } from '../db/messaging-groups.js';
+import { getPendingApproval, getSession } from '../db/sessions.js';
 import { log } from '../log.js';
-import { buildWebchatBootstrap, readTeamFolder } from '../webchat-sync.js';
+import { buildWebchatBootstrap, readTeamFolder, WEB_INBOX_PLATFORM_ID } from '../webchat-sync.js';
 import {
   backfillIntroLine,
   buildRoutingMetadata,
@@ -49,7 +51,12 @@ import {
   markBackfillDelivered,
   removeEngagedAgent,
   upsertThread,
+  findMessageByQuestionId,
+  answerCardsByQuestionId,
+  revertCardsByQuestionId,
+  type WebchatAskQuestionCard,
   type WebchatAttachmentInput,
+  type WebchatCardOption,
   type WebchatStoredMessage,
 } from '../webchat-store.js';
 import { cleanupAgentSessionsForThread } from '../webchat-thread-cleanup.js';
@@ -100,6 +107,86 @@ function extractSenderFolder(content: unknown): string | undefined {
     if (typeof folder === 'string' && folder.trim()) return folder.trim();
   }
   return undefined;
+}
+
+interface AskQuestionContent {
+  type: 'ask_question';
+  questionId: string;
+  title: string;
+  question: string;
+  options: WebchatCardOption[];
+}
+
+function parseAskQuestionContent(content: unknown): AskQuestionContent | undefined {
+  if (!content || typeof content !== 'object') return undefined;
+  const c = content as Record<string, unknown>;
+  if (c.type !== 'ask_question') return undefined;
+  if (typeof c.questionId !== 'string' || !c.questionId.trim()) return undefined;
+  if (typeof c.title !== 'string') return undefined;
+  if (typeof c.question !== 'string') return undefined;
+  if (!Array.isArray(c.options) || c.options.length === 0) return undefined;
+  const options: WebchatCardOption[] = [];
+  for (const raw of c.options) {
+    if (!raw || typeof raw !== 'object') return undefined;
+    const opt = raw as Record<string, unknown>;
+    if (typeof opt.label !== 'string' || typeof opt.value !== 'string') return undefined;
+    options.push({
+      label: opt.label,
+      value: opt.value,
+      ...(typeof opt.selectedLabel === 'string' ? { selectedLabel: opt.selectedLabel } : {}),
+    });
+  }
+  return {
+    type: 'ask_question',
+    questionId: c.questionId.trim(),
+    title: c.title,
+    question: c.question,
+    options,
+  };
+}
+
+function cardFallbackText(title: string, question: string): string {
+  const parts = [title.trim(), question.trim()].filter(Boolean);
+  return parts.join('\n');
+}
+
+function buildAskQuestionCard(parsed: AskQuestionContent): WebchatAskQuestionCard {
+  return {
+    type: 'ask_question',
+    questionId: parsed.questionId,
+    title: parsed.title,
+    question: parsed.question,
+    options: parsed.options,
+    status: 'pending',
+  };
+}
+
+interface ApprovalSessionOrigin {
+  platformId: string;
+  threadId: string;
+  agentName?: string;
+}
+
+function resolveApprovalSessionOrigin(questionId: string): ApprovalSessionOrigin | undefined {
+  try {
+    const db = getDb();
+    if (!hasTable(db, 'pending_approvals')) return undefined;
+    const approval = getPendingApproval(questionId);
+    if (!approval?.session_id) return undefined;
+    const session = getSession(approval.session_id);
+    if (!session?.messaging_group_id) return undefined;
+    const mg = getMessagingGroup(session.messaging_group_id);
+    if (!mg || mg.channel_type !== CHANNEL_TYPE) return undefined;
+    const agent = getAgentGroup(session.agent_group_id);
+    return {
+      platformId: mg.platform_id,
+      threadId: session.thread_id ?? MAIN_THREAD,
+      agentName: agent?.name,
+    };
+  } catch (err) {
+    log.warn('resolveApprovalSessionOrigin failed', { questionId, err });
+    return undefined;
+  }
 }
 
 const EXT_TO_MIME: Record<string, string> = {
@@ -626,6 +713,10 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
     return stored;
   }
 
+  function broadcastMessageUpdate(message: WebchatStoredMessage): void {
+    broadcast({ type: 'message_update', message });
+  }
+
   function readBody(req: http.IncomingMessage): Promise<string> {
     return new Promise((resolve, reject) => {
       const contentLength = req.headers['content-length'];
@@ -808,6 +899,80 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
     json(res, 200, { messageId: id, timestamp: Date.now() });
   }
 
+  async function handlePostAction(
+    platformId: string,
+    threadIdRaw: string,
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+  ): Promise<void> {
+    let body: string;
+    try {
+      body = await readBody(req);
+    } catch {
+      json(res, 400, { error: 'read failed' });
+      return;
+    }
+
+    let questionId: string;
+    let value: string;
+    try {
+      const parsed = JSON.parse(body) as { questionId?: string; value?: string };
+      questionId = typeof parsed.questionId === 'string' ? parsed.questionId.trim() : '';
+      value = typeof parsed.value === 'string' ? parsed.value : '';
+    } catch {
+      json(res, 400, { error: 'Invalid JSON' });
+      return;
+    }
+
+    if (!questionId || !value) {
+      json(res, 400, { error: 'questionId and value required' });
+      return;
+    }
+
+    const message = findMessageByQuestionId(platformId, threadIdRaw, questionId);
+    if (!message?.card) {
+      json(res, 404, { error: 'card not found' });
+      return;
+    }
+
+    if (message.card.status === 'answered') {
+      json(res, 409, { error: 'card already answered' });
+      return;
+    }
+
+    const selectedOption = message.card.options.find((opt) => opt.value === value);
+    if (!selectedOption) {
+      json(res, 400, { error: 'invalid option value' });
+      return;
+    }
+
+    const selectedLabel = selectedOption.selectedLabel ?? selectedOption.label;
+    const result = answerCardsByQuestionId(questionId, value, selectedLabel);
+    if (!result.ok) {
+      if (result.reason === 'already_answered') {
+        json(res, 409, { error: 'card already answered' });
+        return;
+      }
+      json(res, 404, { error: 'card not found' });
+      return;
+    }
+
+    try {
+      await Promise.resolve(setupConfig?.onAction(questionId, value, opts.userId));
+    } catch (err) {
+      revertCardsByQuestionId(questionId);
+      log.error('Approval action handler failed', { questionId, err });
+      json(res, 500, { error: 'action failed' });
+      return;
+    }
+
+    for (const updated of result.messages) {
+      broadcastMessageUpdate(updated);
+    }
+
+    json(res, 200, { ok: true });
+  }
+
   async function handleCreateThread(
     platformId: string,
     req: http.IncomingMessage,
@@ -974,6 +1139,14 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
               }
             }
 
+            const actionMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/threads\/([^/]+)\/actions$/);
+            if (actionMatch && req.method === 'POST') {
+              const platformId = decodeURIComponent(actionMatch[1]!);
+              const threadId = decodeURIComponent(actionMatch[2]!);
+              await handlePostAction(platformId, threadId, req, res);
+              return;
+            }
+
             const engagedMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/threads\/([^/]+)\/engaged\/([^/]+)$/);
             if (engagedMatch && req.method === 'DELETE') {
               const platformId = decodeURIComponent(engagedMatch[1]!);
@@ -1062,6 +1235,46 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
     },
 
     async deliver(platformId: string, threadId: string | null, message: OutboundMessage): Promise<string | undefined> {
+      const askQuestion = parseAskQuestionContent(message.content);
+      if (askQuestion) {
+        const card = buildAskQuestionCard(askQuestion);
+        const text = cardFallbackText(card.title, card.question);
+        const origin =
+          platformId === WEB_INBOX_PLATFORM_ID ? resolveApprovalSessionOrigin(askQuestion.questionId) : undefined;
+        const senderName = extractSenderName(message.content) ?? origin?.agentName;
+        const id = `web-out-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        persistAndBroadcast({
+          id,
+          direction: 'outbound',
+          text,
+          timestamp: Date.now(),
+          platformId,
+          threadId: threadId ?? MAIN_THREAD,
+          card,
+          ...(senderName ? { senderName } : {}),
+        });
+
+        if (
+          origin &&
+          origin.platformId !== WEB_INBOX_PLATFORM_ID &&
+          origin.platformId !== platformId
+        ) {
+          const mirrorId = `web-out-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+          persistAndBroadcast({
+            id: mirrorId,
+            direction: 'outbound',
+            text,
+            timestamp: Date.now(),
+            platformId: origin.platformId,
+            threadId: origin.threadId,
+            card,
+            ...(senderName ? { senderName } : {}),
+          });
+        }
+
+        return id;
+      }
+
       const text = extractText(message.content);
       const attachments =
         message.files?.map(outboundFileToAttachment).filter((a): a is WebChatAttachment => a !== null) ?? [];
@@ -1094,6 +1307,11 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
       return id;
     },
 
+    /** Host approval DMs always land in the shared Inbox room (single local-user model). */
+    async openDM(_userHandle: string): Promise<string> {
+      return WEB_INBOX_PLATFORM_ID;
+    },
+
     async setTyping(platformId: string, threadId: string | null): Promise<void> {
       broadcast({
         type: 'typing',
@@ -1102,6 +1320,12 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
       });
     },
   };
+}
+
+/** Resolve listen port from process env and optional `.env` values (exported for tests). */
+export function resolveWebchatPort(env: Record<string, string | undefined>): number {
+  const portStr = process.env.WEBCHAT_PORT || env.WEBCHAT_PORT || '3200';
+  return parseInt(portStr, 10);
 }
 
 registerChannelAdapter('web', {
@@ -1122,8 +1346,7 @@ registerChannelAdapter('web', {
       return null;
     }
 
-    const portStr = process.env.WEBCHAT_PORT || env.WEBCHAT_PORT || '3200';
-    const port = parseInt(portStr, 10);
+    const port = resolveWebchatPort(env);
     const userId = process.env.WEBCHAT_USER_ID || env.WEBCHAT_USER_ID || 'web:local';
     const displayName = process.env.WEBCHAT_DISPLAY_NAME || env.WEBCHAT_DISPLAY_NAME || 'Local';
 

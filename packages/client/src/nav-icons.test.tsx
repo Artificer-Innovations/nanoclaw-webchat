@@ -4,6 +4,7 @@ import {
   BotIcon,
   CaretDownIcon,
   CaretRightIcon,
+  InboxIcon,
   DoorIcon,
   PencilIcon,
   PlusIcon,
@@ -18,6 +19,7 @@ describe('nav-icons', () => {
     const { container } = render(
       <>
         <DoorIcon />
+        <InboxIcon />
         <BotIcon />
         <PlusIcon />
         <TrashIcon />
@@ -29,6 +31,6 @@ describe('nav-icons', () => {
         <SidebarShowIcon />
       </>,
     );
-    expect(container.querySelectorAll('svg')).toHaveLength(10);
+    expect(container.querySelectorAll('svg')).toHaveLength(11);
   });
 });

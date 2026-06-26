@@ -635,6 +635,64 @@ body.sidebar-resizing * {
   font-size: 0.9375rem;
 }
 
+.interactive-card {
+  margin-top: 0.25rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-elevated, var(--msg-hover));
+}
+
+.interactive-card-title {
+  font-weight: 700;
+  margin-bottom: 0.35rem;
+}
+
+.interactive-card-question {
+  margin-bottom: 0.75rem;
+  color: var(--text);
+}
+
+.interactive-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.interactive-card-btn {
+  padding: 0.35rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.interactive-card-btn:hover:not(:disabled),
+.interactive-card-btn:focus-visible:not(:disabled) {
+  background: var(--msg-hover);
+}
+
+.interactive-card-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.interactive-card--answered {
+  opacity: 0.92;
+}
+
+.interactive-card-selection {
+  font-weight: 600;
+}
+
+.interactive-card-error {
+  margin-top: 0.5rem;
+  color: var(--error, #c62828);
+  font-size: 0.875rem;
+}
+
 .formatted-message {
   word-break: break-word;
 }
@@ -812,6 +870,16 @@ body.sidebar-resizing * {
 .composer-box.is-dragover {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 8%, var(--bg));
+}
+
+.composer-inbox-hint {
+  margin: 0;
+  padding: 0.75rem 1rem;
+  color: var(--muted);
+  font-size: 0.875rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
 }
 
 .composer-engaged-chips {

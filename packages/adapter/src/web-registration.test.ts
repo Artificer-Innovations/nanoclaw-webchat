@@ -14,6 +14,7 @@ vi.mock('nanoclaw-webchat', () => ({
 
 import { readEnvFile } from '../env.js';
 import { getRegisteredChannelNames, getActiveAdapters, initChannelAdapters, teardownChannelAdapters } from './channel-registry.js';
+import { resolveWebchatPort } from './web.js';
 import './index.js';
 import './web.js';
 
@@ -112,5 +113,11 @@ describe('web channel factory', () => {
     expect(webAdapter).toBeDefined();
     expect(webAdapter!.isConnected()).toBe(true);
     await webAdapter!.teardown();
+  });
+
+  it('uses default port 3200 when WEBCHAT_PORT is unset', () => {
+    delete process.env.WEBCHAT_PORT;
+    expect(resolveWebchatPort({})).toBe(3200);
+    expect(resolveWebchatPort({ WEBCHAT_PORT: '4100' })).toBe(4100);
   });
 });

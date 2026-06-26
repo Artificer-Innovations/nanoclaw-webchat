@@ -129,6 +129,22 @@ export async function deleteThread(
   if (!res.ok) throw new Error(`delete thread failed: ${res.status}`);
 }
 
+export async function submitAction(
+  token: string,
+  platformId: string,
+  threadId: string,
+  questionId: string,
+  value: string,
+): Promise<void> {
+  const path = `/api/rooms/${encodeURIComponent(platformId)}/threads/${encodeURIComponent(threadId)}/actions`;
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: { ...authHeaders(token), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ questionId, value }),
+  });
+  if (!res.ok) throw new Error(`action failed: ${res.status}`);
+}
+
 export async function disengageAgent(
   token: string,
   platformId: string,

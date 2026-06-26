@@ -34,6 +34,7 @@ import {
   readTeamFolder,
   syncWebchatWirings,
   WEB_CHANNEL_TYPE,
+  WEB_INBOX_PLATFORM_ID,
   WEB_LOBBY_PLATFORM_ID,
 } from './webchat-sync.js';
 import { appendMessage, createThread, ensureWebchatSchema, MAIN_THREAD } from './webchat-store.js';
@@ -106,7 +107,8 @@ describe('buildWebchatBootstrap', () => {
 
     const payload = buildWebchatBootstrap('web:user', 'User');
     expect(payload.user).toEqual({ id: 'web:user', displayName: 'User' });
-    expect(payload.rooms[0]).toMatchObject({ platformId: 'lobby', kind: 'lobby' });
+    expect(payload.rooms[0]).toMatchObject({ platformId: 'inbox', kind: 'inbox' });
+    expect(payload.rooms[1]).toMatchObject({ platformId: 'lobby', kind: 'lobby' });
     expect(payload.rooms.some((r) => r.platformId === 'dm:sarah' && r.kind === 'dm')).toBe(true);
     expect(payload.agents[0]).toMatchObject({ folder: 'sarah', mention: '@sarah' });
   });
@@ -145,6 +147,10 @@ describe('syncWebchatWirings', () => {
 
     syncWebchatWirings();
 
+    const inbox = getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, WEB_INBOX_PLATFORM_ID);
+    expect(inbox).toBeDefined();
+    expect(inbox!.is_group).toBe(0);
+
     const lobby = getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, WEB_LOBBY_PLATFORM_ID);
     expect(lobby).toBeDefined();
     const lobbyAgents = getMessagingGroupAgents(lobby!.id);
@@ -155,6 +161,23 @@ describe('syncWebchatWirings', () => {
     expect(dmSarah).toBeDefined();
     expect(dmSarah!.is_group).toBe(0);
     expect(getMessagingGroupAgentByPair(dmSarah!.id, 'ag-sarah')?.engage_pattern).toBe('.');
+  });
+
+  it('normalizes inbox messaging group when it was incorrectly marked as group', () => {
+    createMessagingGroup({
+      id: 'mg-inbox',
+      channel_type: WEB_CHANNEL_TYPE,
+      platform_id: WEB_INBOX_PLATFORM_ID,
+      name: 'Inbox',
+      is_group: 1,
+      unknown_sender_policy: 'strict',
+      created_at: now(),
+    });
+
+    syncWebchatWirings();
+
+    const inbox = getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, WEB_INBOX_PLATFORM_ID);
+    expect(inbox?.is_group).toBe(0);
   });
 
   it('is idempotent on second run', () => {

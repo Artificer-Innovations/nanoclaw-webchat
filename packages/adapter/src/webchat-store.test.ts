@@ -20,6 +20,10 @@ import {
   enrichMessagesWithAttachmentData,
   getEngagedAgents,
   getMessageAttachmentPath,
+  findMessageByQuestionId,
+  findMessagesByQuestionId,
+  answerCardsByQuestionId,
+  revertCardsByQuestionId,
   getMessages,
   getRecentMessages,
   hasBackfillDelivered,
@@ -27,6 +31,7 @@ import {
   MAIN_THREAD,
   markBackfillDelivered,
   removeEngagedAgent,
+  updateMessageCard,
   upsertThread,
   webchatDbPath,
   webchatFilesDir,
@@ -589,6 +594,12 @@ describe('webchat-store', () => {
     expect(getMessageAttachmentPath('nested/id', 'file.png')).toBeNull();
   });
 
+  it('rejects message ids when basename normalization would change the id', () => {
+    const basenameSpy = vi.spyOn(path, 'basename').mockReturnValueOnce('other-id');
+    expect(getMessageAttachmentPath('plain-id', 'file.png')).toBeNull();
+    basenameSpy.mockRestore();
+  });
+
   it('skips writing files when attachment payload omits data', () => {
     appendMessage({
       id: 'web-no-data-field',
@@ -659,5 +670,402 @@ describe('webchat-store', () => {
     } finally {
       resolveSpy.mockRestore();
     }
+  });
+
+  it('round-trips interactive card_json on messages', () => {
+    appendMessage({
+      id: 'web-card',
+      direction: 'outbound',
+      text: 'Install MCP server\nAdd memory server?',
+      timestamp: 3000,
+      platformId: 'inbox',
+      threadId: MAIN_THREAD,
+      card: {
+        type: 'ask_question',
+        questionId: 'approval-1',
+        title: 'Install MCP server',
+        question: 'Add memory server?',
+        options: [{ label: 'Approve', value: 'approve' }],
+        status: 'pending',
+      },
+    });
+    const msgs = getMessages('inbox', MAIN_THREAD);
+    expect(msgs[0]?.card).toMatchObject({
+      questionId: 'approval-1',
+      status: 'pending',
+    });
+  });
+
+  it('finds and updates messages by questionId', () => {
+    appendMessage({
+      id: 'web-card-2',
+      direction: 'outbound',
+      text: 'Restart',
+      timestamp: 4000,
+      platformId: 'inbox',
+      threadId: MAIN_THREAD,
+      card: {
+        type: 'ask_question',
+        questionId: 'q-restart',
+        title: 'Restart',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', selectedLabel: '✅ Approved', value: 'approve' }],
+        status: 'pending',
+      },
+    });
+    const found = findMessageByQuestionId('inbox', MAIN_THREAD, 'q-restart');
+    expect(found?.id).toBe('web-card-2');
+
+    const updated = updateMessageCard('web-card-2', {
+      ...found!.card!,
+      status: 'answered',
+      selectedValue: 'approve',
+      selectedLabel: '✅ Approved',
+    });
+    expect(updated?.card?.status).toBe('answered');
+    expect(getMessages('inbox', MAIN_THREAD)[0]?.card?.selectedValue).toBe('approve');
+  });
+
+  it('defaults missing card status to pending when reading', () => {
+    appendMessage({
+      id: 'web-card-no-status',
+      direction: 'outbound',
+      text: 'Restart',
+      timestamp: 4050,
+      platformId: 'inbox',
+      threadId: MAIN_THREAD,
+    });
+    const db = new Database(webchatDbPath());
+    try {
+      db.prepare('UPDATE web_messages SET card_json = ? WHERE id = ?').run(
+        JSON.stringify({
+          type: 'ask_question',
+          questionId: 'q-no-status',
+          title: 'Restart',
+          question: 'Allow restart?',
+          options: [{ label: 'Approve', value: 'approve' }],
+        }),
+        'web-card-no-status',
+      );
+    } finally {
+      db.close();
+    }
+
+    const found = findMessageByQuestionId('inbox', MAIN_THREAD, 'q-no-status');
+    expect(found?.card?.status).toBe('pending');
+  });
+
+  it('answerCardsByQuestionId updates all pending copies atomically', () => {
+    appendMessage({
+      id: 'web-card-inbox-answer',
+      direction: 'outbound',
+      text: 'Restart',
+      timestamp: 4110,
+      platformId: 'inbox',
+      threadId: MAIN_THREAD,
+      card: {
+        type: 'ask_question',
+        questionId: 'q-answer',
+        title: 'Restart',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', selectedLabel: '✅ Approved', value: 'approve' }],
+        status: 'pending',
+      },
+    });
+    appendMessage({
+      id: 'web-card-dm-answer',
+      direction: 'outbound',
+      text: 'Restart',
+      timestamp: 4111,
+      platformId: 'dm:sarah',
+      threadId: MAIN_THREAD,
+      card: {
+        type: 'ask_question',
+        questionId: 'q-answer',
+        title: 'Restart',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', selectedLabel: '✅ Approved', value: 'approve' }],
+        status: 'pending',
+      },
+    });
+
+    const result = answerCardsByQuestionId('q-answer', 'approve', '✅ Approved');
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.messages).toHaveLength(2);
+      expect(result.messages.every((m) => m.card?.status === 'answered')).toBe(true);
+    }
+
+    expect(answerCardsByQuestionId('q-answer', 'approve', '✅ Approved')).toEqual({
+      ok: false,
+      reason: 'already_answered',
+    });
+  });
+
+  it('answerCardsByQuestionId returns not_found for unknown questionId', () => {
+    expect(answerCardsByQuestionId('missing-question', 'yes', 'Yes')).toEqual({
+      ok: false,
+      reason: 'not_found',
+    });
+  });
+
+  it('revertCardsByQuestionId restores pending state on all copies', () => {
+    appendMessage({
+      id: 'web-card-revert-inbox',
+      direction: 'outbound',
+      text: 'Restart',
+      timestamp: 4120,
+      platformId: 'inbox',
+      threadId: MAIN_THREAD,
+      card: {
+        type: 'ask_question',
+        questionId: 'q-revert',
+        title: 'Restart',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', selectedLabel: '✅ Approved', value: 'approve' }],
+        status: 'pending',
+      },
+    });
+    appendMessage({
+      id: 'web-card-revert-dm',
+      direction: 'outbound',
+      text: 'Restart',
+      timestamp: 4121,
+      platformId: 'dm:sarah',
+      threadId: MAIN_THREAD,
+      card: {
+        type: 'ask_question',
+        questionId: 'q-revert',
+        title: 'Restart',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', selectedLabel: '✅ Approved', value: 'approve' }],
+        status: 'pending',
+      },
+    });
+
+    const answered = answerCardsByQuestionId('q-revert', 'approve', '✅ Approved');
+    expect(answered.ok).toBe(true);
+
+    revertCardsByQuestionId('q-revert');
+
+    const inbox = findMessageByQuestionId('inbox', MAIN_THREAD, 'q-revert');
+    const dm = findMessageByQuestionId('dm:sarah', MAIN_THREAD, 'q-revert');
+    expect(inbox?.card?.status).toBe('pending');
+    expect(inbox?.card?.selectedValue).toBeUndefined();
+    expect(dm?.card?.status).toBe('pending');
+    expect(dm?.card?.selectedLabel).toBeUndefined();
+  });
+
+  it('finds all mirrored messages by questionId across rooms', () => {
+    appendMessage({
+      id: 'web-card-inbox',
+      direction: 'outbound',
+      text: 'Restart',
+      timestamp: 4100,
+      platformId: 'inbox',
+      threadId: MAIN_THREAD,
+      card: {
+        type: 'ask_question',
+        questionId: 'q-shared',
+        title: 'Restart',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', value: 'approve' }],
+        status: 'pending',
+      },
+    });
+    appendMessage({
+      id: 'web-card-dm',
+      direction: 'outbound',
+      text: 'Restart',
+      timestamp: 4101,
+      platformId: 'dm:sarah',
+      threadId: MAIN_THREAD,
+      card: {
+        type: 'ask_question',
+        questionId: 'q-shared',
+        title: 'Restart',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', value: 'approve' }],
+        status: 'pending',
+      },
+    });
+
+    const matches = findMessagesByQuestionId('q-shared');
+    expect(matches.map((m) => m.id).sort()).toEqual(['web-card-dm', 'web-card-inbox']);
+  });
+
+  it('findMessagesByQuestionId skips corrupt card_json rows', () => {
+    appendMessage({
+      id: 'web-card-valid',
+      direction: 'outbound',
+      text: 'Restart',
+      timestamp: 4200,
+      platformId: 'inbox',
+      threadId: MAIN_THREAD,
+      card: {
+        type: 'ask_question',
+        questionId: 'q-filter',
+        title: 'Restart',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', value: 'approve' }],
+        status: 'pending',
+      },
+    });
+    appendMessage({
+      id: 'web-card-corrupt',
+      direction: 'outbound',
+      text: 'bad',
+      timestamp: 4201,
+      platformId: 'inbox',
+      threadId: MAIN_THREAD,
+    });
+    const db = new Database(webchatDbPath());
+    try {
+      db.prepare('UPDATE web_messages SET card_json = ? WHERE id = ?').run('{bad json', 'web-card-corrupt');
+    } finally {
+      db.close();
+    }
+
+    expect(findMessagesByQuestionId('q-filter').map((m) => m.id)).toEqual(['web-card-valid']);
+  });
+
+  it('findMessagesByQuestionId skips rows that fail card validation after SQL match', () => {
+    appendMessage({
+      id: 'web-card-invalid-type',
+      direction: 'outbound',
+      text: 'Restart',
+      timestamp: 4202,
+      platformId: 'inbox',
+      threadId: MAIN_THREAD,
+    });
+    const db = new Database(webchatDbPath());
+    try {
+      db.prepare('UPDATE web_messages SET card_json = ? WHERE id = ?').run(
+        JSON.stringify({ type: 'not_question', questionId: 'q-invalid-type' }),
+        'web-card-invalid-type',
+      );
+    } finally {
+      db.close();
+    }
+
+    expect(findMessagesByQuestionId('q-invalid-type')).toEqual([]);
+  });
+
+  it('findMessageByQuestionId returns undefined when parsed card fails validation', () => {
+    appendMessage({
+      id: 'web-card-find-invalid',
+      direction: 'outbound',
+      text: 'Restart',
+      timestamp: 4203,
+      platformId: 'inbox',
+      threadId: MAIN_THREAD,
+    });
+    const db = new Database(webchatDbPath());
+    try {
+      db.prepare('UPDATE web_messages SET card_json = ? WHERE id = ?').run(
+        JSON.stringify({ type: 'ask_question', questionId: 12345 }),
+        'web-card-find-invalid',
+      );
+    } finally {
+      db.close();
+    }
+
+    expect(findMessageByQuestionId('inbox', MAIN_THREAD, '12345')).toBeUndefined();
+  });
+
+  it('answerCardsByQuestionId omits rows that fail card validation in the result set', () => {
+    appendMessage({
+      id: 'web-card-answer-valid',
+      direction: 'outbound',
+      text: 'Restart',
+      timestamp: 4210,
+      platformId: 'inbox',
+      threadId: MAIN_THREAD,
+      card: {
+        type: 'ask_question',
+        questionId: 'q-answer-filter',
+        title: 'Restart',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', value: 'approve' }],
+        status: 'pending',
+      },
+    });
+    appendMessage({
+      id: 'web-card-answer-invalid',
+      direction: 'outbound',
+      text: 'Restart',
+      timestamp: 4211,
+      platformId: 'dm:sarah',
+      threadId: MAIN_THREAD,
+    });
+    const db = new Database(webchatDbPath());
+    try {
+      db.prepare('UPDATE web_messages SET card_json = ? WHERE id = ?').run(
+        JSON.stringify({
+          type: 'not_question',
+          questionId: 'q-answer-filter',
+          status: 'pending',
+        }),
+        'web-card-answer-invalid',
+      );
+    } finally {
+      db.close();
+    }
+
+    const result = answerCardsByQuestionId('q-answer-filter', 'approve', '✅ Approved');
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.messages.map((m) => m.id)).toEqual(['web-card-answer-valid']);
+    }
+  });
+
+  it('ignores corrupt card_json when reading messages', () => {
+    appendMessage({
+      id: 'web-bad-card',
+      direction: 'outbound',
+      text: 'bad',
+      timestamp: 5000,
+      platformId: 'inbox',
+      threadId: MAIN_THREAD,
+    });
+    const db = new Database(webchatDbPath());
+    try {
+      db.prepare('UPDATE web_messages SET card_json = ? WHERE id = ?').run('{not json', 'web-bad-card');
+    } finally {
+      db.close();
+    }
+    const msgs = getMessages('inbox', MAIN_THREAD);
+    expect(msgs.find((m) => m.id === 'web-bad-card')?.card).toBeUndefined();
+  });
+
+  it('returns undefined when questionId is not found', () => {
+    appendMessage({
+      id: 'web-other-card',
+      direction: 'outbound',
+      text: 'Other',
+      timestamp: 6000,
+      platformId: 'inbox',
+      threadId: MAIN_THREAD,
+      card: {
+        type: 'ask_question',
+        questionId: 'other-id',
+        title: 'Other',
+        question: 'Other?',
+        options: [{ label: 'Yes', value: 'yes' }],
+      },
+    });
+    expect(findMessageByQuestionId('inbox', MAIN_THREAD, 'missing')).toBeUndefined();
+  });
+
+  it('returns undefined when updateMessageCard targets a missing message', () => {
+    expect(
+      updateMessageCard('missing-id', {
+        type: 'ask_question',
+        questionId: 'q',
+        title: 't',
+        question: 'q',
+        options: [],
+      }),
+    ).toBeUndefined();
   });
 });

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import {
   activeUnreadKey,
   applyLiveMessage,
+  applyMessageUpdate,
   canSendMessage,
   clearUnread,
   getUnreadCount,
@@ -40,6 +41,7 @@ import { AttachmentDrawer } from './AttachmentDrawer';
 import { MessageAttachments } from './MessageAttachments';
 import { formatMessageTime } from './format-message-time';
 import { FormattedMessage } from './FormattedMessage';
+import { InteractiveCard, messageHasInteractiveCard } from './InteractiveCard';
 import { engagedStateAfterSend, messageSenderLabel } from './message-sender';
 import { SendArrowIcon, PlusIcon, SidebarHideIcon, SidebarShowIcon } from './nav-icons';
 import { senderColor } from './sender-color';
@@ -225,6 +227,15 @@ export function App() {
             ...prev,
             [unreadKey(event.platformId, event.threadId)]: event.agents,
           }));
+          return;
+        }
+        if (event.type === 'message_update') {
+          const msg = event.message;
+          if (isActiveConversation(msg, roomRef.current, threadIdRef.current)) {
+            setMessages((prev) =>
+              applyMessageUpdate(prev, msg, roomRef.current, threadIdRef.current),
+            );
+          }
           return;
         }
         if (event.type !== 'message') return;
@@ -779,6 +790,7 @@ export function App() {
     );
   }
 
+  const inboxRooms = bootstrap.rooms.filter((r) => r.kind === 'inbox');
   const lobbyRooms = bootstrap.rooms.filter((r) => r.kind === 'lobby');
   const dmRooms = bootstrap.rooms.filter((r) => r.kind === 'dm');
   const drawerMaxWidth = maxDrawerWidthForLayout(
@@ -808,6 +820,9 @@ export function App() {
           </button>
         </header>
         <nav className="sidebar-nav">
+          {inboxRooms.length > 0 ? (
+            <SidebarSection label="Inbox" rooms={inboxRooms} {...sidebarSectionProps} />
+          ) : null}
           <SidebarSection label="Rooms" rooms={lobbyRooms} {...sidebarSectionProps} />
           <SidebarSection label="Direct messages" rooms={dmRooms} {...sidebarSectionProps} />
           {agentsHint && (
@@ -872,7 +887,20 @@ export function App() {
                           onOpenAttachment={setSelectedAttachment}
                         />
                       )}
-                      {m.text.trim() ? <FormattedMessage text={m.text} /> : null}
+                      {messageHasInteractiveCard(m) ? (
+                        <InteractiveCard
+                          message={m}
+                          token={token}
+                          onUpdated={(updated) => {
+                            setMessages((prev) =>
+                              applyMessageUpdate(prev, updated, room, threadId),
+                            );
+                          }}
+                        />
+                      ) : null}
+                      {m.text.trim() && !messageHasInteractiveCard(m) ? (
+                        <FormattedMessage text={m.text} />
+                      ) : null}
                     </div>
                   </div>
                 );
@@ -880,6 +908,9 @@ export function App() {
             </div>
 
             <div className="composer">
+              {room?.kind === 'inbox' ? (
+                <p className="composer-inbox-hint">Approvals and system notifications appear here. Reply in Lobby or a direct message.</p>
+              ) : (
               <div
                 className={`composer-box${composerDragOver ? ' is-dragover' : ''}`}
                 onDragOver={handleComposerDragOver}
@@ -983,6 +1014,7 @@ export function App() {
                   </button>
                 </div>
               </div>
+              )}
             </div>
             {error && <p className="error composer-error">{error}</p>}
           </div>

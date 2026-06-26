@@ -6,7 +6,7 @@ export interface WebChatUser {
 export interface WebChatRoom {
   platformId: string;
   name: string;
-  kind: 'lobby' | 'dm';
+  kind: 'lobby' | 'dm' | 'inbox';
   folder?: string;
   threads?: ThreadMeta[];
 }
@@ -48,6 +48,23 @@ export interface WebChatAttachment {
   url?: string;
 }
 
+export interface WebChatCardOption {
+  label: string;
+  selectedLabel?: string;
+  value: string;
+}
+
+export interface WebChatAskQuestionCard {
+  type: 'ask_question';
+  questionId: string;
+  title: string;
+  question: string;
+  options: WebChatCardOption[];
+  status: 'pending' | 'answered';
+  selectedValue?: string;
+  selectedLabel?: string;
+}
+
 export interface WebChatMessage {
   id: string;
   direction: 'inbound' | 'outbound';
@@ -58,6 +75,8 @@ export interface WebChatMessage {
   /** Agent display name when provided by the host adapter. */
   senderName?: string;
   attachments?: WebChatAttachment[];
+  /** Interactive ask_question card (approvals, agent questions, etc.). */
+  card?: WebChatAskQuestionCard;
 }
 
 export interface WsMessageEvent {
@@ -83,4 +102,9 @@ export interface WsEngagedEvent {
   agents: string[];
 }
 
-export type WsEvent = WsMessageEvent | WsTypingEvent | WsEngagedEvent;
+export interface WsMessageUpdateEvent {
+  type: 'message_update';
+  message: WebChatMessage;
+}
+
+export type WsEvent = WsMessageEvent | WsTypingEvent | WsEngagedEvent | WsMessageUpdateEvent;
