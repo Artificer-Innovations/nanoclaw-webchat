@@ -18,6 +18,7 @@ import {
   isValidUploadId,
   parseMultipartUpload,
   resetUploadStateForTests,
+  restoreStagedUpload,
   uploadsStagingRoot,
 } from './webchat-uploads.js';
 
@@ -25,6 +26,7 @@ const TEST_DATA = '/tmp/nanoclaw-webchat-uploads-test';
 
 describe('webchat-uploads', () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
     resetUploadStateForTests();
     if (fs.existsSync(TEST_DATA)) {
@@ -125,6 +127,38 @@ describe('webchat-uploads', () => {
         filename: 'part.bin',
         mimeType: 'application/octet-stream',
         data: Buffer.from('cd').toString('base64'),
+      },
+      'lobby',
+      'main',
+    );
+    expect(isAcceptChunkOk(second)).toBe(true);
+    if (!isAcceptChunkOk(second) || !second.upload) return;
+    expect(second.upload.size).toBe(4);
+  });
+
+  it('ignores duplicate chunk retries without inflating cumulative size', async () => {
+    const uploadId = '550e8400-e29b-41d4-a716-446655440002';
+    const chunkBody = {
+      uploadId,
+      chunkIndex: 0,
+      totalChunks: 2,
+      filename: 'dup.bin',
+      mimeType: 'application/octet-stream',
+      data: Buffer.from('aaa').toString('base64'),
+    };
+    const first = await acceptChunk(chunkBody, 'lobby', 'main');
+    expect(first).toMatchObject({ ok: true, received: 1, total: 2 });
+    const duplicate = await acceptChunk(chunkBody, 'lobby', 'main');
+    expect(duplicate).toMatchObject({ ok: true, received: 1, total: 2 });
+
+    const second = await acceptChunk(
+      {
+        uploadId,
+        chunkIndex: 1,
+        totalChunks: 2,
+        filename: 'dup.bin',
+        mimeType: 'application/octet-stream',
+        data: Buffer.from('b').toString('base64'),
       },
       'lobby',
       'main',
@@ -512,8 +546,40 @@ describe('webchat-uploads', () => {
       return;
     }
     expect(fs.existsSync(result.upload.filePath)).toBe(true);
-    await vi.advanceTimersByTimeAsync(5 * 60 * 1000 + 1);
+    await vi.advanceTimersByTimeAsync(30 * 60 * 1000 + 1);
     expect(fs.existsSync(result.upload.filePath)).toBe(false);
     vi.useRealTimers();
+  });
+
+  it('restoreStagedUpload re-registers consumed uploads', async () => {
+    const uploadId = '550e8400-e29b-41d4-a716-446655440008';
+    const result = await acceptChunk(
+      {
+        uploadId,
+        chunkIndex: 0,
+        totalChunks: 1,
+        filename: 'restore.txt',
+        mimeType: 'text/plain',
+        data: Buffer.from('restore-me').toString('base64'),
+      },
+      'lobby',
+      'main',
+    );
+    expect(isAcceptChunkOk(result)).toBe(true);
+    if (!isAcceptChunkOk(result) || !result.upload) return;
+    const consumed = consumeStagedUpload(uploadId);
+    expect(consumed?.uploadId).toBe(uploadId);
+    expect(getStagedUpload(uploadId)).toBeUndefined();
+    restoreStagedUpload(consumed!);
+    expect(getStagedUpload(uploadId)?.uploadId).toBe(uploadId);
+  });
+
+  it('formats MB upload limits from env', async () => {
+    vi.stubEnv('WEBCHAT_MAX_UPLOAD_BYTES', String(50 * 1024 * 1024));
+    vi.resetModules();
+    const mod = await import('./webchat-uploads.js');
+    expect(mod.formatMaxUploadLabel()).toBe('50 MB');
+    vi.unstubAllEnvs();
+    vi.resetModules();
   });
 });

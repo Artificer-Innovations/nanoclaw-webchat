@@ -1180,7 +1180,7 @@ describe('web channel adapter', () => {
 
   it('returns 404 for unknown attachment', async () => {
     await adapter.setup(setup);
-    const { status } = await httpGet('/api/attachments/missing/file.png');
+    const { status } = await httpGet(`/api/attachments/missing/file.png?token=${SECRET}`);
     expect(status).toBe(404);
   });
 
@@ -1235,7 +1235,7 @@ describe('web channel adapter', () => {
     expect(upload.status).toBe(200);
     expect(upload.body.uploadId).toBeTruthy();
 
-    const status = await httpPost('/api/rooms/lobby/threads/main/messages', {
+    const post = await httpPostJson('/api/rooms/lobby/threads/main/messages', {
       text: 'see attached',
       attachments: [
         {
@@ -1247,7 +1247,11 @@ describe('web channel adapter', () => {
         },
       ],
     });
-    expect(status).toBe(200);
+    expect(post.status).toBe(200);
+    expect(post.body.messageId).toBeTruthy();
+    expect(
+      (post.body.attachments as Array<{ url?: string; name: string }> | undefined)?.[0]?.url,
+    ).toMatch(/^\/api\/attachments\//);
 
     const { body } = await httpGet('/api/rooms/lobby/threads/main/messages');
     const messages = (body as { messages: Array<{ attachments?: Array<{ url?: string; name: string }> }> }).messages;
@@ -1588,7 +1592,7 @@ describe('web channel adapter', () => {
           headers: {
             Authorization: `Bearer ${SECRET}`,
             'Content-Type': 'application/json',
-            'Content-Length': 30 * 1024 * 1024,
+            'Content-Length': 50,
             Connection: 'close',
           },
         },
@@ -1602,6 +1606,79 @@ describe('web channel adapter', () => {
       req.end();
     });
     expect(status).toBe(400);
+  });
+
+  it('returns 413 when chunk upload body exceeds limit', async () => {
+    await adapter.setup(setup);
+    const { CHUNK_SIZE } = await import('../webchat-uploads.js');
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port: testPort,
+          path: '/api/rooms/lobby/threads/main/uploads/chunk',
+          method: 'POST',
+          agent: false,
+          headers: {
+            Authorization: `Bearer ${SECRET}`,
+            'Content-Type': 'application/json',
+            'Content-Length': CHUNK_SIZE * 2 + 1,
+            Connection: 'close',
+          },
+        },
+        (res) => {
+          res.resume();
+          res.on('end', () => resolve(res.statusCode ?? 0));
+        },
+      );
+      req.on('error', reject);
+      req.end('{}');
+    });
+    expect(status).toBe(413);
+  });
+
+  it('returns 500 and restores staged upload when attachment move fails', async () => {
+    await adapter.setup(setup);
+    const store = await import('../webchat-store.js');
+    const fileBytes = Buffer.from('rollback-me');
+    const upload = await httpMultipartUpload(
+      '/api/rooms/lobby/threads/main/uploads',
+      'rollback.txt',
+      fileBytes,
+    );
+    expect(upload.status).toBe(200);
+    const moveSpy = vi.spyOn(store, 'moveAttachmentIntoMessage').mockImplementation(() => {
+      throw new Error('move failed');
+    });
+    const post = await httpPostJson('/api/rooms/lobby/threads/main/messages', {
+      text: 'rollback',
+      attachments: [
+        {
+          uploadId: upload.body.uploadId as string,
+          name: 'rollback.txt',
+          mimeType: 'application/octet-stream',
+          type: 'file',
+          size: fileBytes.length,
+        },
+      ],
+    });
+    moveSpy.mockRestore();
+    expect(post.status).toBe(500);
+    expect(post.body.error).toBe('attachment processing failed');
+
+    const retry = await httpPostJson('/api/rooms/lobby/threads/main/messages', {
+      text: 'retry',
+      attachments: [
+        {
+          uploadId: upload.body.uploadId as string,
+          name: 'rollback.txt',
+          mimeType: 'application/octet-stream',
+          type: 'file',
+          size: fileBytes.length,
+        },
+      ],
+    });
+    expect(retry.status).toBe(200);
   });
 
   it('returns 404 for unknown API routes', async () => {
@@ -1828,6 +1905,27 @@ describe('web channel adapter', () => {
     const { status, body } = await httpGet(url, testPort);
     expect(status).toBe(200);
     expect(String(body).length).toBeGreaterThan(0);
+  });
+
+  it('serves attachment bytes when auth is only a query token', async () => {
+    await adapter.setup(setup);
+    await httpPost('/api/rooms/lobby/threads/thread_abc/messages', {
+      text: 'pic',
+      attachments: [{ name: 'photo.png', mimeType: 'image/png', type: 'image', data: PNG_BASE64 }],
+    });
+    const msgs = (await httpGet('/api/rooms/lobby/threads/thread_abc/messages')).body as {
+      messages: Array<{ attachments?: Array<{ url: string }> }>;
+    };
+    const path = `${msgs.messages[0]!.attachments![0]!.url}?token=${SECRET}`;
+    const { status, body } = await httpGetText(path, testPort);
+    expect(status).toBe(200);
+    expect(String(body).length).toBeGreaterThan(0);
+  });
+
+  it('returns 401 for attachment GET without auth', async () => {
+    await adapter.setup(setup);
+    const { status } = await httpGetText('/api/attachments/missing/file.png', testPort);
+    expect(status).toBe(401);
   });
 
   it('deliver extracts text from object content', async () => {

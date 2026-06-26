@@ -65,6 +65,8 @@ export const ADAPTER_COPY_RULES: AdapterCopyRule[] = [
   { source: 'webchat-store.test.ts', dest: 'src/webchat-store.test.ts' },
   { source: 'webchat-uploads.ts', dest: 'src/webchat-uploads.ts' },
   { source: 'webchat-uploads.test.ts', dest: 'src/webchat-uploads.test.ts' },
+  { source: 'webchat-serve-attachment.ts', dest: 'src/webchat-serve-attachment.ts' },
+  { source: 'webchat-serve-attachment.test.ts', dest: 'src/webchat-serve-attachment.test.ts' },
   { source: 'webchat-thread-cleanup.ts', dest: 'src/webchat-thread-cleanup.ts' },
   { source: 'webchat-routing.ts', dest: 'src/webchat-routing.ts' },
   { source: 'webchat-routing.test.ts', dest: 'src/webchat-routing.test.ts' },

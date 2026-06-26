@@ -10,10 +10,21 @@ import path from 'path';
 
 import { DATA_DIR } from './config.js';
 
+export const DEFAULT_MAX_UPLOAD_BYTES = 1024 * 1024 * 1024;
 export const MAX_UPLOAD_BYTES =
-  Number.parseInt(process.env.WEBCHAT_MAX_UPLOAD_BYTES ?? '', 10) || 1024 * 1024 * 1024;
+  Number.parseInt(process.env.WEBCHAT_MAX_UPLOAD_BYTES ?? '', 10) || DEFAULT_MAX_UPLOAD_BYTES;
 export const CHUNK_SIZE = 512 * 1024;
+/** In-progress chunked assembly; refreshed on each received chunk. */
 export const CHUNK_UPLOAD_TIMEOUT = 5 * 60 * 1000;
+/** Completed staging entries waiting for message POST. */
+export const COMPLETED_UPLOAD_TTL = 30 * 60 * 1000;
+
+export function formatMaxUploadLabel(): string {
+  if (MAX_UPLOAD_BYTES >= 1024 * 1024 * 1024) {
+    return `${(MAX_UPLOAD_BYTES / 1024 / 1024 / 1024).toFixed(1)} GB`;
+  }
+  return `${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)} MB`;
+}
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -86,8 +97,13 @@ function registerCompletedUpload(upload: StagedUpload): StagedUpload {
     } catch {
       // ignore cleanup failures
     }
-  }, CHUNK_UPLOAD_TIMEOUT);
+  }, COMPLETED_UPLOAD_TTL);
   return upload;
+}
+
+/** Re-register a consumed upload after a failed message persist (rollback path). */
+export function restoreStagedUpload(upload: StagedUpload): void {
+  registerCompletedUpload(upload);
 }
 
 export function getStagedUpload(uploadId: string): StagedUpload | undefined {
@@ -142,6 +158,7 @@ export async function parseMultipartUpload(
     const finalPath = stagedFilePath(uploadId);
     let partialPath: string | null = null;
     let limitHit = false;
+    let writeError = false;
     let fileInfo: { name: string; mimeType: string; size: number } | null = null;
 
     const cleanupPartial = () => {
@@ -156,6 +173,13 @@ export async function parseMultipartUpload(
     });
 
     let fileWriteStream: fs.WriteStream | null = null;
+    let fileWriteDone: Promise<void> | null = null;
+    let settled = false;
+    const settle = (value: { upload: StagedUpload } | { error: string; status: number }) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
 
     busboy.on('file', (_field: string, stream: NodeJS.ReadableStream, info: { filename?: string; mimeType?: string }) => {
       fs.mkdirSync(uploadDir, { recursive: true });
@@ -163,7 +187,13 @@ export async function parseMultipartUpload(
       let size = 0;
       const ws = fs.createWriteStream(finalPath);
       fileWriteStream = ws;
-      ws.on('error', () => {});
+      fileWriteDone = new Promise<void>((resolveWrite, rejectWrite) => {
+        ws.on('finish', () => resolveWrite());
+        ws.on('error', (err) => {
+          writeError = true;
+          rejectWrite(err);
+        });
+      });
 
       stream.on('data', (chunk: Buffer) => {
         size += chunk.length;
@@ -193,33 +223,51 @@ export async function parseMultipartUpload(
     });
 
     busboy.on('finish', () => {
-      if (limitHit) {
-        resolve({ error: `File exceeds ${(MAX_UPLOAD_BYTES / 1024 / 1024 / 1024).toFixed(1)}GB limit`, status: 413 });
-        return;
-      }
-      if (!fileInfo) {
-        resolve({ error: 'No file uploaded', status: 400 });
-        return;
-      }
-      partialPath = null;
-      try {
-        assertRegularFile(finalPath);
-      } catch {
-        cleanupPartial();
-        resolve({ error: 'Upload failed', status: 500 });
-        return;
-      }
-      const upload = registerCompletedUpload({
-        uploadId,
-        name: fileInfo.name,
-        mimeType: fileInfo.mimeType,
-        type: attachmentTypeFromMime(fileInfo.mimeType),
-        size: fileInfo.size,
-        filePath: finalPath,
-        platformId,
-        threadId,
-      });
-      resolve({ upload });
+      void (async () => {
+        if (fileWriteDone) {
+          try {
+            await fileWriteDone;
+          } catch {
+            writeError = true;
+          }
+        }
+        if (limitHit || writeError) {
+          cleanupPartial();
+          try {
+            fs.rmSync(uploadDir, { recursive: true, force: true });
+          } catch {
+            // ignore
+          }
+          settle({
+            error: limitHit ? `File exceeds ${formatMaxUploadLabel()} limit` : 'Upload failed',
+            status: limitHit ? 413 : 500,
+          });
+          return;
+        }
+        if (!fileInfo) {
+          settle({ error: 'No file uploaded', status: 400 });
+          return;
+        }
+        partialPath = null;
+        try {
+          assertRegularFile(finalPath);
+        } catch {
+          cleanupPartial();
+          settle({ error: 'Upload failed', status: 500 });
+          return;
+        }
+        const upload = registerCompletedUpload({
+          uploadId,
+          name: fileInfo.name,
+          mimeType: fileInfo.mimeType,
+          type: attachmentTypeFromMime(fileInfo.mimeType),
+          size: fileInfo.size,
+          filePath: finalPath,
+          platformId,
+          threadId,
+        });
+        settle({ upload });
+      })();
     });
 
     busboy.on('error', () => {
@@ -229,10 +277,11 @@ export async function parseMultipartUpload(
       } catch {
         // ignore
       }
-      resolve({ error: 'Upload failed', status: 500 });
+      settle({ error: 'Upload failed', status: 500 });
     });
 
-    req.on('aborted', () => {
+    req.on('close', () => {
+      if (settled || req.complete || req.readableEnded) return;
       fileWriteStream?.destroy();
       cleanupPartial();
       try {
@@ -240,6 +289,7 @@ export async function parseMultipartUpload(
       } catch {
         // ignore
       }
+      settle({ error: 'Upload failed', status: 500 });
     });
 
     req.pipe(busboy);
@@ -263,6 +313,22 @@ export function isAcceptChunkOk(
   result: AcceptChunkResult,
 ): result is Extract<AcceptChunkResult, { ok: true }> {
   return result.ok;
+}
+
+function decodeChunkBase64(data: string): Buffer | null {
+  const normalized = data.replace(/\s/g, '');
+  if (!normalized || normalized.length % 4 !== 0) return null;
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(normalized)) return null;
+  const buf = Buffer.from(normalized, 'base64');
+  if (buf.length === 0) return null;
+  const reencoded = buf.toString('base64').replace(/=+$/, '');
+  if (reencoded !== normalized.replace(/=+$/, '')) return null;
+  return buf;
+}
+
+function refreshChunkTimer(uploadId: string, upload: PendingChunkUpload): void {
+  clearTimeout(upload.timer);
+  upload.timer = setTimeout(() => cleanupChunkedUpload(uploadId), CHUNK_UPLOAD_TIMEOUT);
 }
 
 export async function acceptChunk(
@@ -310,23 +376,27 @@ export async function acceptChunk(
     return { ok: false, error: 'totalChunks mismatch', status: 400 };
   }
 
-  let chunkBuf: Buffer;
-  try {
-    chunkBuf = Buffer.from(data, 'base64');
-  } catch {
+  if (upload.receivedChunks.has(chunkIndex)) {
+    refreshChunkTimer(uploadId, upload);
+    return { ok: true, received: upload.receivedChunks.size, total: upload.totalChunks };
+  }
+
+  const chunkBuf = decodeChunkBase64(data);
+  if (!chunkBuf) {
     return { ok: false, error: 'invalid chunk data', status: 400 };
   }
 
   upload.cumulativeSize += chunkBuf.length;
   if (upload.cumulativeSize > MAX_UPLOAD_BYTES) {
     cleanupChunkedUpload(uploadId);
-    return { ok: false, error: `File exceeds ${(MAX_UPLOAD_BYTES / 1024 / 1024 / 1024).toFixed(1)}GB limit`, status: 413 };
+    return { ok: false, error: `File exceeds ${formatMaxUploadLabel()} limit`, status: 413 };
   }
 
   const chunkPath = path.join(upload.tempDir, String(chunkIndex));
   assertUnderRoot(chunkPath, upload.tempDir);
   await fs.promises.writeFile(chunkPath, chunkBuf);
   upload.receivedChunks.add(chunkIndex);
+  refreshChunkTimer(uploadId, upload);
 
   if (upload.receivedChunks.size < upload.totalChunks) {
     return { ok: true, received: upload.receivedChunks.size, total: upload.totalChunks };

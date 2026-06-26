@@ -382,7 +382,7 @@ export function writeAttachmentFiles(
   return stored;
 }
 
-function deleteMessageFiles(messageId: string): void {
+export function deleteMessageFiles(messageId: string): void {
   const dir = messageFilesDir(messageId);
   if (fs.existsSync(dir)) {
     fs.rmSync(dir, { recursive: true, force: true });

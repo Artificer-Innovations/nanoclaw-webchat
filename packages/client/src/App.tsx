@@ -546,7 +546,6 @@ export function App() {
     const activeRoom = room;
     const activeThread = threadId;
     const activeThreads = threadsFromState(threadsByRoom, activeRoom.platformId);
-    setDraft('');
 
     let sendAttachments: ReturnType<typeof toSendAttachmentsFromUploads> = [];
     if (pending.length > 0) {
@@ -564,6 +563,8 @@ export function App() {
       }
       sendAttachments = toSendAttachmentsFromUploads(uploads);
     }
+
+    setDraft('');
 
     const optimisticId = `local-${Date.now()}`;
     const optimistic: WebChatMessage = {

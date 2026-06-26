@@ -26,6 +26,8 @@ import {
   fetchAttachmentBlob,
   fetchAttachmentText,
   formatAttachmentRejections,
+  formatMaxUploadLabel,
+  formatUploadBytesLabel,
   formatAttachmentSize,
   inferMimeType,
   isSafeAttachmentUrl,
@@ -46,7 +48,6 @@ import {
   uploadAttachmentFile,
   uploadPendingAttachments,
   CHUNK_SIZE,
-  CHUNK_THRESHOLD,
   type PendingAttachment,
 } from './attachments';
 import * as api from './api';
@@ -162,6 +163,8 @@ describe('attachments', () => {
   });
 
   it('formats rejection messages', () => {
+    expect(formatUploadBytesLabel(50 * 1024 * 1024)).toBe('50 MB');
+    expect(formatMaxUploadLabel()).toBe('1 GB');
     expect(
       formatAttachmentRejections([
         { name: 'big.png', reason: 'too_large' },
@@ -172,6 +175,9 @@ describe('attachments', () => {
       'big.png exceeds the 1 GB limit; Could not read bad.txt; Only 10 attachments allowed (extra.txt skipped)',
     );
     expect(formatAttachmentRejections([])).toBeNull();
+    expect(
+      formatAttachmentRejections([{ name: 'x.png', reason: 'upload_failed' }]),
+    ).toBe('Upload failed for x.png');
   });
 
   it('leaves matching attachment types unchanged', () => {
@@ -750,7 +756,7 @@ describe('attachments', () => {
         url: '/api/attachments/msg-1/notes.md',
       }, 'secret'),
     ).toBe('from server');
-    expect(fetch).toHaveBeenCalledWith('/api/attachments/msg-1/notes.md?token=secret', {
+    expect(fetch).toHaveBeenCalledWith('/api/attachments/msg-1/notes.md', {
       headers: { Authorization: 'Bearer secret' },
     });
     vi.unstubAllGlobals();
@@ -968,7 +974,7 @@ describe('attachments', () => {
       type: 'image',
       url: '/api/attachments/msg-1/photo.png',
     });
-    expect(fetch).toHaveBeenCalledWith('/api/attachments/msg-1/photo.png?token=stored', {
+    expect(fetch).toHaveBeenCalledWith('/api/attachments/msg-1/photo.png', {
       headers: { Authorization: 'Bearer stored' },
     });
     sessionStorage.removeItem('webchat_token');
@@ -1056,7 +1062,7 @@ describe('attachments', () => {
       'explicit',
     );
     expect(tokenSuccess).toHaveBeenCalled();
-    expect(fetch).toHaveBeenCalledWith('/api/attachments/m/notes.md?token=explicit', {
+    expect(fetch).toHaveBeenCalledWith('/api/attachments/m/notes.md', {
       headers: { Authorization: 'Bearer explicit' },
     });
 
@@ -1090,28 +1096,18 @@ describe('attachments', () => {
       expect(api.uploadAttachmentMultipart).toHaveBeenCalledWith('tok', 'lobby', 'main', file);
     });
 
-    it('uploads large files via chunked upload', async () => {
-      vi.spyOn(api, 'uploadAttachmentChunk')
-        .mockResolvedValueOnce({ ok: true, received: 1, total: 2 })
-        .mockResolvedValueOnce({
-          uploadId: 'chunk-id',
-          name: 'big.bin',
-          mimeType: 'application/octet-stream',
-          type: 'file',
-          size: CHUNK_THRESHOLD + 1,
-        });
-      const file = new File([new Uint8Array(CHUNK_THRESHOLD + 1)], 'big.bin');
+    it('uploads all files via multipart regardless of size', async () => {
+      vi.spyOn(api, 'uploadAttachmentMultipart').mockResolvedValue({
+        uploadId: 'upload-id',
+        name: 'big.bin',
+        mimeType: 'application/octet-stream',
+        type: 'file',
+        size: CHUNK_SIZE + 1,
+      });
+      const file = new File([new Uint8Array(CHUNK_SIZE + 1)], 'big.bin');
       const result = await uploadAttachmentFile('tok', 'lobby', 'main', file);
-      expect(result.uploadId).toBe('chunk-id');
-      expect(api.uploadAttachmentChunk).toHaveBeenCalledTimes(2);
-    });
-
-    it('throws when chunked upload never completes', async () => {
-      vi.spyOn(api, 'uploadAttachmentChunk').mockResolvedValue({ ok: true, received: 1, total: 2 });
-      const file = new File([new Uint8Array(CHUNK_THRESHOLD + 1)], 'big.bin');
-      await expect(uploadAttachmentFile('tok', 'lobby', 'main', file)).rejects.toThrow(
-        'Upload failed for big.bin',
-      );
+      expect(result.uploadId).toBe('upload-id');
+      expect(api.uploadAttachmentMultipart).toHaveBeenCalledWith('tok', 'lobby', 'main', file);
     });
 
     it('collects upload failures from pending attachments', async () => {
@@ -1128,7 +1124,7 @@ describe('attachments', () => {
       ];
       const { uploads, failed } = await uploadPendingAttachments('tok', 'lobby', 'main', pending);
       expect(uploads).toHaveLength(0);
-      expect(failed).toEqual([{ name: 'a.txt', reason: 'read_failed' }]);
+      expect(failed).toEqual([{ name: 'a.txt', reason: 'upload_failed', detail: 'network down' }]);
     });
 
     it('falls back to a generic attachment label when upload failure lacks a name', async () => {
@@ -1144,7 +1140,23 @@ describe('attachments', () => {
         },
       ] as unknown as PendingAttachment[];
       const { failed } = await uploadPendingAttachments('tok', 'lobby', 'main', pending);
-      expect(failed).toEqual([{ name: 'attachment', reason: 'read_failed' }]);
+      expect(failed).toEqual([{ name: 'attachment', reason: 'upload_failed', detail: 'network down' }]);
+    });
+
+    it('records a generic upload failure when rejection is not an Error', async () => {
+      vi.spyOn(api, 'uploadAttachmentMultipart').mockRejectedValue('nope');
+      const pending: PendingAttachment[] = [
+        {
+          name: 'a.txt',
+          mimeType: 'text/plain',
+          type: 'file',
+          size: 1,
+          file: new File(['x'], 'a.txt'),
+          previewUrl: 'blob:preview',
+        },
+      ];
+      const { failed } = await uploadPendingAttachments('tok', 'lobby', 'main', pending);
+      expect(failed).toEqual([{ name: 'a.txt', reason: 'upload_failed', detail: 'Upload failed' }]);
     });
 
     it('maps uploaded attachments to send refs', () => {

@@ -1,13 +1,24 @@
 import { buildCodePopoutDocument, buildCsvPopoutDocument, buildHtmlPopoutDocument, buildMarkdownPopoutDocument, buildPlainTextPopoutDocument, openHtmlDocumentInNewTab, ATTACHMENT_HTML_IFRAME_SANDBOX } from './attachment-text-popout';
 import { codeLanguageFromAttachment, isCodeFilename, isCodeMimeType } from './attachment-code';
 import { isCsvAttachment } from './csv-preview';
-import { getStoredToken, uploadAttachmentChunk, uploadAttachmentMultipart } from './api';
+import { getStoredToken, uploadAttachmentMultipart } from './api';
 import type { WebChatAttachment } from './types';
 
 export const MAX_ATTACHMENTS = 10;
 export const MAX_ATTACHMENT_BYTES = 1024 * 1024 * 1024;
-export const CHUNK_THRESHOLD = 512 * 1024;
+/** Client uses streaming multipart for all sizes up to MAX; chunked API remains for resumability. */
 export const CHUNK_SIZE = 512 * 1024;
+
+export function formatUploadBytesLabel(bytes: number): string {
+  if (bytes >= 1024 * 1024 * 1024) {
+    return `${(bytes / 1024 / 1024 / 1024).toFixed(0)} GB`;
+  }
+  return `${Math.round(bytes / 1024 / 1024)} MB`;
+}
+
+export function formatMaxUploadLabel(): string {
+  return formatUploadBytesLabel(MAX_ATTACHMENT_BYTES);
+}
 
 export interface UploadedAttachment {
   uploadId: string;
@@ -134,11 +145,12 @@ export interface PendingAttachment extends WebChatAttachment {
   previewUrl: string;
 }
 
-export type AttachmentRejectReason = 'too_large' | 'read_failed' | 'capacity';
+export type AttachmentRejectReason = 'too_large' | 'read_failed' | 'capacity' | 'upload_failed';
 
 export interface AttachmentRejection {
   name: string;
   reason: AttachmentRejectReason;
+  detail?: string;
 }
 
 export interface ReadAttachmentFilesResult {
@@ -247,24 +259,19 @@ export function normalizeAttachment(att: WebChatAttachment): WebChatAttachment {
 
 export function formatAttachmentRejections(rejected: AttachmentRejection[]): string | null {
   if (rejected.length === 0) return null;
-  const parts = rejected.map(({ name, reason }) => {
+  const parts = rejected.map(({ name, reason, detail }) => {
     switch (reason) {
       case 'too_large':
-        return `${name} exceeds the 1 GB limit`;
+        return `${name} exceeds the ${formatMaxUploadLabel()} limit`;
       case 'read_failed':
         return `Could not read ${name}`;
+      case 'upload_failed':
+        return detail ? `${name}: ${detail}` : `Upload failed for ${name}`;
       case 'capacity':
         return `Only ${MAX_ATTACHMENTS} attachments allowed (${name} skipped)`;
     }
   });
   return parts.join('; ');
-}
-
-function arrayBufferToBase64(buf: ArrayBuffer): string {
-  const bytes = new Uint8Array(buf);
-  let binary = '';
-  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]!);
-  return btoa(binary);
 }
 
 export async function readAttachmentFiles(
@@ -495,33 +502,7 @@ export async function uploadAttachmentFile(
   threadId: string,
   file: File,
 ): Promise<UploadedAttachment> {
-  if (file.size <= CHUNK_THRESHOLD) {
-    return uploadAttachmentMultipart(token, platformId, threadId, file);
-  }
-
-  const uploadId = crypto.randomUUID();
-  const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-  const mimeType = inferMimeType(file.name, file.type);
-
-  for (let i = 0; i < totalChunks; i++) {
-    const start = i * CHUNK_SIZE;
-    const end = Math.min(start + CHUNK_SIZE, file.size);
-    const slice = file.slice(start, end);
-    const buf = await slice.arrayBuffer();
-    const result = await uploadAttachmentChunk(token, platformId, threadId, {
-      uploadId,
-      chunkIndex: i,
-      totalChunks,
-      filename: file.name,
-      mimeType,
-      data: arrayBufferToBase64(buf),
-    });
-    if ('uploadId' in result) {
-      return result;
-    }
-  }
-
-  throw new Error(`Upload failed for ${file.name}`);
+  return uploadAttachmentMultipart(token, platformId, threadId, file);
 }
 
 export async function uploadPendingAttachments(
@@ -541,7 +522,9 @@ export async function uploadPendingAttachments(
     if (result.status === 'fulfilled') {
       uploads.push(result.value);
     } else {
-      failed.push({ name, reason: 'read_failed' });
+      const detail =
+        result.reason instanceof Error ? result.reason.message : 'Upload failed';
+      failed.push({ name, reason: 'upload_failed', detail });
     }
   });
 
@@ -564,9 +547,8 @@ export async function fetchAttachmentText(att: WebChatAttachment, token?: string
   }
   if (att.url && isSafeAttachmentUrl(att.url)) {
     const authToken = token ?? getStoredToken();
-    const url = attachmentUrlWithAuth(att.url, authToken);
     try {
-      const res = await fetch(url, { headers: attachmentFetchHeaders(authToken) });
+      const res = await fetch(att.url, { headers: attachmentFetchHeaders(authToken) });
       if (!res.ok) return null;
       return res.text();
     } catch {
@@ -581,9 +563,8 @@ export async function fetchAttachmentBlob(att: WebChatAttachment, token?: string
   if (fromData) return fromData;
   if (att.url && isSafeAttachmentUrl(att.url)) {
     const authToken = token ?? getStoredToken();
-    const url = attachmentUrlWithAuth(att.url, authToken);
     try {
-      const res = await fetch(url, { headers: attachmentFetchHeaders(authToken) });
+      const res = await fetch(att.url, { headers: attachmentFetchHeaders(authToken) });
       if (!res.ok) return null;
       return res.blob();
     } catch {

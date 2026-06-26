@@ -1737,7 +1737,10 @@ describe('App', () => {
 
   it('shows an error when attachment upload fails before send', async () => {
     sessionStorage.setItem('webchat_token', 'secret');
-    vi.stubGlobal('fetch', vi.fn(createFetchMock({ uploadError: 500 })));
+    vi.spyOn(attachments, 'uploadPendingAttachments').mockResolvedValue({
+      uploads: [],
+      failed: [{ name: 'photo.png', reason: 'upload_failed', detail: 'upload failed: 500' }],
+    });
     render(<App />);
     await screen.findByRole('heading', { name: 'Lobby' });
 
@@ -1752,7 +1755,7 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
 
     await waitFor(() => {
-      expect(screen.getByText('Could not read photo.png')).toBeInTheDocument();
+      expect(screen.getByText('photo.png: upload failed: 500')).toBeInTheDocument();
     });
     expect(api.sendMessage).not.toHaveBeenCalled();
   });

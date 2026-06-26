@@ -40,6 +40,7 @@ import {
   appendMessageWithAttachmentMeta,
   createThread,
   deleteThreadData,
+  deleteMessageFiles,
   ensureWebchatSchema,
   enrichMessagesWithAttachmentData,
   getEngagedAgents,
@@ -65,10 +66,14 @@ import {
 } from '../webchat-store.js';
 import {
   acceptChunk,
+  CHUNK_SIZE,
   consumeStagedUpload,
+  getStagedUpload,
   parseMultipartUpload,
+  restoreStagedUpload,
   type StagedUpload,
 } from '../webchat-uploads.js';
+import { serveAttachmentFile } from '../webchat-serve-attachment.js';
 import { cleanupAgentSessionsForThread } from '../webchat-thread-cleanup.js';
 import { routeInbound } from '../router.js';
 import { registerChannelAdapter } from './channel-registry.js';
@@ -807,10 +812,10 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
     broadcast({ type: 'message_update', message });
   }
 
-  function readBody(req: http.IncomingMessage): Promise<string> {
+  function readBody(req: http.IncomingMessage, maxBytes = MAX_BODY_BYTES): Promise<string> {
     return new Promise((resolve, reject) => {
       const contentLength = req.headers['content-length'];
-      if (contentLength && Number(contentLength) > MAX_BODY_BYTES) {
+      if (contentLength && Number(contentLength) > maxBytes) {
         reject(new Error('body too large'));
         return;
       }
@@ -819,7 +824,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
       req.on('data', (chunk: Buffer | string) => {
         const size = typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.length;
         bytes += size;
-        if (bytes > MAX_BODY_BYTES) {
+        if (bytes > maxBytes) {
           req.destroy();
           reject(new Error('body too large'));
           return;
@@ -931,49 +936,77 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
 
     const storedAttachments: StoredAttachmentMeta[] = [];
     let attachmentIndex = 0;
-    for (const att of attachments) {
-      if (att.kind === 'upload') {
-        const staged = consumeStagedUpload(att.uploadId);
-        if (!staged || !stagedUploadMatches(staged, platformId, threadIdRaw)) {
-          json(res, 400, { error: 'invalid upload reference' });
-          return;
-        }
-        if (staged.size !== att.size || staged.name !== att.name) {
-          json(res, 400, { error: 'invalid upload reference' });
-          return;
-        }
-        storedAttachments.push(
-          moveAttachmentIntoMessage(id, attachmentIndex++, {
-            name: staged.name,
-            mimeType: staged.mimeType,
-            type: staged.type,
-            size: staged.size,
-            sourcePath: staged.filePath,
-          }),
-        );
-        try {
-          fs.rmSync(path.dirname(staged.filePath), { recursive: true, force: true });
-        } catch {
-          // ignore staging dir cleanup
-        }
-        continue;
-      }
 
-      const inlineStored = writeAttachmentFiles(
-        id,
-        [
-          {
-            name: att.name,
-            mimeType: att.mimeType,
-            type: att.type,
-            size: att.size,
-            data: att.data,
-          },
-        ],
-        attachmentIndex,
-      );
-      storedAttachments.push(...inlineStored);
-      attachmentIndex += inlineStored.length;
+    for (const att of attachments) {
+      if (att.kind !== 'upload') continue;
+      const staged = getStagedUpload(att.uploadId);
+      if (!staged || !stagedUploadMatches(staged, platformId, threadIdRaw)) {
+        json(res, 400, { error: 'invalid upload reference' });
+        return;
+      }
+      if (staged.size !== att.size || staged.name !== att.name) {
+        json(res, 400, { error: 'invalid upload reference' });
+        return;
+      }
+    }
+
+    const consumedUploads: StagedUpload[] = [];
+    for (const att of attachments) {
+      if (att.kind !== 'upload') continue;
+      const staged = consumeStagedUpload(att.uploadId);
+      if (!staged) {
+        for (const pending of consumedUploads) restoreStagedUpload(pending);
+        json(res, 400, { error: 'invalid upload reference' });
+        return;
+      }
+      consumedUploads.push(staged);
+    }
+
+    let uploadCursor = 0;
+    try {
+      for (const att of attachments) {
+        if (att.kind === 'upload') {
+          const staged = consumedUploads[uploadCursor++]!;
+          storedAttachments.push(
+            moveAttachmentIntoMessage(id, attachmentIndex++, {
+              name: staged.name,
+              mimeType: staged.mimeType,
+              type: staged.type,
+              size: staged.size,
+              sourcePath: staged.filePath,
+            }),
+          );
+          try {
+            fs.rmSync(path.dirname(staged.filePath), { recursive: true, force: true });
+          } catch {
+            // ignore staging dir cleanup
+          }
+          continue;
+        }
+
+        const inlineStored = writeAttachmentFiles(
+          id,
+          [
+            {
+              name: att.name,
+              mimeType: att.mimeType,
+              type: att.type,
+              size: att.size,
+              data: att.data,
+            },
+          ],
+          attachmentIndex,
+        );
+        storedAttachments.push(...inlineStored);
+        attachmentIndex += inlineStored.length;
+      }
+    } catch {
+      deleteMessageFiles(id);
+      for (let i = uploadCursor - 1; i < consumedUploads.length; i++) {
+        restoreStagedUpload(consumedUploads[i]!);
+      }
+      json(res, 500, { error: 'attachment processing failed' });
+      return;
     }
 
     const content: Record<string, unknown> = {
@@ -1065,9 +1098,9 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
   ): Promise<void> {
     let body: string;
     try {
-      body = await readBody(req);
+      body = await readBody(req, CHUNK_SIZE * 2);
     } catch {
-      json(res, 400, { error: 'read failed' });
+      json(res, 413, { error: 'chunk body too large' });
       return;
     }
     let parsed: {
@@ -1267,17 +1300,13 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
     json(res, 200, { ok: true });
   }
 
-  function serveAttachment(messageId: string, storageName: string, res: http.ServerResponse): void {
+  function serveAttachment(messageId: string, storageName: string, req: http.IncomingMessage, res: http.ServerResponse): void {
     const filePath = getMessageAttachmentPath(messageId, storageName);
     if (!filePath) {
       res.writeHead(404).end();
       return;
     }
-    res.writeHead(200, {
-      'Content-Type': mimeTypeFromFilename(storageName),
-      'X-Content-Type-Options': 'nosniff',
-    });
-    res.end(fs.readFileSync(filePath));
+    serveAttachmentFile(filePath, storageName, req, res);
   }
 
   return {
@@ -1323,7 +1352,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
             if (attMatch && req.method === 'GET') {
               const messageId = decodeURIComponent(attMatch[1]!);
               const storageName = decodeURIComponent(attMatch[2]!);
-              serveAttachment(messageId, storageName, res);
+              serveAttachment(messageId, storageName, req, res);
               return;
             }
 

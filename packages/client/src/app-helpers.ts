@@ -109,6 +109,7 @@ export function applyLiveMessage(
     : prev;
   const idx = withoutOptimistic.findIndex((m) => m.id === message.id);
   if (idx >= 0) {
+    // Replace on id collision so WS echoes can hydrate attachment URLs (do not restore drop-on-duplicate).
     const next = [...withoutOptimistic];
     next[idx] = message;
     return next;
