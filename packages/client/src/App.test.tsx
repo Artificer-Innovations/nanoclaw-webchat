@@ -548,7 +548,7 @@ describe('App', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'Lobby' });
 
-    const ws = MockWebSocket.instances[0]!;
+    const ws = await waitForWebSocket(MockWebSocket);
     act(() => {
       ws.onmessage?.({
         data: JSON.stringify({
@@ -848,7 +848,7 @@ describe('App', () => {
     const { unmount } = render(<App />);
     await screen.findByRole('heading', { name: 'Lobby' });
 
-    const ws = MockWebSocket.instances[0]!;
+    const ws = await waitForWebSocket(MockWebSocket);
     act(() => {
       ws.onmessage?.({
         data: JSON.stringify({
@@ -2512,7 +2512,7 @@ describe('App', () => {
     messages.scrollTop = 0;
     fireEvent.scroll(messages);
 
-    const ws = latestWebSocket(MockWebSocket);
+    const ws = await waitForWebSocket(MockWebSocket);
     ws.onmessage?.({
       data: JSON.stringify({
         type: 'message',
@@ -2543,7 +2543,8 @@ describe('App', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'Lobby' });
 
-    MockWebSocket.instances[0]!.onmessage?.({
+    const ws = await waitForWebSocket(MockWebSocket);
+    ws.onmessage?.({
       data: JSON.stringify({
         type: 'message',
         message: { ...messageFixture, id: 'msg-dm', platformId: 'dm-sarah', text: 'dm ping' },
