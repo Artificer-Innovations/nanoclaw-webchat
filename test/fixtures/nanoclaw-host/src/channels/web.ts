@@ -963,6 +963,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
     }
 
     let uploadCursor = 0;
+    let movedCount = 0;
     try {
       for (const att of attachments) {
         if (att.kind === 'upload') {
@@ -976,6 +977,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
               sourcePath: staged.filePath,
             }),
           );
+          movedCount++;
           try {
             fs.rmSync(path.dirname(staged.filePath), { recursive: true, force: true });
           } catch {
@@ -1002,7 +1004,8 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
       }
     } catch {
       deleteMessageFiles(id);
-      for (let i = uploadCursor - 1; i < consumedUploads.length; i++) {
+      // Renamed uploads (indices 0..movedCount-1) are gone; restore only not-yet-moved staging refs.
+      for (let i = movedCount; i < consumedUploads.length; i++) {
         restoreStagedUpload(consumedUploads[i]!);
       }
       json(res, 500, { error: 'attachment processing failed' });

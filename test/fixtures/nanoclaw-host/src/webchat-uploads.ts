@@ -408,6 +408,7 @@ export async function acceptChunk(
   const writeStream = fs.createWriteStream(finalPath);
 
   try {
+    // `{ end: false }` requires Node.js >= 16.12 (repo engines: node >= 20).
     for (let i = 0; i < upload.totalChunks; i++) {
       const partPath = path.join(upload.tempDir, String(i));
       await pipelinePromise(fs.createReadStream(partPath), writeStream, { end: false });

@@ -31,6 +31,48 @@ export function mimeTypeFromFilename(filename: string): string {
   return EXT_TO_MIME[ext] ?? 'application/octet-stream';
 }
 
+export type ParsedAttachmentByteRange =
+  | { ok: true; start: number; end: number }
+  | { ok: false; reason: 'invalid' }
+  | null;
+
+/** Parse RFC 7233 `bytes=` ranges (prefix, open-ended, and suffix forms). */
+export function parseAttachmentByteRange(
+  rangeHeader: string,
+  fileSize: number,
+): ParsedAttachmentByteRange {
+  const trimmed = rangeHeader.trim();
+
+  const suffixMatch = /^bytes=-(\d+)$/.exec(trimmed);
+  if (suffixMatch) {
+    const suffixLen = Number.parseInt(suffixMatch[1]!, 10);
+    if (Number.isNaN(suffixLen) || suffixLen <= 0 || fileSize === 0) {
+      return { ok: false, reason: 'invalid' };
+    }
+    const start = Math.max(0, fileSize - suffixLen);
+    return { ok: true, start, end: fileSize - 1 };
+  }
+
+  const match = /^bytes=(\d+)-(\d*)$/.exec(trimmed);
+  if (!match) {
+    return null;
+  }
+
+  const start = Number.parseInt(match[1]!, 10);
+  const end = match[2] ? Number.parseInt(match[2], 10) : fileSize - 1;
+  if (
+    Number.isNaN(start) ||
+    Number.isNaN(end) ||
+    start < 0 ||
+    end < start ||
+    start >= fileSize
+  ) {
+    return { ok: false, reason: 'invalid' };
+  }
+
+  return { ok: true, start, end: Math.min(end, fileSize - 1) };
+}
+
 function streamFileToResponse(readStream: fs.ReadStream, res: http.ServerResponse): void {
   pipeline(readStream, res, (err) => {
     if (err) {
@@ -66,27 +108,19 @@ export function serveAttachmentFile(
 
   const rangeHeader = req.headers.range;
   if (rangeHeader) {
-    const match = /^bytes=(\d+)-(\d*)$/.exec(rangeHeader);
-    if (match) {
-      const start = Number.parseInt(match[1]!, 10);
-      const end = match[2] ? Number.parseInt(match[2], 10) : stat.size - 1;
-      if (
-        Number.isNaN(start) ||
-        Number.isNaN(end) ||
-        start < 0 ||
-        end < start ||
-        start >= stat.size
-      ) {
-        res.writeHead(416, { 'Content-Range': `bytes */${stat.size}` }).end();
-        return;
-      }
-      const clampedEnd = Math.min(end, stat.size - 1);
+    const parsed = parseAttachmentByteRange(rangeHeader, stat.size);
+    if (parsed?.ok === false) {
+      res.writeHead(416, { 'Content-Range': `bytes */${stat.size}` }).end();
+      return;
+    }
+    if (parsed?.ok === true) {
+      const { start, end } = parsed;
       res.writeHead(206, {
         ...baseHeaders,
-        'Content-Length': clampedEnd - start + 1,
-        'Content-Range': `bytes ${start}-${clampedEnd}/${stat.size}`,
+        'Content-Length': end - start + 1,
+        'Content-Range': `bytes ${start}-${end}/${stat.size}`,
       });
-      streamFileToResponse(fs.createReadStream(filePath, { start, end: clampedEnd }), res);
+      streamFileToResponse(fs.createReadStream(filePath, { start, end }), res);
       return;
     }
   }

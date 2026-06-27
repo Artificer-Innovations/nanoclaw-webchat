@@ -118,7 +118,7 @@ import { getMessagingGroupByPlatform, getMessagingGroup } from '../db/messaging-
 import { getPendingApproval, getSession } from '../db/sessions.js';
 import { getAssetDir } from 'nanoclaw-webchat';
 import * as webchatStore from '../webchat-store.js';
-import { resetUploadStateForTests } from '../webchat-uploads.js';
+import { resetUploadStateForTests, getStagedUpload } from '../webchat-uploads.js';
 import * as agentGroups from '../db/agent-groups.js';
 import * as webchatMentions from '../webchat-mentions.js';
 
@@ -1706,6 +1706,112 @@ describe('web channel adapter', () => {
           mimeType: 'application/octet-stream',
           type: 'file',
           size: fileBytes.length,
+        },
+      ],
+    });
+    expect(retry.status).toBe(200);
+  });
+
+  it('does not restore moved upload when inline attachment processing fails after upload move', async () => {
+    await adapter.setup(setup);
+    const store = await import('../webchat-store.js');
+    const fileBytes = Buffer.from('moved-first');
+    const upload = await httpMultipartUpload(
+      '/api/rooms/lobby/threads/main/uploads',
+      'moved-first.txt',
+      fileBytes,
+    );
+    expect(upload.status).toBe(200);
+    const uploadId = upload.body.uploadId as string;
+    const writeSpy = vi.spyOn(store, 'writeAttachmentFiles').mockImplementation(() => {
+      throw new Error('inline write failed');
+    });
+    const post = await httpPostJson('/api/rooms/lobby/threads/main/messages', {
+      text: 'mixed kinds',
+      attachments: [
+        {
+          uploadId,
+          name: 'moved-first.txt',
+          mimeType: 'application/octet-stream',
+          type: 'file',
+          size: fileBytes.length,
+        },
+        {
+          name: 'inline.txt',
+          mimeType: 'text/plain',
+          type: 'file',
+          data: Buffer.from('inline').toString('base64'),
+        },
+      ],
+    });
+    writeSpy.mockRestore();
+    expect(post.status).toBe(500);
+    expect(post.body.error).toBe('attachment processing failed');
+    expect(getStagedUpload(uploadId)).toBeUndefined();
+  });
+
+  it('restores only not-yet-moved uploads when a later upload move fails', async () => {
+    await adapter.setup(setup);
+    const store = await import('../webchat-store.js');
+    const firstBytes = Buffer.from('first-upload');
+    const secondBytes = Buffer.from('second-upload');
+    const first = await httpMultipartUpload(
+      '/api/rooms/lobby/threads/main/uploads',
+      'first.txt',
+      firstBytes,
+    );
+    const second = await httpMultipartUpload(
+      '/api/rooms/lobby/threads/main/uploads',
+      'second.txt',
+      secondBytes,
+    );
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    const firstId = first.body.uploadId as string;
+    const secondId = second.body.uploadId as string;
+    let moveCalls = 0;
+    const originalMove = store.moveAttachmentIntoMessage.bind(store);
+    const moveSpy = vi.spyOn(store, 'moveAttachmentIntoMessage').mockImplementation((...args) => {
+      moveCalls += 1;
+      if (moveCalls === 2) {
+        throw new Error('second move failed');
+      }
+      return originalMove(...args);
+    });
+    const post = await httpPostJson('/api/rooms/lobby/threads/main/messages', {
+      text: 'two uploads',
+      attachments: [
+        {
+          uploadId: firstId,
+          name: 'first.txt',
+          mimeType: 'application/octet-stream',
+          type: 'file',
+          size: firstBytes.length,
+        },
+        {
+          uploadId: secondId,
+          name: 'second.txt',
+          mimeType: 'application/octet-stream',
+          type: 'file',
+          size: secondBytes.length,
+        },
+      ],
+    });
+    moveSpy.mockRestore();
+    expect(post.status).toBe(500);
+    expect(post.body.error).toBe('attachment processing failed');
+    expect(getStagedUpload(firstId)).toBeUndefined();
+    expect(getStagedUpload(secondId)?.uploadId).toBe(secondId);
+
+    const retry = await httpPostJson('/api/rooms/lobby/threads/main/messages', {
+      text: 'retry second only',
+      attachments: [
+        {
+          uploadId: secondId,
+          name: 'second.txt',
+          mimeType: 'application/octet-stream',
+          type: 'file',
+          size: secondBytes.length,
         },
       ],
     });

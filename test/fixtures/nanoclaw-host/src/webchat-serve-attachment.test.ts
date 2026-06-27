@@ -4,7 +4,7 @@ import os from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { mimeTypeFromFilename, serveAttachmentFile } from './webchat-serve-attachment.js';
+import { mimeTypeFromFilename, parseAttachmentByteRange, serveAttachmentFile } from './webchat-serve-attachment.js';
 
 function requestFile(
   filePath: string,
@@ -104,5 +104,23 @@ describe('webchat-serve-attachment', () => {
     const res = await requestFile(filePath, 'range.txt', { Range: 'bytes=10-20' });
     expect(res.status).toBe(416);
     expect(res.headers['content-range']).toBe('bytes */3');
+  });
+
+  it('parses suffix byte ranges', () => {
+    expect(parseAttachmentByteRange('bytes=-4', 10)).toEqual({ ok: true, start: 6, end: 9 });
+    expect(parseAttachmentByteRange('bytes=-20', 10)).toEqual({ ok: true, start: 0, end: 9 });
+    expect(parseAttachmentByteRange('bytes=-0', 10)).toEqual({ ok: false, reason: 'invalid' });
+  });
+
+  it('serves suffix byte ranges with 206 partial content', async () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'serve-att-'));
+    const filePath = path.join(tempDir, 'suffix.txt');
+    fs.writeFileSync(filePath, Buffer.from('0123456789'));
+
+    const res = await requestFile(filePath, 'suffix.txt', { Range: 'bytes=-4' });
+    expect(res.status).toBe(206);
+    expect(res.body.toString()).toBe('6789');
+    expect(res.headers['content-range']).toBe('bytes 6-9/10');
+    expect(res.headers['content-length']).toBe('4');
   });
 });
