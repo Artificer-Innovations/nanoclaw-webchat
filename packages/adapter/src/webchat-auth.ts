@@ -264,8 +264,11 @@ export function validateBasicLogin(
 ): WebchatSessionUser | null {
   if (!config.basic.enabled) return null;
   const normalized = username.trim().toLowerCase();
-  if (!normalized || !isAllowedUsername(config.basic.allowedUsernames, normalized)) return null;
-  if (!constantTimeEqual(password, config.basic.password)) return null;
+  // Run both comparisons unconditionally so response timing does not reveal
+  // whether the username was in the allowlist (no early return on username miss).
+  const usernameAllowed = !!normalized && isAllowedUsername(config.basic.allowedUsernames, normalized);
+  const passwordOk = constantTimeEqual(password, config.basic.password);
+  if (!usernameAllowed || !passwordOk) return null;
   const displayName = config.basic.displayNames.get(normalized) ?? username.trim();
   return {
     userId: `web:basic:${normalized}`,
