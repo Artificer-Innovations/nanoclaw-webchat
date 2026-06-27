@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.0
+
+### Added
+
+- **Public authentication** — Optional `WEBCHAT_AUTH_MODE=public` for network-facing deployments: shared-password (basic) login, OIDC/OAuth (RS256/ES256 id_token verification, JWKS rotation retry), signed session cookies, per-user inbox/DM room scoping, and Sign out. Local mode unchanged. See [docs/public-auth.md](docs/public-auth.md).
+- **Interactive inbox approvals** — Approval cards in the Inbox with claim-first dispatch to prevent double actions; session state mirrors host approvals.
+- **Multipart attachment uploads** — Streamed uploads up to 1 GB with resumable chunked endpoint, Range request support for serve, and upload-referenced attachments in messages.
+- **Video and audio attachments** — In-browser previews with MIME normalization (parameter stripping) and codec fallbacks.
+- **Attachment preview improvements** — Typed attachment chips, HEIC fallbacks, and improved URL-based attachment display.
+
+### Fixed
+
+- **Upload edge cases** — Rollback boundary with `movedCount`, suffix Range support, and streaming serve hardening.
+- **Flaky WebSocket tests** — Stabilized App WebSocket tests on slow CI runners.
+- **Public auth hardening** — JWT expiry enforcement, cross-user room access checks, unconditional basic-login password compare, and shared auth DB connection reuse.
+
 ## 0.1.3
 
 ### Added
