@@ -285,6 +285,7 @@ describe('MessageAttachments', () => {
     );
     const button = screen.getByRole('button', { name: 'report.pdf' });
     expect(button).toHaveClass('msg-attachment-file');
+    expect(screen.getByText('PDF')).toBeInTheDocument();
     expect(button).not.toHaveAttribute('download');
   });
 

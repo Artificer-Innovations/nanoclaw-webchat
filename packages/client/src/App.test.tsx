@@ -1835,6 +1835,39 @@ describe('App', () => {
     expect(document.querySelector('.composer-preview-audio')).not.toHaveClass('composer-preview-file');
   });
 
+  it('shows text preview snippet in composer pending attachments', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const md = new File(['# Title\nbody'], 'notes.md', { type: 'text/markdown' });
+    fireEvent.change(document.querySelector('input[type="file"]') as HTMLInputElement, {
+      target: { files: [md] },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('Markdown')).toBeInTheDocument();
+      expect(screen.getByText('# Title')).toBeInTheDocument();
+    });
+    expect(document.querySelector('.composer-preview-text')).not.toBeNull();
+  });
+
+  it('shows pdf file chip styling in composer pending attachments', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const pdf = new File(['hello'], 'report.pdf', { type: 'application/pdf' });
+    fireEvent.change(document.querySelector('input[type="file"]') as HTMLInputElement, {
+      target: { files: [pdf] },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('report.pdf')).toBeInTheDocument();
+    });
+    expect(document.querySelector('.composer-preview')).toHaveClass('composer-preview-file');
+  });
+
   it('caps pending attachments when files are added concurrently', async () => {
     sessionStorage.setItem('webchat_token', 'secret');
     const pending = (name: string) => ({

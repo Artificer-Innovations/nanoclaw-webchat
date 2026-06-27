@@ -8,6 +8,17 @@ import {
   attachmentIframeSandbox,
   attachmentPreviewMode,
   attachmentPreviewUrl,
+  attachmentChipKind,
+  attachmentChipLabel,
+  attachmentFriendlyTypeLabel,
+  attachmentIsArchive,
+  attachmentIsMdx,
+  attachmentIsSvg,
+  attachmentTextTooLargeForPreview,
+  ATTACHMENT_TEXT_PREVIEW_MAX_BYTES,
+  audioMimeTypePlayable,
+  handleAudioPreviewError,
+  COMPOSER_TEXT_SNIPPET_MAX,
   attachmentIsVideo,
   attachmentIsAudio,
   attachmentToBlob,
@@ -35,7 +46,10 @@ import {
   formatUploadBytesLabel,
   formatAttachmentSize,
   handleVideoPreviewError,
+  imageMimeTypeDisplayable,
   inferMimeType,
+  isHeicDisplaySupportedInBrowser,
+  attachmentIsHeic,
   isSafeAttachmentUrl,
   isVideoSrcNotSupportedError,
   MAX_ATTACHMENT_BYTES,
@@ -162,7 +176,101 @@ describe('attachments', () => {
     expect(attachmentTextCategory('application/octet-stream', 'data.csv')).toBe('csv');
     expect(attachmentTextCategory('text/javascript', 'app.js')).toBe('code');
     expect(attachmentTextCategory('application/octet-stream', 'app.ts')).toBe('code');
+    expect(attachmentTextCategory('text/plain', '.env')).toBe('code');
     expect(attachmentTextCategory('application/zip', 'archive.zip')).toBeNull();
+  });
+
+  it('classifies chip kinds and friendly type labels', () => {
+    expect(attachmentChipKind('application/pdf', 'doc.pdf')).toBe('pdf');
+    expect(attachmentChipLabel('pdf')).toBe('PDF');
+    expect(attachmentChipKind('text/markdown', 'notes.md')).toBe('markdown');
+    expect(attachmentChipKind('text/html', 'page.html')).toBe('html');
+    expect(attachmentChipKind('text/csv', 'data.csv')).toBe('csv');
+    expect(attachmentChipKind('application/json', 'data.json')).toBe('json');
+    expect(attachmentChipKind('application/zip', 'archive.zip')).toBe('archive');
+    expect(attachmentChipKind('text/javascript', 'app.ts')).toBe('code');
+    expect(attachmentChipKind('image/png', 'photo.png')).toBe('image');
+    expect(attachmentFriendlyTypeLabel('application/zip', 'archive.zip')).toBe('ZIP archive');
+    expect(attachmentFriendlyTypeLabel('application/pdf', 'doc.pdf')).toBe('PDF document');
+    expect(
+      attachmentFriendlyTypeLabel(
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'data.xlsx',
+      ),
+    ).toBe('Excel spreadsheet');
+    expect(
+      attachmentFriendlyTypeLabel(
+        'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        'deck.pptx',
+      ),
+    ).toBe('PowerPoint presentation');
+    expect(attachmentIsArchive('application/zip', 'archive.zip')).toBe(true);
+    expect(attachmentFriendlyTypeLabel('application/x-7z-compressed', 'a.7z')).toBe('7-Zip archive');
+    expect(attachmentFriendlyTypeLabel('application/x-tar', 'a.tar')).toBe('Tar archive');
+    expect(attachmentFriendlyTypeLabel('application/gzip', 'a.gz')).toBe('Gzip archive');
+    expect(attachmentFriendlyTypeLabel('image/png', 'photo.png')).toBe('Image');
+    expect(attachmentFriendlyTypeLabel('video/mp4', 'clip.mp4')).toBe('Video');
+    expect(attachmentFriendlyTypeLabel('audio/mpeg', 'song.mp3')).toBe('Audio');
+    expect(attachmentFriendlyTypeLabel('application/msword', 'doc.doc')).toBe('Word document');
+    expect(attachmentIsMdx('post.mdx')).toBe(true);
+    expect(attachmentIsMdx('README')).toBe(false);
+    expect(attachmentIsArchive('application/octet-stream', 'archive.7z')).toBe(true);
+    expect(attachmentIsArchive('application/octet-stream', 'archive.tar')).toBe(true);
+    expect(attachmentIsArchive('application/octet-stream', 'archive.tgz')).toBe(true);
+    expect(attachmentIsArchive('application/octet-stream', 'nodot')).toBe(false);
+    expect(attachmentIsSvg('image/svg+xml')).toBe(true);
+    expect(inferMimeType('icon.svg')).toBe('image/svg+xml');
+    expect(attachmentPreviewMode('image/svg+xml', 'icon.svg')).toBe('embed');
+  });
+
+  it('guards large text previews and audio playability', () => {
+    expect(attachmentTextTooLargeForPreview(ATTACHMENT_TEXT_PREVIEW_MAX_BYTES + 1)).toBe(true);
+    expect(attachmentTextTooLargeForPreview(ATTACHMENT_TEXT_PREVIEW_MAX_BYTES)).toBe(false);
+    expect(audioMimeTypePlayable('audio/mpeg')).toBe(true);
+    const onUnsupported = vi.fn();
+    handleAudioPreviewError(
+      { currentTarget: { error: { code: 4 } as MediaError } as HTMLAudioElement },
+      onUnsupported,
+    );
+    expect(onUnsupported).toHaveBeenCalledOnce();
+    onUnsupported.mockClear();
+    handleAudioPreviewError(
+      { currentTarget: { error: { code: 1 } as MediaError } as HTMLAudioElement },
+      onUnsupported,
+    );
+    expect(onUnsupported).not.toHaveBeenCalled();
+  });
+
+  it('detects HEIC display support and chip labels for images', () => {
+    expect(attachmentIsHeic('image/heic')).toBe(true);
+    expect(attachmentIsHeic('image/heif')).toBe(true);
+    expect(imageMimeTypeDisplayable('image/png')).toBe(true);
+    expect(imageMimeTypeDisplayable('image/heic')).toBe(isHeicDisplaySupportedInBrowser());
+    expect(inferMimeType('photo.HEIC')).toBe('image/heic');
+  });
+
+  it('assumes HEIC is displayable during SSR', () => {
+    vi.stubGlobal('document', undefined);
+    vi.stubGlobal('navigator', undefined);
+    expect(imageMimeTypeDisplayable('image/heic')).toBe(true);
+    expect(isHeicDisplaySupportedInBrowser()).toBe(true);
+    vi.unstubAllGlobals();
+  });
+
+  it('detects Safari vs Chromium for HEIC display support', () => {
+    vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 Safari/605.1.15' });
+    expect(isHeicDisplaySupportedInBrowser()).toBe(true);
+    vi.stubGlobal('navigator', {
+      userAgent: 'Mozilla/5.0 Chrome/120.0.0.0 Safari/537.36',
+    });
+    expect(isHeicDisplaySupportedInBrowser()).toBe(false);
+    vi.unstubAllGlobals();
+  });
+
+  it('assumes audio is playable during SSR', () => {
+    vi.stubGlobal('document', undefined);
+    expect(audioMimeTypePlayable('audio/flac')).toBe(true);
+    vi.unstubAllGlobals();
   });
 
   it('classifies iframe preview and sandbox settings', () => {
@@ -183,6 +291,13 @@ describe('attachments', () => {
     expect(attachmentSupportsPopOut('text/html', 'page.html')).toBe(true);
     expect(attachmentSupportsPopOut('image/png')).toBe(true);
     expect(attachmentSupportsPopOut('application/zip')).toBe(false);
+    expect(
+      attachmentSupportsPopOut(
+        'application/zip',
+        'archive.zip',
+        '/api/attachments/msg-1/archive.zip',
+      ),
+    ).toBe(true);
     expect(attachmentSupportsPreviewToggle('text/markdown')).toBe(true);
     expect(attachmentSupportsPreviewToggle('text/plain')).toBe(false);
     expect(attachmentSupportsPreviewToggle('text/javascript', 'app.js')).toBe(true);
@@ -339,18 +454,51 @@ describe('attachments', () => {
       size: 5,
     });
     expect(attachments[0]?.previewUrl).toMatch(/^blob:/);
+    expect(attachments[0]?.textSnippet).toBeUndefined();
     URL.revokeObjectURL(attachments[0]!.previewUrl);
   });
 
   it('stages non-image files such as markdown', async () => {
-    const file = new File(['# Title'], 'notes.md', { type: 'text/markdown' });
+    const file = new File(['# Title\nbody'], 'notes.md', { type: 'text/markdown' });
     const { attachments } = await readAttachmentFiles([file]);
     expect(attachments).toHaveLength(1);
     expect(attachments[0]).toMatchObject({
       name: 'notes.md',
       mimeType: 'text/markdown',
       type: 'file',
+      textSnippet: '# Title',
     });
+    URL.revokeObjectURL(attachments[0]!.previewUrl);
+  });
+
+  it('truncates long composer text snippets', async () => {
+    const longLine = 'x'.repeat(COMPOSER_TEXT_SNIPPET_MAX + 10);
+    const file = new File([longLine], 'notes.txt', { type: 'text/plain' });
+    const { attachments } = await readAttachmentFiles([file]);
+    expect(attachments[0]?.textSnippet?.endsWith('…')).toBe(true);
+    URL.revokeObjectURL(attachments[0]!.previewUrl);
+  });
+
+  it('skips composer snippet when text file has no content lines', async () => {
+    const file = new File(['\n\n'], 'blank.txt', { type: 'text/plain' });
+    const { attachments } = await readAttachmentFiles([file]);
+    expect(attachments[0]?.textSnippet).toBeUndefined();
+    URL.revokeObjectURL(attachments[0]!.previewUrl);
+  });
+
+  it('skips composer snippet when text read fails', async () => {
+    const file = new File(['hello'], 'notes.txt', { type: 'text/plain' });
+    vi.spyOn(file, 'text').mockRejectedValue(new Error('read failed'));
+    const { attachments } = await readAttachmentFiles([file]);
+    expect(attachments[0]?.textSnippet).toBeUndefined();
+    URL.revokeObjectURL(attachments[0]!.previewUrl);
+  });
+
+  it('skips composer snippet when attachment is too large', async () => {
+    const file = new File(['hello'], 'notes.txt', { type: 'text/plain' });
+    Object.defineProperty(file, 'size', { value: ATTACHMENT_TEXT_PREVIEW_MAX_BYTES + 1 });
+    const { attachments } = await readAttachmentFiles([file]);
+    expect(attachments[0]?.textSnippet).toBeUndefined();
     URL.revokeObjectURL(attachments[0]!.previewUrl);
   });
 
