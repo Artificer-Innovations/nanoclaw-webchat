@@ -52,111 +52,98 @@ CREATE TABLE IF NOT EXISTS web_oauth_states (
 );
 `;
 
-let schemaReady = false;
+let authDb: Database.Database | null = null;
 
-function openAuthDb(): Database.Database {
+function getAuthDb(): Database.Database {
+  if (authDb) return authDb;
   const db = new Database(webchatDbPath());
   db.pragma('journal_mode = WAL');
+  db.pragma('wal_autocheckpoint = 1000');
   db.pragma('busy_timeout = 5000');
-  if (!schemaReady) {
-    db.exec(AUTH_SCHEMA);
-    schemaReady = true;
-  }
+  db.exec(AUTH_SCHEMA);
+  authDb = db;
   return db;
 }
 
 export function ensureWebchatAuthSchema(): void {
-  const db = openAuthDb();
-  db.close();
+  getAuthDb();
 }
 
 export function createSession(user: WebchatSessionUser, ttlSeconds: number): WebchatSessionRecord {
-  const db = openAuthDb();
-  try {
-    const now = Date.now();
-    const id = crypto.randomBytes(32).toString('hex');
-    const record: WebchatSessionRecord = {
-      id,
-      userId: user.userId,
-      displayName: user.displayName,
-      authMethod: user.authMethod,
-      providerId: user.providerId ?? null,
-      email: user.email ?? null,
-      oidcSub: user.oidcSub ?? null,
-      expiresAtMs: now + ttlSeconds * 1000,
-      createdAtMs: now,
-    };
-    db.prepare(
-      `INSERT INTO web_sessions
-       (id, user_id, display_name, auth_method, provider_id, email, oidc_sub, expires_at_ms, created_at_ms)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      record.id,
-      record.userId,
-      record.displayName,
-      record.authMethod,
-      record.providerId,
-      record.email,
-      record.oidcSub,
-      record.expiresAtMs,
-      record.createdAtMs,
-    );
-    return record;
-  } finally {
-    db.close();
-  }
+  const db = getAuthDb();
+  const now = Date.now();
+  const id = crypto.randomBytes(32).toString('hex');
+  const record: WebchatSessionRecord = {
+    id,
+    userId: user.userId,
+    displayName: user.displayName,
+    authMethod: user.authMethod,
+    providerId: user.providerId ?? null,
+    email: user.email ?? null,
+    oidcSub: user.oidcSub ?? null,
+    expiresAtMs: now + ttlSeconds * 1000,
+    createdAtMs: now,
+  };
+  db.prepare(
+    `INSERT INTO web_sessions
+     (id, user_id, display_name, auth_method, provider_id, email, oidc_sub, expires_at_ms, created_at_ms)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    record.id,
+    record.userId,
+    record.displayName,
+    record.authMethod,
+    record.providerId,
+    record.email,
+    record.oidcSub,
+    record.expiresAtMs,
+    record.createdAtMs,
+  );
+  return record;
 }
 
 export function getSession(sessionId: string): WebchatSessionRecord | null {
-  const db = openAuthDb();
-  try {
-    purgeExpiredSessions(db);
-    const row = db
-      .prepare(
-        `SELECT id, user_id, display_name, auth_method, provider_id, email, oidc_sub, expires_at_ms, created_at_ms
-         FROM web_sessions WHERE id = ?`,
-      )
-      .get(sessionId) as
-      | {
-          id: string;
-          user_id: string;
-          display_name: string;
-          auth_method: string;
-          provider_id: string | null;
-          email: string | null;
-          oidc_sub: string | null;
-          expires_at_ms: number;
-          created_at_ms: number;
-        }
-      | undefined;
-    if (!row) return null;
-    if (row.expires_at_ms <= Date.now()) {
-      db.prepare('DELETE FROM web_sessions WHERE id = ?').run(sessionId);
-      return null;
-    }
-    return {
-      id: row.id,
-      userId: row.user_id,
-      displayName: row.display_name,
-      authMethod: row.auth_method as 'oidc' | 'basic',
-      providerId: row.provider_id,
-      email: row.email,
-      oidcSub: row.oidc_sub,
-      expiresAtMs: row.expires_at_ms,
-      createdAtMs: row.created_at_ms,
-    };
-  } finally {
-    db.close();
+  const db = getAuthDb();
+  purgeExpiredSessions(db);
+  const row = db
+    .prepare(
+      `SELECT id, user_id, display_name, auth_method, provider_id, email, oidc_sub, expires_at_ms, created_at_ms
+       FROM web_sessions WHERE id = ?`,
+    )
+    .get(sessionId) as
+    | {
+        id: string;
+        user_id: string;
+        display_name: string;
+        auth_method: string;
+        provider_id: string | null;
+        email: string | null;
+        oidc_sub: string | null;
+        expires_at_ms: number;
+        created_at_ms: number;
+      }
+    | undefined;
+  if (!row) return null;
+  if (row.expires_at_ms <= Date.now()) {
+    db.prepare('DELETE FROM web_sessions WHERE id = ?').run(sessionId);
+    return null;
   }
+  return {
+    id: row.id,
+    userId: row.user_id,
+    displayName: row.display_name,
+    authMethod: row.auth_method as 'oidc' | 'basic',
+    providerId: row.provider_id,
+    email: row.email,
+    oidcSub: row.oidc_sub,
+    expiresAtMs: row.expires_at_ms,
+    createdAtMs: row.created_at_ms,
+  };
 }
 
 export function deleteSession(sessionId: string): void {
-  const db = openAuthDb();
-  try {
-    db.prepare('DELETE FROM web_sessions WHERE id = ?').run(sessionId);
-  } finally {
-    db.close();
-  }
+  const db = getAuthDb();
+  db.prepare('DELETE FROM web_sessions WHERE id = ?').run(sessionId);
 }
 
 function purgeExpiredSessions(db: Database.Database): void {
@@ -164,15 +151,11 @@ function purgeExpiredSessions(db: Database.Database): void {
 }
 
 export function saveOAuthState(state: string, providerId: string, codeVerifier: string): void {
-  const db = openAuthDb();
-  try {
-    purgeOAuthStates(db);
-    db.prepare(
-      `INSERT INTO web_oauth_states (state, provider_id, code_verifier, created_at_ms) VALUES (?, ?, ?, ?)`,
-    ).run(state, providerId, codeVerifier, Date.now());
-  } finally {
-    db.close();
-  }
+  const db = getAuthDb();
+  purgeOAuthStates(db);
+  db.prepare(
+    `INSERT INTO web_oauth_states (state, provider_id, code_verifier, created_at_ms) VALUES (?, ?, ?, ?)`,
+  ).run(state, providerId, codeVerifier, Date.now());
 }
 
 export interface OAuthStateRecord {
@@ -181,22 +164,18 @@ export interface OAuthStateRecord {
 }
 
 export function consumeOAuthState(state: string): OAuthStateRecord | null {
-  const db = openAuthDb();
-  try {
-    purgeOAuthStates(db);
-    const row = db
-      .prepare(`SELECT provider_id, code_verifier, created_at_ms FROM web_oauth_states WHERE state = ?`)
-      .get(state) as { provider_id: string; code_verifier: string; created_at_ms: number } | undefined;
-    if (!row) return null;
-    if (Date.now() - row.created_at_ms > 10 * 60 * 1000) {
-      db.prepare('DELETE FROM web_oauth_states WHERE state = ?').run(state);
-      return null;
-    }
+  const db = getAuthDb();
+  purgeOAuthStates(db);
+  const row = db
+    .prepare(`SELECT provider_id, code_verifier, created_at_ms FROM web_oauth_states WHERE state = ?`)
+    .get(state) as { provider_id: string; code_verifier: string; created_at_ms: number } | undefined;
+  if (!row) return null;
+  if (Date.now() - row.created_at_ms > 10 * 60 * 1000) {
     db.prepare('DELETE FROM web_oauth_states WHERE state = ?').run(state);
-    return { providerId: row.provider_id, codeVerifier: row.code_verifier };
-  } finally {
-    db.close();
+    return null;
   }
+  db.prepare('DELETE FROM web_oauth_states WHERE state = ?').run(state);
+  return { providerId: row.provider_id, codeVerifier: row.code_verifier };
 }
 
 function purgeOAuthStates(db: Database.Database): void {
@@ -257,5 +236,8 @@ export function clearSessionCookieHeader(secure: boolean): string {
 
 /** @internal test helper */
 export function resetWebchatAuthSchemaForTests(): void {
-  schemaReady = false;
+  if (authDb) {
+    authDb.close();
+    authDb = null;
+  }
 }

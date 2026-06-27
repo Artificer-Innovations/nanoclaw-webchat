@@ -94,7 +94,10 @@ export const ADAPTER_COPY_RULES: AdapterCopyRule[] = [
   { source: 'webchat-mentions.ts', dest: 'src/webchat-mentions.ts' },
   { source: 'webchat-mentions.test.ts', dest: 'src/webchat-mentions.test.ts' },
   { source: 'webchat-auth-config.ts', dest: 'src/webchat-auth-config.ts' },
+  { source: 'webchat-auth-config.test.ts', dest: 'src/webchat-auth-config.test.ts' },
   { source: 'webchat-auth-sessions.ts', dest: 'src/webchat-auth-sessions.ts' },
+  { source: 'webchat-auth-jwt.ts', dest: 'src/webchat-auth-jwt.ts' },
+  { source: 'webchat-auth-jwt.test.ts', dest: 'src/webchat-auth-jwt.test.ts' },
   { source: 'webchat-auth.ts', dest: 'src/webchat-auth.ts' },
   { source: 'webchat-auth.test.ts', dest: 'src/webchat-auth.test.ts' },
   { source: 'webchat-room-scope.ts', dest: 'src/webchat-room-scope.ts' },
@@ -112,6 +115,8 @@ export const VERIFY_TESTS = [
   'src/webchat-sync.test.ts',
   'src/webchat-wiring.test.ts',
   'src/webchat-auth.test.ts',
+  'src/webchat-auth-jwt.test.ts',
+  'src/webchat-auth-config.test.ts',
   'src/webchat-room-scope.test.ts',
 ];
 

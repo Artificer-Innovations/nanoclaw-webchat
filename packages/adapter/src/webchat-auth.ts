@@ -5,6 +5,7 @@ import crypto from 'crypto';
 import http from 'http';
 
 import type { OidcAllowlistConfig, OidcProviderConfig, PublicAuthConfig } from './webchat-auth-config.js';
+import { verifyRs256IdToken, type JsonWebKey } from './webchat-auth-jwt.js';
 import {
   clearSessionCookieHeader,
   consumeOAuthState,
@@ -57,9 +58,11 @@ interface OidcDiscovery {
   authorization_endpoint: string;
   token_endpoint: string;
   userinfo_endpoint?: string;
+  jwks_uri?: string;
 }
 
 const discoveryCache = new Map<string, OidcDiscovery>();
+const jwksCache = new Map<string, JsonWebKey[]>();
 
 async function fetchJson(url: string, init?: RequestInit): Promise<unknown> {
   const res = await fetch(url, init);
@@ -91,6 +94,35 @@ async function getOidcDiscovery(issuer: string): Promise<OidcDiscovery> {
   }
   discoveryCache.set(key, doc);
   return doc;
+}
+
+async function fetchJwks(jwksUri: string): Promise<JsonWebKey[]> {
+  const cached = jwksCache.get(jwksUri);
+  if (cached) return cached;
+  const doc = (await fetchJson(jwksUri)) as { keys?: JsonWebKey[] };
+  const keys = doc.keys ?? [];
+  if (keys.length === 0) throw new Error(`No keys in JWKS from ${jwksUri}`);
+  jwksCache.set(jwksUri, keys);
+  return keys;
+}
+
+async function verifyOidcIdToken(idToken: string, provider: OidcProviderConfig): Promise<Record<string, unknown>> {
+  if (provider.protocol !== 'oidc' || !provider.issuer) {
+    throw new Error('OIDC issuer required to verify id_token');
+  }
+  const discovery = await getOidcDiscovery(provider.issuer);
+  if (!discovery.jwks_uri) throw new Error('OIDC discovery missing jwks_uri');
+  const keys = await fetchJwks(discovery.jwks_uri);
+  return verifyRs256IdToken(idToken, keys, {
+    audience: provider.clientId,
+    issuer: provider.issuer,
+  });
+}
+
+/** @internal test helper */
+export function resetWebchatAuthCachesForTests(): void {
+  discoveryCache.clear();
+  jwksCache.clear();
 }
 
 function hasAllowlistRules(allowlist: OidcAllowlistConfig): boolean {
@@ -332,21 +364,11 @@ async function exchangeCode(
 
   const idToken = typeof tokens.id_token === 'string' ? tokens.id_token : null;
   if (!idToken) throw new Error('Missing id_token');
-  const claims = decodeJwtPayload(idToken);
+  const claims = await verifyOidcIdToken(idToken, provider);
   if (!checkOidcAllowlist(config.allowlist, provider.id, claims)) {
     throw new AllowlistError();
   }
   return identityFromOidcClaims(provider.id, claims);
-}
-
-function decodeJwtPayload(jwt: string): Record<string, unknown> {
-  // Signature is not verified here: the id_token is fetched server-side from the IdP token
-  // endpoint over HTTPS in the PKCE authorization-code flow. TLS provides integrity on that
-  // hop; claims are used for identity/allowlist only, not as a client-supplied credential.
-  const parts = jwt.split('.');
-  if (parts.length < 2) throw new Error('Invalid JWT');
-  const payload = Buffer.from(parts[1]!, 'base64url').toString('utf8');
-  return JSON.parse(payload) as Record<string, unknown>;
 }
 
 export class AllowlistError extends Error {

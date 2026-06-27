@@ -540,7 +540,7 @@ describe('patch edge cases', () => {
     const root = makeNanoclawFixture();
     copyAdapterFiles(root, resourcesDir());
     fs.unlinkSync(path.join(root, 'src/channels/web.ts'));
-    expect(removeAdapterFiles(root)).toHaveLength(23);
+    expect(removeAdapterFiles(root)).toHaveLength(26);
   });
 });
 

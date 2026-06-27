@@ -122,6 +122,7 @@ import * as webchatStore from '../webchat-store.js';
 import { resetUploadStateForTests, getStagedUpload } from '../webchat-uploads.js';
 import * as agentGroups from '../db/agent-groups.js';
 import * as webchatSync from '../webchat-sync.js';
+import * as webchatMentions from '../webchat-mentions.js';
 import { resetWebchatAuthSchemaForTests } from '../webchat-auth-sessions.js';
 import { encodeUserSuffix } from '../webchat-room-scope.js';
 
