@@ -36,6 +36,7 @@ vi.mock('../webchat-sync.js', () => ({
     agents: [{ folder: 'sarah', name: 'Sarah', mention: '@sarah' }],
   }),
   readTeamFolder: () => null,
+  ensureUserWebchatWirings: vi.fn(),
   WEB_INBOX_PLATFORM_ID: 'inbox',
 }));
 
@@ -120,7 +121,9 @@ import { getAssetDir } from 'nanoclaw-webchat';
 import * as webchatStore from '../webchat-store.js';
 import { resetUploadStateForTests, getStagedUpload } from '../webchat-uploads.js';
 import * as agentGroups from '../db/agent-groups.js';
-import * as webchatMentions from '../webchat-mentions.js';
+import * as webchatSync from '../webchat-sync.js';
+import { resetWebchatAuthSchemaForTests } from '../webchat-auth-sessions.js';
+import { encodeUserSuffix } from '../webchat-room-scope.js';
 
 const routeInboundMock = vi.mocked(routeInbound);
 const cleanupSessionsMock = vi.mocked(cleanupAgentSessionsForThread);
@@ -134,6 +137,7 @@ const getSessionMock = vi.mocked(getSession);
 const getAssetDirMock = vi.mocked(getAssetDir);
 
 const SECRET = 'test-secret';
+const PUBLIC_SESSION_SECRET = 'a'.repeat(32);
 
 function defaultAdapterOptions(port: number) {
   return {
@@ -143,6 +147,32 @@ function defaultAdapterOptions(port: number) {
     authToken: SECRET,
     userId: 'web:local',
     displayName: 'Local',
+  };
+}
+
+function publicAdapterOptions(port: number) {
+  return {
+    port,
+    bindAddress: '127.0.0.1',
+    authMode: 'public' as const,
+    authToken: SECRET,
+    userId: 'web:local',
+    displayName: 'Local',
+    publicAuth: {
+      sessionSecret: PUBLIC_SESSION_SECRET,
+      sessionTtlSeconds: 3600,
+      redirectUri: 'http://127.0.0.1/callback',
+      oidcEnabled: false,
+      providers: [],
+      allowlist: { emailDomains: [], emails: [], subs: [], requiredGroup: null },
+      basic: {
+        enabled: true,
+        password: 'hunter2',
+        allowedUsernames: ['alice'],
+        displayNames: new Map([['alice', 'Alice']]),
+      },
+      secureCookies: false,
+    },
   };
 }
 let testPort = 0;
@@ -311,6 +341,79 @@ function httpGet(path: string, port = testPort): Promise<{ status: number; body:
       },
     );
     req.on('error', reject);
+    req.end();
+  });
+}
+
+function httpGetWithHeaders(
+  path: string,
+  headers: Record<string, string>,
+  port = testPort,
+): Promise<{ status: number; body: unknown; headers: http.IncomingHttpHeaders }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        hostname: '127.0.0.1',
+        port,
+        path,
+        method: 'GET',
+        agent: false,
+        headers: { Connection: 'close', ...headers },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk) => (data += chunk));
+        res.on('end', () => {
+          try {
+            resolve({
+              status: res.statusCode ?? 0,
+              body: JSON.parse(data),
+              headers: res.headers,
+            });
+          } catch {
+            resolve({ status: res.statusCode ?? 0, body: data, headers: res.headers });
+          }
+        });
+      },
+    );
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+function httpPostJsonNoAuth(
+  path: string,
+  body: unknown,
+  port = testPort,
+): Promise<{ status: number; body: Record<string, unknown>; headers: http.IncomingHttpHeaders }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        hostname: '127.0.0.1',
+        port,
+        path,
+        method: 'POST',
+        agent: false,
+        headers: { 'Content-Type': 'application/json', Connection: 'close' },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk) => (data += chunk));
+        res.on('end', () => {
+          try {
+            resolve({
+              status: res.statusCode ?? 0,
+              body: JSON.parse(data) as Record<string, unknown>,
+              headers: res.headers,
+            });
+          } catch {
+            resolve({ status: res.statusCode ?? 0, body: {}, headers: res.headers });
+          }
+        });
+      },
+    );
+    req.on('error', reject);
+    req.write(JSON.stringify(body));
     req.end();
   });
 }
@@ -2996,6 +3099,67 @@ describe('web channel adapter', () => {
   it('openDM returns inbox platform id', async () => {
     await adapter.setup(setup);
     await expect(adapter.openDM!('web:local')).resolves.toBe('inbox');
+  });
+
+  it('serves public auth config without bearer token', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const { status, body } = await httpGetWithHeaders('/api/auth/config', {}, testPort);
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ basic: { enabled: true } });
+  });
+
+  it('basic login syncs user wirings and omits token meta from index.html', async () => {
+    const ensureWirings = vi.mocked(webchatSync.ensureUserWebchatWirings);
+    ensureWirings.mockClear();
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const login = await httpPostJsonNoAuth('/api/auth/login/basic', {
+      username: 'alice',
+      password: 'hunter2',
+    });
+    expect(login.status).toBe(200);
+    expect(ensureWirings).toHaveBeenCalledWith('web:basic:alice', 'Alice');
+
+    const cookie = login.headers['set-cookie'];
+    expect(cookie).toBeDefined();
+    const cookieHeader = Array.isArray(cookie) ? cookie.join('; ') : String(cookie);
+
+    const { status, body } = await httpGetWithHeaders(
+      '/api/bootstrap',
+      { Cookie: cookieHeader.split(';')[0]! },
+      testPort,
+    );
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ authMode: 'public' });
+
+    const index = await httpGetText('/', testPort);
+    expect(index.status).toBe(200);
+    expect(index.body).not.toContain('name="webchat-token"');
+  });
+
+  it('openDM returns per-user inbox in public mode', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+    const userId = 'web:basic:alice';
+    await expect(adapter.openDM!(userId)).resolves.toBe(`inbox:${encodeUserSuffix(userId)}`);
+  });
+
+  it('returns 401 for protected API routes without session in public mode', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const bootstrap = await httpGetWithHeaders('/api/bootstrap', {}, testPort);
+    expect(bootstrap.status).toBe(401);
+
+    const messages = await httpGetWithHeaders('/api/rooms/lobby/threads/main/messages', {}, testPort);
+    expect(messages.status).toBe(401);
   });
 
   it('POST actions returns 500 when onAction throws', async () => {
