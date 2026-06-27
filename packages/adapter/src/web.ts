@@ -12,11 +12,14 @@ import path from 'path';
 import { WebSocketServer, WebSocket, type WebSocket as WebSocketClient } from 'ws';
 
 import { readEnvFile } from '../env.js';
-import { getAllAgentGroups } from '../db/agent-groups.js';
-import { getMessagingGroupByPlatform } from '../db/messaging-groups.js';
+import { getAgentGroup, getAllAgentGroups } from '../db/agent-groups.js';
+import { getDb, hasTable } from '../db/connection.js';
+import { getMessagingGroup, getMessagingGroupByPlatform } from '../db/messaging-groups.js';
+import { getPendingApproval, getSession } from '../db/sessions.js';
 import { log } from '../log.js';
 import { buildWebchatBootstrap, ensureUserWebchatWirings, readTeamFolder, WEB_INBOX_PLATFORM_ID } from '../webchat-sync.js';
 import type { PublicAuthConfig } from '../webchat-auth-config.js';
+import { loadWebAdapterAuthConfig } from '../webchat-auth-config.js';
 import {
   handlePublicAuthRequest,
   isPublicAuthExemptPath,
@@ -52,8 +55,10 @@ import { implicitMentionedFolders, mentionedAgentFolders, type ImplicitMentionAg
 import {
   addEngagedAgents,
   appendMessage,
+  appendMessageWithAttachmentMeta,
   createThread,
   deleteThreadData,
+  deleteMessageFiles,
   ensureWebchatSchema,
   enrichMessagesWithAttachmentData,
   getEngagedAgents,
@@ -64,23 +69,38 @@ import {
   listThreads,
   MAIN_THREAD,
   markBackfillDelivered,
+  moveAttachmentIntoMessage,
   removeEngagedAgent,
   upsertThread,
   findMessageByQuestionId,
-  updateMessageCard,
+  answerCardsByQuestionId,
+  revertCardsByQuestionId,
+  writeAttachmentFiles,
+  type StoredAttachmentMeta,
   type WebchatAskQuestionCard,
   type WebchatAttachmentInput,
   type WebchatCardOption,
   type WebchatStoredMessage,
 } from '../webchat-store.js';
+import {
+  acceptChunk,
+  CHUNK_SIZE,
+  consumeStagedUpload,
+  getStagedUpload,
+  parseMultipartUpload,
+  restoreStagedUpload,
+  type StagedUpload,
+} from '../webchat-uploads.js';
+import { inferAttachmentMime, serveAttachmentFile } from '../webchat-serve-attachment.js';
 import { cleanupAgentSessionsForThread } from '../webchat-thread-cleanup.js';
 import { routeInbound } from '../router.js';
 import { registerChannelAdapter } from './channel-registry.js';
 import type { ChannelAdapter, ChannelSetup, InboundMessage, OutboundFile, OutboundMessage } from './adapter.js';
 
 const CHANNEL_TYPE = 'web';
-const MAX_ATTACHMENTS = 4;
-const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+const MAX_ATTACHMENTS = 10;
+const MAX_LEGACY_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+const MAX_AGENT_INLINE_BYTES = 5 * 1024 * 1024;
 
 interface WebChatAttachment {
   name: string;
@@ -89,11 +109,30 @@ interface WebChatAttachment {
   size?: number;
   data?: string;
   url?: string;
+  uploadId?: string;
 }
+
+type InboundAttachment =
+  | {
+      kind: 'inline';
+      name: string;
+      mimeType: string;
+      type: 'image' | 'file';
+      size: number;
+      data: string;
+    }
+  | {
+      kind: 'upload';
+      uploadId: string;
+      name: string;
+      mimeType: string;
+      type: 'image' | 'file';
+      size: number;
+    };
 
 interface WebAdapterOptions {
   port: number;
-  bindAddress: string;
+  bindAddress?: string;
   authMode: 'local' | 'public';
   authToken: string;
   userId: string;
@@ -183,32 +222,32 @@ function buildAskQuestionCard(parsed: AskQuestionContent): WebchatAskQuestionCar
   };
 }
 
-const EXT_TO_MIME: Record<string, string> = {
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.png': 'image/png',
-  '.webp': 'image/webp',
-  '.gif': 'image/gif',
-  '.pdf': 'application/pdf',
-  '.txt': 'text/plain',
-  '.md': 'text/markdown',
-  '.markdown': 'text/markdown',
-  '.json': 'application/json',
-  '.zip': 'application/zip',
-  '.csv': 'text/csv',
-  '.html': 'text/html',
-  '.htm': 'text/html',
-};
-
-function mimeTypeFromFilename(filename: string): string {
-  const ext = path.extname(filename).toLowerCase();
-  return EXT_TO_MIME[ext] ?? 'application/octet-stream';
+interface ApprovalSessionOrigin {
+  platformId: string;
+  threadId: string;
+  agentName?: string;
 }
 
-function inferAttachmentMime(name: string, mimeType: string): string {
-  const trimmed = mimeType.trim().toLowerCase();
-  if (trimmed) return trimmed;
-  return mimeTypeFromFilename(name);
+function resolveApprovalSessionOrigin(questionId: string): ApprovalSessionOrigin | undefined {
+  try {
+    const db = getDb();
+    if (!hasTable(db, 'pending_approvals')) return undefined;
+    const approval = getPendingApproval(questionId);
+    if (!approval?.session_id) return undefined;
+    const session = getSession(approval.session_id);
+    if (!session?.messaging_group_id) return undefined;
+    const mg = getMessagingGroup(session.messaging_group_id);
+    if (!mg || mg.channel_type !== CHANNEL_TYPE) return undefined;
+    const agent = getAgentGroup(session.agent_group_id);
+    return {
+      platformId: mg.platform_id,
+      threadId: session.thread_id ?? MAIN_THREAD,
+      agentName: agent?.name,
+    };
+  } catch (err) {
+    log.warn('resolveApprovalSessionOrigin failed', { questionId, err });
+    return undefined;
+  }
 }
 
 function attachmentType(mimeType: string): 'image' | 'file' {
@@ -216,11 +255,11 @@ function attachmentType(mimeType: string): 'image' | 'file' {
 }
 
 function outboundFileToAttachment(file: OutboundFile): WebChatAttachment | null {
-  if (file.data.length > MAX_ATTACHMENT_BYTES) {
+  if (file.data.length > MAX_LEGACY_ATTACHMENT_BYTES) {
     log.warn('Skipping oversize outbound attachment', { filename: file.filename, size: file.data.length });
     return null;
   }
-  const mimeType = mimeTypeFromFilename(file.filename);
+  const mimeType = inferAttachmentMime(file.filename, '');
   return {
     name: file.filename,
     mimeType,
@@ -235,21 +274,41 @@ interface RawAttachment {
   mimeType?: string;
   type?: string;
   data?: string;
+  uploadId?: string;
+  size?: number;
 }
 
-function validateInboundAttachments(raw: unknown): WebChatAttachment[] | { error: string } {
+function validateInboundAttachments(raw: unknown): InboundAttachment[] | { error: string } {
   if (raw === undefined) return [];
   if (!Array.isArray(raw)) return { error: 'attachments must be an array' };
   if (raw.length > MAX_ATTACHMENTS) return { error: 'too many attachments' };
 
-  const validated: WebChatAttachment[] = [];
+  const validated: InboundAttachment[] = [];
   for (const item of raw) {
     if (!item || typeof item !== 'object') return { error: 'invalid attachment' };
     const att = item as RawAttachment;
     const name = typeof att.name === 'string' ? att.name.trim() : '';
     const mimeType = inferAttachmentMime(name, typeof att.mimeType === 'string' ? att.mimeType : '');
+    const uploadId = typeof att.uploadId === 'string' ? att.uploadId.trim() : '';
     const data = typeof att.data === 'string' ? att.data : '';
-    if (!name || !data) return { error: 'invalid attachment fields' };
+
+    if (!name) return { error: 'invalid attachment fields' };
+
+    if (uploadId) {
+      const size = typeof att.size === 'number' && Number.isFinite(att.size) ? att.size : 0;
+      if (size <= 0) return { error: 'invalid attachment fields' };
+      validated.push({
+        kind: 'upload',
+        uploadId,
+        name,
+        mimeType,
+        type: attachmentType(mimeType),
+        size,
+      });
+      continue;
+    }
+
+    if (!data) return { error: 'invalid attachment fields' };
 
     let decoded: Buffer;
     try {
@@ -257,11 +316,12 @@ function validateInboundAttachments(raw: unknown): WebChatAttachment[] | { error
     } catch {
       return { error: 'invalid attachment data' };
     }
-    if (decoded.length === 0 || decoded.length > MAX_ATTACHMENT_BYTES) {
+    if (decoded.length === 0 || decoded.length > MAX_LEGACY_ATTACHMENT_BYTES) {
       return { error: 'attachment size out of range' };
     }
 
     validated.push({
+      kind: 'inline',
       name,
       mimeType,
       type: attachmentType(mimeType),
@@ -270,6 +330,39 @@ function validateInboundAttachments(raw: unknown): WebChatAttachment[] | { error
     });
   }
   return validated;
+}
+
+function buildAgentFacingAttachment(
+  messageId: string,
+  meta: StoredAttachmentMeta,
+): Record<string, unknown> {
+  const base: Record<string, unknown> = {
+    name: meta.name,
+    type: meta.type === 'image' ? 'image' : 'file',
+    mimeType: meta.mimeType,
+    size: meta.size,
+  };
+  if (meta.size > MAX_AGENT_INLINE_BYTES) return base;
+  const filePath = getMessageAttachmentPath(messageId, meta.storageName);
+  if (!filePath) return base;
+  try {
+    const inlineData = fs.readFileSync(filePath).toString('base64');
+    return { ...base, data: inlineData };
+  } catch {
+    return base;
+  }
+}
+
+function stagedUploadMatches(staged: StagedUpload, platformId: string, threadId: string): boolean {
+  return staged.platformId === platformId && staged.threadId === threadId;
+}
+
+function persistStoredAttachments(
+  msg: WebchatStoredMessage,
+  storedAttachments: StoredAttachmentMeta[],
+): WebchatStoredMessage {
+  if (storedAttachments.length === 0) return appendMessage(msg);
+  return appendMessageWithAttachmentMeta(msg, storedAttachments);
 }
 
 function staticMimeType(filePath: string): string {
@@ -697,19 +790,37 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
     return assertRoomAccess(logicalPlatformId, sessionUserId);
   }
 
+  function tryResolveStoragePlatformId(
+    logicalPlatformId: string,
+    sessionUserId: string,
+    res: http.ServerResponse,
+  ): string | undefined {
+    try {
+      return resolveStoragePlatformId(logicalPlatformId, sessionUserId);
+    } catch (e) {
+      if (e instanceof RoomAccessError) {
+        json(res, 403, { error: 'Forbidden' });
+        return undefined;
+      }
+      throw e;
+    }
+  }
+
   function checkAuth(req: http.IncomingMessage, url: URL): boolean {
     const header = req.headers.authorization;
     if (header === `Bearer ${opts.authToken}`) return true;
+    // Browser img/fetch cannot set Authorization; ?token= is accepted for /api/ws and
+    // /api/attachments (weaker — may appear in logs/history/referrer).
+    if (url.pathname === '/api/ws' || url.pathname.startsWith('/api/attachments/')) {
+      const q = url.searchParams.get('token');
+      if (q === opts.authToken) return true;
+    }
 
     if (isPublicMode()) {
       if (isPublicAuthPath(url.pathname) && isPublicAuthExemptPath(url.pathname)) return true;
       return resolveSessionUser(opts.publicAuth!, req) != null;
     }
 
-    if (url.pathname === '/api/ws') {
-      const q = url.searchParams.get('token');
-      return q === opts.authToken;
-    }
     return false;
   }
 
@@ -751,12 +862,16 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
     return event;
   }
 
-  function persistAndBroadcast(msg: WebchatStoredMessage): WebchatStoredMessage {
-    const stored = appendMessage(msg);
+  function persistAndBroadcast(
+    msg: WebchatStoredMessage,
+    storedAttachments?: StoredAttachmentMeta[],
+  ): WebchatStoredMessage {
+    const stored =
+      storedAttachments !== undefined
+        ? persistStoredAttachments(msg, storedAttachments)
+        : appendMessage(msg);
     const clientMsg = messageForClient(stored);
-    broadcast(
-      wsEventForClient({ type: 'message', message: clientMsg }, stored.platformId),
-    );
+    broadcast(wsEventForClient({ type: 'message', message: clientMsg }, stored.platformId));
     return stored;
   }
 
@@ -766,10 +881,10 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
     );
   }
 
-  function readBody(req: http.IncomingMessage): Promise<string> {
+  function readBody(req: http.IncomingMessage, maxBytes = MAX_BODY_BYTES): Promise<string> {
     return new Promise((resolve, reject) => {
       const contentLength = req.headers['content-length'];
-      if (contentLength && Number(contentLength) > MAX_BODY_BYTES) {
+      if (contentLength && Number(contentLength) > maxBytes) {
         reject(new Error('body too large'));
         return;
       }
@@ -778,7 +893,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
       req.on('data', (chunk: Buffer | string) => {
         const size = typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.length;
         bytes += size;
-        if (bytes > MAX_BODY_BYTES) {
+        if (bytes > maxBytes) {
           req.destroy();
           reject(new Error('body too large'));
           return;
@@ -894,19 +1009,91 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
     const timestamp = new Date().toISOString();
     const isGroup = logicalPlatformId === WEB_LOBBY_PLATFORM_ID;
 
+    const storedAttachments: StoredAttachmentMeta[] = [];
+    let attachmentIndex = 0;
+
+    for (const att of attachments) {
+      if (att.kind !== 'upload') continue;
+      const staged = getStagedUpload(att.uploadId);
+      if (!staged || !stagedUploadMatches(staged, storagePlatformId, threadIdRaw)) {
+        json(res, 400, { error: 'invalid upload reference' });
+        return;
+      }
+      if (staged.size !== att.size || staged.name !== att.name) {
+        json(res, 400, { error: 'invalid upload reference' });
+        return;
+      }
+    }
+
+    const consumedUploads: StagedUpload[] = [];
+    for (const att of attachments) {
+      if (att.kind !== 'upload') continue;
+      const staged = consumeStagedUpload(att.uploadId);
+      if (!staged) {
+        for (const pending of consumedUploads) restoreStagedUpload(pending);
+        json(res, 400, { error: 'invalid upload reference' });
+        return;
+      }
+      consumedUploads.push(staged);
+    }
+
+    let uploadCursor = 0;
+    let movedCount = 0;
+    try {
+      for (const att of attachments) {
+        if (att.kind === 'upload') {
+          const staged = consumedUploads[uploadCursor++]!;
+          storedAttachments.push(
+            moveAttachmentIntoMessage(id, attachmentIndex++, {
+              name: staged.name,
+              mimeType: staged.mimeType,
+              type: staged.type,
+              size: staged.size,
+              sourcePath: staged.filePath,
+            }),
+          );
+          movedCount++;
+          try {
+            fs.rmSync(path.dirname(staged.filePath), { recursive: true, force: true });
+          } catch {
+            // ignore staging dir cleanup
+          }
+          continue;
+        }
+
+        const inlineStored = writeAttachmentFiles(
+          id,
+          [
+            {
+              name: att.name,
+              mimeType: att.mimeType,
+              type: att.type,
+              size: att.size,
+              data: att.data,
+            },
+          ],
+          attachmentIndex,
+        );
+        storedAttachments.push(...inlineStored);
+        attachmentIndex += inlineStored.length;
+      }
+    } catch {
+      deleteMessageFiles(id);
+      // Renamed uploads (indices 0..movedCount-1) are gone; restore only not-yet-moved staging refs.
+      for (let i = movedCount; i < consumedUploads.length; i++) {
+        restoreStagedUpload(consumedUploads[i]!);
+      }
+      json(res, 500, { error: 'attachment processing failed' });
+      return;
+    }
+
     const content: Record<string, unknown> = {
       text: text.trim(),
       sender: sender.displayName,
       senderId: sender.userId,
     };
-    if (attachments.length > 0) {
-      content.attachments = attachments.map((a) => ({
-        name: a.name,
-        type: a.type === 'image' ? 'image' : 'file',
-        mimeType: a.mimeType,
-        size: a.size,
-        data: a.data,
-      }));
+    if (storedAttachments.length > 0) {
+      content.attachments = storedAttachments.map((meta) => buildAgentFacingAttachment(id, meta));
     }
 
     const inbound: InboundMessage = {
@@ -917,17 +1104,19 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
       isGroup,
     };
 
-    const stored = persistAndBroadcast({
-      id,
-      direction: 'inbound',
-      text: text.trim(),
-      timestamp: Date.now(),
-      platformId: storagePlatformId,
-      threadId: threadId ?? MAIN_THREAD,
-      senderName: sender.displayName,
-      senderId: sender.userId,
-      ...(attachments.length > 0 ? { attachments: toStoredAttachments(attachments) } : {}),
-    });
+    const stored = persistAndBroadcast(
+      {
+        id,
+        direction: 'inbound',
+        text: text.trim(),
+        timestamp: Date.now(),
+        platformId: storagePlatformId,
+        threadId: threadId ?? MAIN_THREAD,
+        senderName: sender.displayName,
+        senderId: sender.userId,
+      },
+      storedAttachments.length > 0 ? storedAttachments : undefined,
+    );
     content[THREAD_MESSAGE_SEQ_FIELD] = stored.threadSeq;
     inbound.content = content;
 
@@ -945,7 +1134,17 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
           sender.userId,
           sender.displayName,
           (agents) => {
-            broadcast({ type: 'engaged', platformId: storagePlatformId, threadId: threadIdStored, agents });
+            broadcast(
+              wsEventForClient(
+                {
+                  type: 'engaged',
+                  platformId: toLogicalPlatformId(storagePlatformId),
+                  threadId: threadIdStored,
+                  agents,
+                },
+                storagePlatformId,
+              ),
+            );
           },
         );
       } else {
@@ -953,7 +1152,100 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
       }
     }
 
-    json(res, 200, { messageId: id, timestamp: Date.now() });
+    json(res, 200, {
+      messageId: id,
+      timestamp: stored.timestamp,
+      ...(stored.attachments?.length ? { attachments: stored.attachments } : {}),
+    });
+  }
+
+  async function handleMultipartUpload(
+    platformId: string,
+    threadId: string,
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+  ): Promise<void> {
+    const result = await parseMultipartUpload(req, platformId, threadId);
+    if ('error' in result) {
+      json(res, result.status, { error: result.error });
+      return;
+    }
+    const { upload } = result;
+    json(res, 200, {
+      uploadId: upload.uploadId,
+      name: upload.name,
+      mimeType: upload.mimeType,
+      type: upload.type,
+      size: upload.size,
+    });
+  }
+
+  async function handleChunkUpload(
+    platformId: string,
+    threadId: string,
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+  ): Promise<void> {
+    let body: string;
+    try {
+      body = await readBody(req, CHUNK_SIZE * 2);
+    } catch {
+      json(res, 413, { error: 'chunk body too large' });
+      return;
+    }
+    let parsed: {
+      uploadId?: string;
+      chunkIndex?: number;
+      totalChunks?: number;
+      filename?: string;
+      mimeType?: string;
+      data?: string;
+    };
+    try {
+      parsed = JSON.parse(body) as typeof parsed;
+    } catch {
+      json(res, 400, { error: 'Invalid JSON' });
+      return;
+    }
+    if (
+      typeof parsed.uploadId !== 'string' ||
+      typeof parsed.filename !== 'string' ||
+      typeof parsed.data !== 'string' ||
+      typeof parsed.chunkIndex !== 'number' ||
+      typeof parsed.totalChunks !== 'number'
+    ) {
+      json(res, 400, { error: 'Missing or invalid required fields' });
+      return;
+    }
+    const result = await acceptChunk(
+      {
+        uploadId: parsed.uploadId,
+        chunkIndex: parsed.chunkIndex,
+        totalChunks: parsed.totalChunks,
+        filename: parsed.filename,
+        mimeType: parsed.mimeType,
+        data: parsed.data,
+      },
+      platformId,
+      threadId,
+    );
+    if (!result.ok) {
+      json(res, result.status, { error: result.error });
+      return;
+    }
+    if (result.upload) {
+      json(res, 200, {
+        uploadId: result.upload.uploadId,
+        name: result.upload.name,
+        mimeType: result.upload.mimeType,
+        type: result.upload.type,
+        size: result.upload.size,
+        received: result.received,
+        total: result.total,
+      });
+      return;
+    }
+    json(res, 200, { ok: true, received: result.received, total: result.total });
   }
 
   async function handlePostAction(
@@ -986,8 +1278,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
       return;
     }
 
-    const threadId = threadIdRaw === MAIN_THREAD ? MAIN_THREAD : threadIdRaw;
-    const message = findMessageByQuestionId(platformId, threadId, questionId);
+    const message = findMessageByQuestionId(platformId, threadIdRaw, questionId);
     if (!message?.card) {
       json(res, 404, { error: 'card not found' });
       return;
@@ -1004,16 +1295,27 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
       return;
     }
 
-    setupConfig?.onAction(questionId, value, opts.userId);
+    const selectedLabel = selectedOption.selectedLabel ?? selectedOption.label;
+    const result = answerCardsByQuestionId(questionId, value, selectedLabel);
+    if (!result.ok) {
+      if (result.reason === 'already_answered') {
+        json(res, 409, { error: 'card already answered' });
+        return;
+      }
+      json(res, 404, { error: 'card not found' });
+      return;
+    }
 
-    const updatedCard: WebchatAskQuestionCard = {
-      ...message.card,
-      status: 'answered',
-      selectedValue: value,
-      selectedLabel: selectedOption.selectedLabel ?? selectedOption.label,
-    };
-    const updated = updateMessageCard(message.id, updatedCard);
-    if (updated) {
+    try {
+      await Promise.resolve(setupConfig?.onAction(questionId, value, opts.userId));
+    } catch (err) {
+      revertCardsByQuestionId(questionId);
+      log.error('Approval action handler failed', { questionId, err });
+      json(res, 500, { error: 'action failed' });
+      return;
+    }
+
+    for (const updated of result.messages) {
       broadcastMessageUpdate(updated);
     }
 
@@ -1088,17 +1390,13 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
     json(res, 200, { ok: true });
   }
 
-  function serveAttachment(messageId: string, storageName: string, res: http.ServerResponse): void {
+  function serveAttachment(messageId: string, storageName: string, req: http.IncomingMessage, res: http.ServerResponse): void {
     const filePath = getMessageAttachmentPath(messageId, storageName);
     if (!filePath) {
       res.writeHead(404).end();
       return;
     }
-    res.writeHead(200, {
-      'Content-Type': mimeTypeFromFilename(storageName),
-      'X-Content-Type-Options': 'nosniff',
-    });
-    res.end(fs.readFileSync(filePath));
+    serveAttachmentFile(filePath, storageName, req, res);
   }
 
   return {
@@ -1162,23 +1460,19 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
             if (attMatch && req.method === 'GET') {
               const messageId = decodeURIComponent(attMatch[1]!);
               const storageName = decodeURIComponent(attMatch[2]!);
-              serveAttachment(messageId, storageName, res);
+              serveAttachment(messageId, storageName, req, res);
               return;
             }
 
             const threadsMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/threads$/);
             if (threadsMatch && req.method === 'POST') {
               const logicalPlatformId = decodeURIComponent(threadsMatch[1]!);
-              let storagePlatformId: string;
-              try {
-                storagePlatformId = resolveStoragePlatformId(logicalPlatformId, requestUser.userId);
-              } catch (e) {
-                if (e instanceof RoomAccessError) {
-                  json(res, 403, { error: 'Forbidden' });
-                  return;
-                }
-                throw e;
-              }
+              const storagePlatformId = tryResolveStoragePlatformId(
+                logicalPlatformId,
+                requestUser.userId,
+                res,
+              );
+              if (storagePlatformId === undefined) return;
               await handleCreateThread(storagePlatformId, req, res);
               return;
             }
@@ -1187,16 +1481,12 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
             if (threadMatch) {
               const logicalPlatformId = decodeURIComponent(threadMatch[1]!);
               const threadId = decodeURIComponent(threadMatch[2]!);
-              let storagePlatformId: string;
-              try {
-                storagePlatformId = resolveStoragePlatformId(logicalPlatformId, requestUser.userId);
-              } catch (e) {
-                if (e instanceof RoomAccessError) {
-                  json(res, 403, { error: 'Forbidden' });
-                  return;
-                }
-                throw e;
-              }
+              const storagePlatformId = tryResolveStoragePlatformId(
+                logicalPlatformId,
+                requestUser.userId,
+                res,
+              );
+              if (storagePlatformId === undefined) return;
               if (req.method === 'PATCH') {
                 await handlePatchThread(storagePlatformId, threadId, req, res);
                 return;
@@ -1211,16 +1501,12 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
             if (msgMatch) {
               const logicalPlatformId = decodeURIComponent(msgMatch[1]!);
               const threadId = decodeURIComponent(msgMatch[2]!);
-              let storagePlatformId: string;
-              try {
-                storagePlatformId = resolveStoragePlatformId(logicalPlatformId, requestUser.userId);
-              } catch (e) {
-                if (e instanceof RoomAccessError) {
-                  json(res, 403, { error: 'Forbidden' });
-                  return;
-                }
-                throw e;
-              }
+              const storagePlatformId = tryResolveStoragePlatformId(
+                logicalPlatformId,
+                requestUser.userId,
+                res,
+              );
+              if (storagePlatformId === undefined) return;
               if (req.method === 'GET') {
                 const since = parseInt(url.searchParams.get('since') ?? '0', 10);
                 const messages = getMessages(storagePlatformId, threadId, since).map(messageForClient);
@@ -1244,20 +1530,46 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
               }
             }
 
+            const uploadChunkMatch = url.pathname.match(
+              /^\/api\/rooms\/([^/]+)\/threads\/([^/]+)\/uploads\/chunk$/,
+            );
+            if (uploadChunkMatch && req.method === 'POST') {
+              const logicalPlatformId = decodeURIComponent(uploadChunkMatch[1]!);
+              const threadId = decodeURIComponent(uploadChunkMatch[2]!);
+              const storagePlatformId = tryResolveStoragePlatformId(
+                logicalPlatformId,
+                requestUser.userId,
+                res,
+              );
+              if (storagePlatformId === undefined) return;
+              await handleChunkUpload(storagePlatformId, threadId, req, res);
+              return;
+            }
+
+            const uploadMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/threads\/([^/]+)\/uploads$/);
+            if (uploadMatch && req.method === 'POST') {
+              const logicalPlatformId = decodeURIComponent(uploadMatch[1]!);
+              const threadId = decodeURIComponent(uploadMatch[2]!);
+              const storagePlatformId = tryResolveStoragePlatformId(
+                logicalPlatformId,
+                requestUser.userId,
+                res,
+              );
+              if (storagePlatformId === undefined) return;
+              await handleMultipartUpload(storagePlatformId, threadId, req, res);
+              return;
+            }
+
             const actionMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/threads\/([^/]+)\/actions$/);
             if (actionMatch && req.method === 'POST') {
               const logicalPlatformId = decodeURIComponent(actionMatch[1]!);
               const threadId = decodeURIComponent(actionMatch[2]!);
-              let storagePlatformId: string;
-              try {
-                storagePlatformId = resolveStoragePlatformId(logicalPlatformId, requestUser.userId);
-              } catch (e) {
-                if (e instanceof RoomAccessError) {
-                  json(res, 403, { error: 'Forbidden' });
-                  return;
-                }
-                throw e;
-              }
+              const storagePlatformId = tryResolveStoragePlatformId(
+                logicalPlatformId,
+                requestUser.userId,
+                res,
+              );
+              if (storagePlatformId === undefined) return;
               await handlePostAction(storagePlatformId, threadId, req, res);
               return;
             }
@@ -1271,16 +1583,12 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
                 json(res, 400, { error: 'engaged agents only apply to lobby' });
                 return;
               }
-              let storagePlatformId: string;
-              try {
-                storagePlatformId = resolveStoragePlatformId(logicalPlatformId, requestUser.userId);
-              } catch (e) {
-                if (e instanceof RoomAccessError) {
-                  json(res, 403, { error: 'Forbidden' });
-                  return;
-                }
-                throw e;
-              }
+              const storagePlatformId = tryResolveStoragePlatformId(
+                logicalPlatformId,
+                requestUser.userId,
+                res,
+              );
+              if (storagePlatformId === undefined) return;
               const agents = removeEngagedAgent(storagePlatformId, threadId, agentFolder);
               broadcast(
                 wsEventForClient(
@@ -1308,6 +1616,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
           res.writeHead(404).end();
         } catch (err) {
           log.error('Web channel request failed', { err, path: req.url });
+          /* v8 ignore if -- streaming handlers may have already started the response */
           if (!res.headersSent) {
             json(res, 500, { error: 'Internal server error' });
           }
@@ -1337,8 +1646,8 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
 
       await new Promise<void>((resolve, reject) => {
         server!.once('error', reject);
-        server!.listen(opts.port, opts.bindAddress, () => {
-          log.info('Web channel listening', { port: opts.port, bindAddress: opts.bindAddress });
+        server!.listen(opts.port, opts.bindAddress ?? '127.0.0.1', () => {
+          log.info('Web channel listening', { port: opts.port, bindAddress: opts.bindAddress ?? '127.0.0.1' });
           resolve();
         });
       });
@@ -1376,8 +1685,10 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
       if (askQuestion) {
         const card = buildAskQuestionCard(askQuestion);
         const text = cardFallbackText(card.title, card.question);
+        const origin =
+          platformId === WEB_INBOX_PLATFORM_ID ? resolveApprovalSessionOrigin(askQuestion.questionId) : undefined;
+        const senderName = extractSenderName(message.content) ?? origin?.agentName;
         const id = `web-out-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-        const senderName = extractSenderName(message.content);
         persistAndBroadcast({
           id,
           direction: 'outbound',
@@ -1388,6 +1699,25 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
           card,
           ...(senderName ? { senderName } : {}),
         });
+
+        if (
+          origin &&
+          origin.platformId !== WEB_INBOX_PLATFORM_ID &&
+          origin.platformId !== platformId
+        ) {
+          const mirrorId = `web-out-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+          persistAndBroadcast({
+            id: mirrorId,
+            direction: 'outbound',
+            text,
+            timestamp: Date.now(),
+            platformId: origin.platformId,
+            threadId: origin.threadId,
+            card,
+            ...(senderName ? { senderName } : {}),
+          });
+        }
+
         return id;
       }
 
@@ -1408,7 +1738,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
         ...(attachments.length > 0 ? { attachments: toStoredAttachments(attachments) } : {}),
       });
 
-      if (platformId === WEB_LOBBY_PLATFORM_ID && text.trim()) {
+      if (platformId === 'lobby' && text.trim()) {
         await fanOutPeerReply(
           platformId,
           threadId,
@@ -1423,6 +1753,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
       return id;
     },
 
+    /** Host approval DMs land in the shared Inbox room (local) or per-user inbox (public). */
     async openDM(userHandle: string): Promise<string> {
       if (isPublicMode() && userHandle.startsWith('web:')) {
         return inboxPlatformForUser(userHandle);
@@ -1440,7 +1771,11 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
   };
 }
 
-import { loadWebAdapterAuthConfig } from '../webchat-auth-config.js';
+/** Resolve listen port from process env and optional `.env` values (exported for tests). */
+export function resolveWebchatPort(env: Record<string, string | undefined>): number {
+  const portStr = process.env.WEBCHAT_PORT || env.WEBCHAT_PORT || '3200';
+  return parseInt(portStr, 10);
+}
 
 registerChannelAdapter('web', {
   factory: () => {
@@ -1448,8 +1783,7 @@ registerChannelAdapter('web', {
     if (!cfg) return null;
 
     const env = readEnvFile(['WEBCHAT_PORT']);
-    const portStr = process.env.WEBCHAT_PORT || env.WEBCHAT_PORT || '3200';
-    const port = parseInt(portStr, 10);
+    const port = resolveWebchatPort(env);
 
     return createWebAdapter({
       port,
