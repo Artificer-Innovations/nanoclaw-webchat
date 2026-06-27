@@ -1,4 +1,4 @@
-import { buildAudioPopoutDocument, buildCodePopoutDocument, buildCsvPopoutDocument, buildHtmlPopoutDocument, buildMarkdownPopoutDocument, buildPlainTextPopoutDocument, buildVideoPopoutDocument, openHtmlDocumentInNewTab, ATTACHMENT_HTML_IFRAME_SANDBOX } from './attachment-text-popout';
+import { buildAudioPopoutDocument, buildCodePopoutDocument, buildCsvPopoutDocument, buildHtmlPopoutDocument, buildMarkdownPopoutDocument, buildPlainTextPopoutDocument, buildVideoPopoutDocument, openHtmlDocumentInNewTab, ATTACHMENT_HTML_IFRAME_SANDBOX, ATTACHMENT_SVG_IFRAME_SANDBOX } from './attachment-text-popout';
 import { codeLanguageFromAttachment, isCodeFilename, isCodeMimeType } from './attachment-code';
 import { isCsvAttachment } from './csv-preview';
 import { getStoredToken, uploadAttachmentMultipart } from './api';
@@ -11,6 +11,8 @@ export const ATTACHMENT_TEXT_PREVIEW_MAX_BYTES = 2 * 1024 * 1024;
 /** Client uses streaming multipart for all sizes up to MAX; chunked API remains for resumability. */
 export const CHUNK_SIZE = 512 * 1024;
 export const COMPOSER_TEXT_SNIPPET_MAX = 200;
+/** Bytes read from text files when extracting a composer snippet (first line only). */
+export const COMPOSER_TEXT_SNIPPET_READ_BYTES = 4096;
 
 export function formatUploadBytesLabel(bytes: number): string {
   if (bytes >= 1024 * 1024 * 1024) {
@@ -290,11 +292,15 @@ export function attachmentIsHeic(mimeType: string): boolean {
   return HEIC_IMAGE_MIMES.has(normalized);
 }
 
-/** Safari can render HEIC/HEIF in img; Chromium/Firefox generally cannot. */
+/** WebKit on Apple platforms can render HEIC/HEIF in img; Chromium on desktop/Android generally cannot. */
 export function isHeicDisplaySupportedInBrowser(): boolean {
   if (typeof navigator === 'undefined') return true;
   const ua = navigator.userAgent;
-  return /Safari/i.test(ua) && !/Chrome|Chromium|Edg|OPR|Firefox|FxiOS|CriOS/i.test(ua);
+  if (!/AppleWebKit/i.test(ua) || /Android/i.test(ua)) return false;
+  // All iOS browsers use WebKit (Safari, Chrome CriOS, Firefox FxiOS, etc.).
+  if (/iPhone|iPad|iPod/i.test(ua)) return true;
+  // Desktop Safari (not Chromium-based shells that also embed WebKit on macOS).
+  return /Safari/i.test(ua) && !/Chrome|Chromium|Edg|OPR|Firefox/i.test(ua);
 }
 
 /** SSR: defer to onError when HEIC support is unknown. */
@@ -441,7 +447,7 @@ export function attachmentUsesSvgPreview(mimeType: string): boolean {
 }
 
 /** HTML previews: run JS in an isolated origin; never add allow-same-origin (parent/token access). */
-export { ATTACHMENT_HTML_IFRAME_SANDBOX };
+export { ATTACHMENT_HTML_IFRAME_SANDBOX, ATTACHMENT_SVG_IFRAME_SANDBOX };
 
 /** Sandbox for untrusted HTML previews; omitted for PDFs (browser viewer). */
 export function attachmentIframeSandbox(mimeType: string): string | undefined {
@@ -809,7 +815,7 @@ async function readComposerTextSnippet(file: File, mimeType: string): Promise<st
   if (!attachmentIsTextPreviewable(mimeType, file.name)) return undefined;
   if (attachmentTextTooLargeForPreview(file.size)) return undefined;
   try {
-    const text = await file.text();
+    const text = await file.slice(0, COMPOSER_TEXT_SNIPPET_READ_BYTES).text();
     const line = text.split(/\r?\n/).find((entry) => entry.trim().length > 0) ?? '';
     if (!line) return undefined;
     return line.length > COMPOSER_TEXT_SNIPPET_MAX

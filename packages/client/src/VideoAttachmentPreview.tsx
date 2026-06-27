@@ -1,5 +1,8 @@
 import { useState } from 'react';
 import {
+  attachmentIsAudio,
+  attachmentIsTextPreviewable,
+  attachmentIsVideo,
   audioMimeTypePlayable,
   handleAudioPreviewError,
   handleVideoPreviewError,
@@ -227,4 +230,24 @@ export function composerVideoPreviewUsesFileChip(mimeType: string): boolean {
 
 export function composerAudioPreviewUsesFileChip(mimeType: string): boolean {
   return !audioMimeTypePlayable(mimeType);
+}
+
+export function composerPreviewClassName(att: {
+  type: 'image' | 'file';
+  mimeType: string;
+  name: string;
+}): string {
+  const usesFileChip =
+    (att.type === 'file' &&
+      !attachmentIsVideo(att.mimeType) &&
+      !attachmentIsAudio(att.mimeType) &&
+      !attachmentIsTextPreviewable(att.mimeType, att.name)) ||
+    (attachmentIsVideo(att.mimeType) && composerVideoPreviewUsesFileChip(att.mimeType)) ||
+    (attachmentIsAudio(att.mimeType) && composerAudioPreviewUsesFileChip(att.mimeType)) ||
+    (att.type === 'image' && composerImagePreviewUsesFileChip(att.mimeType));
+  let className = 'composer-preview';
+  if (usesFileChip) className += ' composer-preview-file';
+  if (attachmentIsAudio(att.mimeType)) className += ' composer-preview-audio';
+  if (attachmentIsTextPreviewable(att.mimeType, att.name)) className += ' composer-preview-text';
+  return className;
 }

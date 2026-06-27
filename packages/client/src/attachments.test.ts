@@ -5,6 +5,7 @@ import {
   attachmentDataUrl,
   attachmentEmbedUrl,
   ATTACHMENT_HTML_IFRAME_SANDBOX,
+  ATTACHMENT_SVG_IFRAME_SANDBOX,
   attachmentIframeSandbox,
   attachmentPreviewMode,
   attachmentPreviewUrl,
@@ -19,6 +20,7 @@ import {
   audioMimeTypePlayable,
   handleAudioPreviewError,
   COMPOSER_TEXT_SNIPPET_MAX,
+  COMPOSER_TEXT_SNIPPET_READ_BYTES,
   attachmentIsVideo,
   attachmentIsAudio,
   attachmentToBlob,
@@ -258,10 +260,29 @@ describe('attachments', () => {
   });
 
   it('detects Safari vs Chromium for HEIC display support', () => {
-    vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 Safari/605.1.15' });
+    vi.stubGlobal('navigator', {
+      userAgent:
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15',
+    });
     expect(isHeicDisplaySupportedInBrowser()).toBe(true);
     vi.stubGlobal('navigator', {
-      userAgent: 'Mozilla/5.0 Chrome/120.0.0.0 Safari/537.36',
+      userAgent:
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/120.0.6099.119 Mobile/15E148 Safari/604.1',
+    });
+    expect(isHeicDisplaySupportedInBrowser()).toBe(true);
+    vi.stubGlobal('navigator', {
+      userAgent:
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) FxiOS/120.0 Mobile/15E148 Safari/605.1.15',
+    });
+    expect(isHeicDisplaySupportedInBrowser()).toBe(true);
+    vi.stubGlobal('navigator', {
+      userAgent:
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    });
+    expect(isHeicDisplaySupportedInBrowser()).toBe(false);
+    vi.stubGlobal('navigator', {
+      userAgent:
+        'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
     });
     expect(isHeicDisplaySupportedInBrowser()).toBe(false);
     vi.unstubAllGlobals();
@@ -279,6 +300,7 @@ describe('attachments', () => {
     expect(attachmentUsesIframePreview('image/png')).toBe(false);
     expect(attachmentIframeSandbox('text/html')).toBe(ATTACHMENT_HTML_IFRAME_SANDBOX);
     expect(ATTACHMENT_HTML_IFRAME_SANDBOX).not.toContain('allow-same-origin');
+    expect(ATTACHMENT_SVG_IFRAME_SANDBOX).not.toContain('allow-scripts');
     expect(attachmentIframeSandbox('application/pdf')).toBeUndefined();
   });
 
@@ -488,9 +510,20 @@ describe('attachments', () => {
 
   it('skips composer snippet when text read fails', async () => {
     const file = new File(['hello'], 'notes.txt', { type: 'text/plain' });
-    vi.spyOn(file, 'text').mockRejectedValue(new Error('read failed'));
+    const slice = file.slice(0, COMPOSER_TEXT_SNIPPET_READ_BYTES);
+    vi.spyOn(file, 'slice').mockReturnValue(slice);
+    vi.spyOn(slice, 'text').mockRejectedValue(new Error('read failed'));
     const { attachments } = await readAttachmentFiles([file]);
     expect(attachments[0]?.textSnippet).toBeUndefined();
+    URL.revokeObjectURL(attachments[0]!.previewUrl);
+  });
+
+  it('reads only the first bytes of a text file for composer snippets', async () => {
+    const file = new File(['first line\n' + 'x'.repeat(5000)], 'notes.txt', { type: 'text/plain' });
+    const sliceSpy = vi.spyOn(file, 'slice');
+    const { attachments } = await readAttachmentFiles([file]);
+    expect(sliceSpy).toHaveBeenCalledWith(0, COMPOSER_TEXT_SNIPPET_READ_BYTES);
+    expect(attachments[0]?.textSnippet).toBe('first line');
     URL.revokeObjectURL(attachments[0]!.previewUrl);
   });
 

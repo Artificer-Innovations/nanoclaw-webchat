@@ -51,7 +51,7 @@ export interface WebChatAttachment {
   uploadId?: string;
   /** Client optimistic preview blob URL (display-only). */
   previewUrl?: string;
-  /** Client composer mini-preview snippet (display-only). */
+  /** Client composer mini-preview snippet (display-only; never sent to server). */
   textSnippet?: string;
 }
 

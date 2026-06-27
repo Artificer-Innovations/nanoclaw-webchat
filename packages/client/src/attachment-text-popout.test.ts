@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ATTACHMENT_HTML_IFRAME_SANDBOX,
+  ATTACHMENT_SVG_IFRAME_SANDBOX,
   buildCodePopoutDocument,
   buildCsvPopoutDocument,
   buildHtmlPopoutDocument,
@@ -74,6 +75,11 @@ describe('attachment-text-popout', () => {
     expect(html).toContain(`sandbox="${ATTACHMENT_HTML_IFRAME_SANDBOX}"`);
     expect(html).toContain('srcdoc="&lt;h1&gt;Hello&lt;/h1&gt;"');
     expect(html).toContain('Preview</button>');
+  });
+
+  it('defines a stricter sandbox for svg previews than html', () => {
+    expect(ATTACHMENT_SVG_IFRAME_SANDBOX).not.toContain('allow-scripts');
+    expect(ATTACHMENT_HTML_IFRAME_SANDBOX).toContain('allow-scripts');
   });
 
   it('builds a csv popout document with table preview', () => {

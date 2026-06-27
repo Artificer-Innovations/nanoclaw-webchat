@@ -28,6 +28,7 @@ import {
   attachmentUsesSvgPreview,
   attachmentUsesVideoPreview,
   ATTACHMENT_HTML_IFRAME_SANDBOX,
+  ATTACHMENT_SVG_IFRAME_SANDBOX,
   attachmentFriendlyTypeLabel,
   copyAttachmentForPreview,
   downloadAttachment,
@@ -461,13 +462,13 @@ export function AttachmentDrawer({
               className="attachment-drawer-embed"
               title={att.name}
               src={embedUrl}
-              sandbox={ATTACHMENT_HTML_IFRAME_SANDBOX}
+              sandbox={ATTACHMENT_SVG_IFRAME_SANDBOX}
             />
           ) : imageFailed || !imageMimeTypeDisplayable(att.mimeType) ? (
             <div className="attachment-drawer-video-fallback">
               <p className="attachment-drawer-status">
                 {attachmentIsHeic(att.mimeType)
-                  ? 'HEIC preview is not supported in this browser. Download to view or open on a device that supports HEIC.'
+                  ? 'HEIC/HEIF preview is not supported in this browser. Download to view or open on a device that supports HEIC/HEIF.'
                   : 'Preview unavailable in this browser.'}
               </p>
               <button

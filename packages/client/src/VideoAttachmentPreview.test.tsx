@@ -7,6 +7,7 @@ import {
   ComposerImagePreview,
   composerImagePreviewUsesFileChip,
   ComposerVideoPreview,
+  composerPreviewClassName,
   composerVideoPreviewUsesFileChip,
   MessageAudioAttachment,
   MessageImageAttachment,
@@ -26,6 +27,30 @@ describe('VideoAttachmentPreview', () => {
     expect(composerAudioPreviewUsesFileChip('audio/flac')).toBe(
       !attachments.audioMimeTypePlayable('audio/flac'),
     );
+  });
+
+  it('builds composer preview class names from attachment metadata', () => {
+    expect(
+      composerPreviewClassName({
+        type: 'file',
+        mimeType: 'application/pdf',
+        name: 'report.pdf',
+      }),
+    ).toBe('composer-preview composer-preview-file');
+    expect(
+      composerPreviewClassName({
+        type: 'file',
+        mimeType: 'text/markdown',
+        name: 'notes.md',
+      }),
+    ).toBe('composer-preview composer-preview-text');
+    expect(
+      composerPreviewClassName({
+        type: 'file',
+        mimeType: 'audio/mpeg',
+        name: 'song.mp3',
+      }),
+    ).toBe('composer-preview composer-preview-audio');
   });
 
   it('renders composer video fallback on unsupported playback', () => {

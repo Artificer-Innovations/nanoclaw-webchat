@@ -358,7 +358,7 @@ describe('AttachmentDrawer', () => {
         onClose={vi.fn()}
       />,
     );
-    expect(screen.getByText(/HEIC preview is not supported/i)).toBeInTheDocument();
+    expect(screen.getByText(/HEIC\/HEIF preview is not supported/i)).toBeInTheDocument();
     expect(container.querySelector('.attachment-drawer-download-fallback')).toHaveTextContent(
       'Download photo.heic',
     );
@@ -401,7 +401,8 @@ describe('AttachmentDrawer', () => {
     );
     const iframe = container.querySelector('.attachment-drawer-embed');
     expect(iframe).toHaveAttribute('src', 'data:image/svg+xml;base64,aGVsbG8=');
-    expect(iframe).toHaveAttribute('sandbox');
+    expect(iframe).toHaveAttribute('sandbox', attachments.ATTACHMENT_SVG_IFRAME_SANDBOX);
+    expect(attachments.ATTACHMENT_SVG_IFRAME_SANDBOX).not.toContain('allow-scripts');
   });
 
   it('renders embedded pdfs in an iframe', () => {

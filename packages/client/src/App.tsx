@@ -58,9 +58,7 @@ import {
   ComposerAudioPreview,
   ComposerImagePreview,
   ComposerVideoPreview,
-  composerAudioPreviewUsesFileChip,
-  composerImagePreviewUsesFileChip,
-  composerVideoPreviewUsesFileChip,
+  composerPreviewClassName,
 } from './VideoAttachmentPreview';
 import {
   getStoredAttachmentDrawerWidth,
@@ -976,24 +974,7 @@ export function App() {
                     {pendingAttachments.map((att, index) => (
                       <div
                         key={`${att.name}-${index}`}
-                        className={`composer-preview${
-                          (att.type === 'file' &&
-                            !attachmentIsVideo(att.mimeType) &&
-                            !attachmentIsAudio(att.mimeType) &&
-                            !attachmentIsTextPreviewable(att.mimeType, att.name)) ||
-                          (attachmentIsVideo(att.mimeType) &&
-                            composerVideoPreviewUsesFileChip(att.mimeType)) ||
-                          (attachmentIsAudio(att.mimeType) &&
-                            composerAudioPreviewUsesFileChip(att.mimeType)) ||
-                          (att.type === 'image' &&
-                            composerImagePreviewUsesFileChip(att.mimeType))
-                            ? ' composer-preview-file'
-                            : ''
-                        }${attachmentIsAudio(att.mimeType) ? ' composer-preview-audio' : ''}${
-                          attachmentIsTextPreviewable(att.mimeType, att.name)
-                            ? ' composer-preview-text'
-                            : ''
-                        }`}
+                        className={composerPreviewClassName(att)}
                       >
                         {att.type === 'image' ? (
                           <ComposerImagePreview

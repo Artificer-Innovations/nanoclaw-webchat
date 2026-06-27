@@ -6,6 +6,9 @@ import { escapeHtml } from './html-escape';
 /** HTML previews: run JS in an isolated origin; never add allow-same-origin (parent/token access). */
 export const ATTACHMENT_HTML_IFRAME_SANDBOX = 'allow-scripts allow-popups allow-modals';
 
+/** SVG previews: static display only — no scripts (SVG can embed executable content). */
+export const ATTACHMENT_SVG_IFRAME_SANDBOX = 'allow-popups allow-modals';
+
 const POPOUT_STYLES = `
 :root {
   color-scheme: light dark;
