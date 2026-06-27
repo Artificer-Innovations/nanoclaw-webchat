@@ -1253,6 +1253,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
     threadIdRaw: string,
     req: http.IncomingMessage,
     res: http.ServerResponse,
+    actorUserId: string,
   ): Promise<void> {
     let body: string;
     try {
@@ -1307,7 +1308,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
     }
 
     try {
-      await Promise.resolve(setupConfig?.onAction(questionId, value, opts.userId));
+      await Promise.resolve(setupConfig?.onAction(questionId, value, actorUserId));
     } catch (err) {
       revertCardsByQuestionId(questionId);
       log.error('Approval action handler failed', { questionId, err });
@@ -1570,7 +1571,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
                 res,
               );
               if (storagePlatformId === undefined) return;
-              await handlePostAction(storagePlatformId, threadId, req, res);
+              await handlePostAction(storagePlatformId, threadId, req, res, requestUser.userId);
               return;
             }
 

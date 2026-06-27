@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import {
   fetchAuthConfig,
   loginBasic,
@@ -26,7 +26,7 @@ export function Login({ onSuccess }: LoginProps) {
   }, []);
 
   const handleBasicSubmit = useCallback(
-    async (e: React.FormEvent) => {
+    async (e: FormEvent) => {
       e.preventDefault();
       setSubmitting(true);
       setError(null);

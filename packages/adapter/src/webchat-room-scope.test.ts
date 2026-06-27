@@ -54,6 +54,10 @@ describe('webchat-room-scope', () => {
     expect(shouldDeliverWsEvent(event, 'web:basic:bob')).toBe(false);
   });
 
+  it('drops events without platformId or forUserId', () => {
+    expect(shouldDeliverWsEvent({ type: 'typing' }, alice)).toBe(false);
+  });
+
   it('inboxPlatformForUser matches physical inbox id', () => {
     expect(inboxPlatformForUser(alice)).toBe(toPhysicalPlatformId('inbox', alice));
   });

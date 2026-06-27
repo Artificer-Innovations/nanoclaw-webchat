@@ -100,7 +100,7 @@ export function shouldDeliverWsEvent(
   const platformId =
     event.platformId ??
     (event.message && typeof event.message === 'object' ? event.message.platformId : undefined);
-  if (!platformId) return true;
+  if (!platformId) return false;
   const logical = toLogicalPlatformId(platformId);
   if (isSharedRoom(logical)) return true;
   const owner = ownerUserIdFromPhysical(platformId);

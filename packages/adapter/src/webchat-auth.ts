@@ -30,6 +30,27 @@ export interface ResolvedWebUser {
   displayName: string;
 }
 
+const MAX_LOGIN_BODY_BYTES = 4096;
+
+function readLimitedBody(req: http.IncomingMessage, maxBytes: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    let bytes = 0;
+    req.on('data', (chunk: Buffer | string) => {
+      const size = typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.length;
+      bytes += size;
+      if (bytes > maxBytes) {
+        req.destroy();
+        reject(new Error('body too large'));
+        return;
+      }
+      body += chunk;
+    });
+    req.on('end', () => resolve(body));
+    req.on('error', reject);
+  });
+}
+
 type JsonResponder = (res: http.ServerResponse, status: number, data: unknown) => void;
 
 interface OidcDiscovery {
@@ -319,6 +340,9 @@ async function exchangeCode(
 }
 
 function decodeJwtPayload(jwt: string): Record<string, unknown> {
+  // Signature is not verified here: the id_token is fetched server-side from the IdP token
+  // endpoint over HTTPS in the PKCE authorization-code flow. TLS provides integrity on that
+  // hop; claims are used for identity/allowlist only, not as a client-supplied credential.
   const parts = jwt.split('.');
   if (parts.length < 2) throw new Error('Invalid JWT');
   const payload = Buffer.from(parts[1]!, 'base64url').toString('utf8');
@@ -365,14 +389,13 @@ export async function handlePublicAuthRequest(
   }
 
   if (url.pathname === '/api/auth/login/basic' && req.method === 'POST') {
-    let body = '';
-    await new Promise<void>((resolve, reject) => {
-      req.on('data', (c) => {
-        body += c;
-      });
-      req.on('end', () => resolve());
-      req.on('error', reject);
-    });
+    let body: string;
+    try {
+      body = await readLimitedBody(req, MAX_LOGIN_BODY_BYTES);
+    } catch {
+      json(res, 413, { error: 'payload too large' });
+      return true;
+    }
     let parsed: { username?: string; password?: string };
     try {
       parsed = JSON.parse(body) as { username?: string; password?: string };

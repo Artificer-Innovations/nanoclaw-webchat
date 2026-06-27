@@ -27,7 +27,9 @@ You will need:
 | Variable | Required (public) | Description |
 |----------|-------------------|-------------|
 | `WEBCHAT_AUTH_MODE` | yes | Set to `public` |
-| `WEBCHAT_SESSION_SECRET` | yes | Random secret for signing session cookies (≥ 32 bytes hex recommended) |
+| `WEBCHAT_SESSION_SECRET` | yes | Random secret for signing session cookies (minimum 32 characters; 32-byte hex recommended) |
+| `WEBCHAT_SECURE_COOKIES` | no | `true`/`false` override; public mode defaults to `Secure` cookies |
+| `WEBCHAT_SESSION_INSECURE_COOKIES` | no | Set `true` for local HTTP dev without TLS (disables `Secure` flag) |
 | `WEBCHAT_SECRET` | yes | Still required — used for MCP/automation bearer access and host wiring |
 | `WEBCHAT_BIND_ADDRESS` | recommended | `0.0.0.0` to listen on all interfaces; default `127.0.0.1` |
 | `WEBCHAT_AUTH_BASIC_ENABLED` | one of basic/OIDC | `true` to enable shared-password login |

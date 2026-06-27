@@ -71,6 +71,8 @@ const ENV_KEYS = [
   'WEBCHAT_OIDC_REDIRECT_URI',
   'WEBCHAT_SESSION_SECRET',
   'WEBCHAT_SESSION_TTL_SECONDS',
+  'WEBCHAT_SECURE_COOKIES',
+  'WEBCHAT_SESSION_INSECURE_COOKIES',
   'WEBCHAT_OIDC_ALLOWED_EMAIL_DOMAINS',
   'WEBCHAT_OIDC_ALLOWED_EMAILS',
   'WEBCHAT_OIDC_ALLOWED_SUBS',
@@ -79,6 +81,17 @@ const ENV_KEYS = [
   'WEBCHAT_BASIC_ALLOWED_USERNAMES',
   'WEBCHAT_BASIC_DISPLAY_NAMES',
 ] as const;
+
+/** Minimum length for WEBCHAT_SESSION_SECRET (HMAC signing key). */
+export const MIN_SESSION_SECRET_LENGTH = 32;
+
+function resolveSecureCookies(file: Record<string, string | undefined>): boolean {
+  const explicit = env('WEBCHAT_SECURE_COOKIES', file);
+  if (explicit === 'false') return false;
+  if (explicit === 'true') return true;
+  // Public mode defaults to Secure cookies; do not rely on NODE_ENV.
+  return env('WEBCHAT_SESSION_INSECURE_COOKIES', file) !== 'true';
+}
 
 function env(key: string, file: Record<string, string | undefined>): string | undefined {
   return process.env[key] || file[key];
@@ -179,6 +192,11 @@ export function loadWebAdapterAuthConfig(): WebAdapterAuthConfig | null {
   if (!sessionSecret) {
     throw new Error('WEBCHAT_SESSION_SECRET is required when WEBCHAT_AUTH_MODE=public');
   }
+  if (sessionSecret.length < MIN_SESSION_SECRET_LENGTH) {
+    throw new Error(
+      `WEBCHAT_SESSION_SECRET must be at least ${MIN_SESSION_SECRET_LENGTH} characters`,
+    );
+  }
 
   const oidcEnabled = env('WEBCHAT_AUTH_OIDC_ENABLED', file) === 'true';
   const basicEnabled = env('WEBCHAT_AUTH_BASIC_ENABLED', file) === 'true';
@@ -228,7 +246,7 @@ export function loadWebAdapterAuthConfig(): WebAdapterAuthConfig | null {
       allowedUsernames,
       displayNames: parseDisplayNames(env('WEBCHAT_BASIC_DISPLAY_NAMES', file)),
     },
-    secureCookies: process.env.NODE_ENV === 'production',
+    secureCookies: resolveSecureCookies(file),
   };
 
   return base;

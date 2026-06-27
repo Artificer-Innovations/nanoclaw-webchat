@@ -6,7 +6,6 @@ import {
   CaretRightIcon,
   InboxIcon,
   DoorIcon,
-  InboxIcon,
   PencilIcon,
   PlusIcon,
   SendArrowIcon,
