@@ -61,6 +61,10 @@ export function ownerUserIdFromPhysical(physicalPlatformId: string): string | nu
 }
 
 export function assertRoomAccess(logicalPlatformId: string, sessionUserId: string): string {
+  const existingOwner = ownerUserIdFromPhysical(logicalPlatformId);
+  if (existingOwner !== null && existingOwner !== sessionUserId) {
+    throw new RoomAccessError(logicalPlatformId);
+  }
   const physical = toPhysicalPlatformId(logicalPlatformId, sessionUserId);
   const owner = ownerUserIdFromPhysical(physical);
   if (owner !== null && owner !== sessionUserId) {

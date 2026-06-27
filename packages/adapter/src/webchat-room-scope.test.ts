@@ -35,7 +35,8 @@ describe('webchat-room-scope', () => {
   });
 
   it('assertRoomAccess rejects cross-user dm', () => {
-    expect(() => assertRoomAccess('dm:sarah', 'web:basic:bob')).toThrow(RoomAccessError);
+    const aliceDm = toPhysicalPlatformId('dm:sarah', alice);
+    expect(() => assertRoomAccess(aliceDm, 'web:basic:bob')).toThrow(RoomAccessError);
   });
 
   it('delivers lobby events to everyone', () => {

@@ -83,6 +83,7 @@ describe('webchat-auth-jwt', () => {
         audience: 'client-id',
         issuer: 'https://issuer.example',
         nowSeconds: now,
+        clockSkewSeconds: 0,
       }),
     ).toThrow(/expired/);
   });
