@@ -31,6 +31,7 @@ export interface ThreadMeta {
 export interface SendMessageResult {
   messageId: string;
   timestamp: number;
+  attachments?: WebChatAttachment[];
 }
 
 export interface WebChatAttachment {
@@ -46,6 +47,10 @@ export interface WebChatAttachment {
   data?: string;
   /** Future: server URL when `data` is omitted from history/WS responses. */
   url?: string;
+  /** Client upload staging reference (send-only). */
+  uploadId?: string;
+  /** Client optimistic preview blob URL (display-only). */
+  previewUrl?: string;
 }
 
 export interface WebChatCardOption {

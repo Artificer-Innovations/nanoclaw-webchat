@@ -1,9 +1,10 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { printInstallNextSteps, runInstall, runUninstall, runUpgrade, runVerify } from './install.js';
 import * as nativeDeps from './native-deps.js';
+import * as nodeRunner from './node-runner.js';
 import { spawnSyncMock } from './test/spawn-mock.js';
 import { resourcesDir, skillDir } from './paths.js';
 
@@ -18,6 +19,10 @@ function makeNanoclawFixture(): string {
     path.join(root, 'src/index.ts'),
     'async function main() {\n  await runMigrations(db);\n  initChannelAdapters(config);\n}\n',
   );
+  fs.writeFileSync(
+    path.join(root, 'package.json'),
+    `${JSON.stringify({ name: 'nanoclaw-host-test', dependencies: {}, devDependencies: {} }, null, 2)}\n`,
+  );
   return root;
 }
 
@@ -28,11 +33,58 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+beforeEach(() => {
+  vi.spyOn(nodeRunner, 'runUnderProjectNode').mockReturnValue({
+    status: 0,
+    stdout: '',
+    stderr: '',
+    usedProjectNode: false,
+  });
+});
+
 describe('install', () => {
+  it('runInstall reports failed pnpm install when host dependencies were added', () => {
+    const root = makeNanoclawFixture();
+    vi.mocked(nodeRunner.runUnderProjectNode).mockReturnValueOnce({
+      status: 1,
+      stdout: 'install failed',
+      stderr: 'network error',
+      usedProjectNode: false,
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const result = runInstall(root);
+    expect(result.dependenciesInstalled).toBe(false);
+    expect(warn.mock.calls.some((call) => String(call[0]).includes('pnpm install failed'))).toBe(true);
+    expect(warn.mock.calls.some((call) => String(call[0]).includes('network error'))).toBe(true);
+    warn.mockRestore();
+    log.mockRestore();
+  });
+
+  it('runInstall warns without detail when pnpm install fails silently', () => {
+    const root = makeNanoclawFixture();
+    vi.mocked(nodeRunner.runUnderProjectNode).mockReturnValueOnce({
+      status: null,
+      stdout: '',
+      stderr: '',
+      usedProjectNode: false,
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    expect(runInstall(root).dependenciesInstalled).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toContain('unknown');
+    warn.mockRestore();
+    log.mockRestore();
+  });
+
   it('runInstall copies adapter, patches host, and scaffolds node config', () => {
     const root = makeNanoclawFixture();
     const result = runInstall(root);
-    expect(result.copied).toHaveLength(14);
+    expect(result.copied).toHaveLength(18);
+    expect(result.dependenciesAdded).toEqual(['busboy', '@types/busboy']);
+    expect(result.dependenciesInstalled).toBe(true);
+    expect(nodeRunner.runUnderProjectNode).toHaveBeenCalledWith(root, 'pnpm', ['install']);
     expect(result.barrelPatched).toBe(true);
     expect(result.bootPatched).toBe(true);
     expect(result.env.created.length).toBeGreaterThan(0);
@@ -68,7 +120,7 @@ describe('install', () => {
     const root = makeNanoclawFixture();
     runInstall(root);
     const result = runUninstall(root);
-    expect(result.removedFiles).toHaveLength(14);
+    expect(result.removedFiles).toHaveLength(18);
     expect(result.barrelRemoved).toBe(true);
     expect(result.bootRemoved).toBe(true);
   });
@@ -96,11 +148,49 @@ describe('install', () => {
     }
   });
 
+  it('printInstallNextSteps logs installed host dependencies', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    printInstallNextSteps({
+      root: '/tmp/x',
+      copied: ['a'],
+      dependenciesAdded: ['busboy'],
+      dependenciesInstalled: true,
+      barrelPatched: false,
+      bootPatched: false,
+      env: { created: [], skipped: [] },
+      version: '0.1.0',
+      nvmrcCreated: false,
+      npmrcUpdated: false,
+    });
+    expect(log.mock.calls.some((call) => String(call[0]).includes('Installed host dependencies'))).toBe(true);
+    log.mockRestore();
+  });
+
+  it('printInstallNextSteps warns when host dependencies were not installed', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    printInstallNextSteps({
+      root: '/tmp/x',
+      copied: ['a'],
+      dependenciesAdded: ['busboy'],
+      dependenciesInstalled: false,
+      barrelPatched: false,
+      bootPatched: false,
+      env: { created: [], skipped: [] },
+      version: '0.1.0',
+      nvmrcCreated: false,
+      npmrcUpdated: false,
+    });
+    expect(log.mock.calls.some((call) => String(call[0]).includes('run pnpm install'))).toBe(true);
+    log.mockRestore();
+  });
+
   it('printInstallNextSteps omits env line when nothing created', () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     printInstallNextSteps({
       root: '/tmp/x',
       copied: ['a'],
+      dependenciesAdded: [],
+      dependenciesInstalled: true,
       barrelPatched: false,
       bootPatched: false,
       env: { created: [], skipped: ['WEBCHAT_ENABLED'] },
@@ -124,6 +214,8 @@ describe('install', () => {
     printInstallNextSteps({
       root,
       copied: ['a'],
+      dependenciesAdded: [],
+      dependenciesInstalled: true,
       barrelPatched: true,
       bootPatched: true,
       env: { created: [], skipped: [] },
@@ -142,6 +234,8 @@ describe('install', () => {
     printInstallNextSteps({
       root,
       copied: ['a'],
+      dependenciesAdded: [],
+      dependenciesInstalled: true,
       barrelPatched: true,
       bootPatched: true,
       env: { created: [], skipped: [] },
@@ -158,6 +252,8 @@ describe('install', () => {
     printInstallNextSteps({
       root: '/nonexistent/nanoclaw-root',
       copied: ['a'],
+      dependenciesAdded: [],
+      dependenciesInstalled: true,
       barrelPatched: true,
       bootPatched: true,
       env: { created: [], skipped: [] },
@@ -176,6 +272,8 @@ describe('install', () => {
     printInstallNextSteps({
       root,
       copied: ['a'],
+      dependenciesAdded: [],
+      dependenciesInstalled: true,
       barrelPatched: true,
       bootPatched: true,
       env: { created: [], skipped: [] },
@@ -192,6 +290,8 @@ describe('install', () => {
     printInstallNextSteps({
       root: '/tmp/x',
       copied: ['a'],
+      dependenciesAdded: [],
+      dependenciesInstalled: true,
       barrelPatched: false,
       bootPatched: false,
       env: { created: ['WEBCHAT_ENABLED'], skipped: [] },

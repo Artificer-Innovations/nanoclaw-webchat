@@ -148,18 +148,85 @@ Body:
 ```
 
 - `text` is optional when `attachments` is non-empty.
-- Max 4 attachments per message; max 5 MB decoded per attachment. The **server must reject** requests that exceed these limits (HTTP 400); the UI also enforces them client-side and surfaces rejections to the user.
+- Max **10** attachments per message.
+- **Browser uploads:** up to **1 GB** per attachment via the upload endpoints below; message POST references staged files with `uploadId` (no inline `data`).
+- **Legacy inline base64** (MCP, programmatic callers): max **5 MB** decoded per attachment. The **server must reject** requests that exceed these limits (HTTP 400/413); the UI also enforces them client-side and surfaces rejections to the user.
 - Any file type is accepted; MIME type may be inferred from the filename when omitted.
 
-Response: `{ "messageId": "web-123", "timestamp": 1710000000000 }`
+Upload-referenced attachment (browser send):
+
+```json
+{
+  "name": "report.pdf",
+  "mimeType": "application/pdf",
+  "type": "file",
+  "size": 1234567,
+  "uploadId": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+Response: `{ "messageId": "web-123", "timestamp": 1710000000000, "attachments": [ { "name": "photo.png", "mimeType": "image/png", "type": "image", "size": 1234, "url": "/api/attachments/web-123/0-photo.png" } ] }`
+
+`attachments` is included when the message stored attachment files.
+
+### `POST /api/rooms/:platformId/threads/:threadId/uploads`
+
+`multipart/form-data` with a single `file` field. Streams the file to a staging area (max **1 GB** per file; override via `WEBCHAT_MAX_UPLOAD_BYTES`).
+
+**Browser client:** uses this endpoint for **all** attachment sizes (streaming multipart upload). Completed staging entries remain valid for **30 minutes** (`COMPLETED_UPLOAD_TTL`) while the user composes and sends the message.
+
+Response:
+
+```json
+{
+  "uploadId": "550e8400-e29b-41d4-a716-446655440000",
+  "name": "screenshot.png",
+  "mimeType": "image/png",
+  "type": "image",
+  "size": 12345
+}
+```
+
+Reference the returned `uploadId` in `POST .../messages` (see upload-referenced attachment above). Both multipart and chunked endpoints enforce the same server-side size limit.
+
+### `POST /api/rooms/:platformId/threads/:threadId/uploads/chunk`
+
+Optional JSON endpoint for **resumable** uploads (512 KB decoded chunks). The web UI does not use this path today; it remains for clients that need retry/resume semantics.
+
+Request body:
+
+```json
+{
+  "uploadId": "550e8400-e29b-41d4-a716-446655440000",
+  "chunkIndex": 0,
+  "totalChunks": 4,
+  "filename": "report.pdf",
+  "mimeType": "application/pdf",
+  "data": "<base64 chunk>"
+}
+```
+
+- Chunk JSON body is capped at ~1 MB (`CHUNK_SIZE * 2`) before decode.
+- In-progress chunk assembly times out after **5 minutes** of inactivity (`CHUNK_UPLOAD_TIMEOUT`); the timer refreshes on each accepted chunk.
+- Duplicate chunk retries for the same `chunkIndex` are idempotent (no double-count toward size).
+- Completed uploads use the same **30 minute** staging TTL as multipart.
+
+Partial response: `{ "ok": true, "received": 1, "total": 4 }`
+
+Final chunk response matches the multipart upload response shape above.
 
 ### `GET /api/attachments/:messageId/:filename`
 
-Returns stored attachment bytes for messages persisted in `webchat.db`. Auth required via `Authorization: Bearer` or `?token=<secret>` query parameter (same as WebSocket). The UI appends `?token=` when rendering `<img src>` and download links because those requests cannot send headers.
+Streams stored attachment bytes for messages persisted in `webchat.db` (constant memory per request; supports **`Range`** requests with `206 Partial Content` / `416` for invalid ranges).
+
+Auth required via `Authorization: Bearer` or `?token=<secret>` query parameter (same as WebSocket):
+
+- **`fetch()` / XHR:** use `Authorization: Bearer` only (no query token).
+- **`<img src>` / navigation / download links:** append `?token=` because those requests cannot send headers.
 
 ### Attachment payloads in history and WebSocket
 
-Client sends still use inline `data` (base64). The server stores files once and returns `url` on history and WebSocket reads. WS pushes may still include `data` for immediate outbound display when not yet re-read from storage.
+Client sends use staged `uploadId` references (browser) or inline `data` (base64, MCP/legacy). The server stores files once and returns `url` on history and WebSocket reads. WS pushes may still include `data` for immediate outbound display when not yet re-read from storage.
 
 ## WebSocket
 

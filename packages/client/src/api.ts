@@ -66,6 +66,61 @@ export async function fetchMessages(
   };
 }
 
+export interface UploadAttachmentResult {
+  uploadId: string;
+  name: string;
+  mimeType: string;
+  type: 'image' | 'file';
+  size: number;
+}
+
+export async function uploadAttachmentMultipart(
+  token: string,
+  platformId: string,
+  threadId: string,
+  file: File,
+): Promise<UploadAttachmentResult> {
+  const path = `/api/rooms/${encodeURIComponent(platformId)}/threads/${encodeURIComponent(threadId)}/uploads`;
+  const form = new FormData();
+  form.append('file', file);
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: form,
+  });
+  if (!res.ok) {
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(err.error ?? `upload failed: ${res.status}`);
+  }
+  return res.json() as Promise<UploadAttachmentResult>;
+}
+
+export async function uploadAttachmentChunk(
+  token: string,
+  platformId: string,
+  threadId: string,
+  body: {
+    uploadId: string;
+    chunkIndex: number;
+    totalChunks: number;
+    filename: string;
+    mimeType: string;
+    data: string;
+  },
+): Promise<UploadAttachmentResult | { ok: true; received: number; total: number }> {
+  const path = `/api/rooms/${encodeURIComponent(platformId)}/threads/${encodeURIComponent(threadId)}/uploads/chunk`;
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: { ...authHeaders(token), 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(err.error ?? `upload failed: ${res.status}`);
+  }
+  return res.json() as Promise<UploadAttachmentResult | { ok: true; received: number; total: number }>;
+}
+
 export async function sendMessage(
   token: string,
   platformId: string,

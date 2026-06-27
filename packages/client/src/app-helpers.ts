@@ -107,8 +107,12 @@ export function applyLiveMessage(
   const withoutOptimistic = pendingOptimisticId
     ? prev.filter((m) => m.id !== pendingOptimisticId)
     : prev;
-  if (withoutOptimistic.some((m) => m.id === message.id)) {
-    return withoutOptimistic;
+  const idx = withoutOptimistic.findIndex((m) => m.id === message.id);
+  if (idx >= 0) {
+    // Replace on id collision so WS echoes can hydrate attachment URLs (do not restore drop-on-duplicate).
+    const next = [...withoutOptimistic];
+    next[idx] = message;
+    return next;
   }
   return [...withoutOptimistic, message];
 }
@@ -130,14 +134,23 @@ export function applyMessageUpdate(
 export function reconcileOptimisticMessage(
   prev: WebChatMessage[],
   optimisticId: string,
-  sent: { messageId: string; timestamp: number },
+  sent: { messageId: string; timestamp: number; attachments?: WebChatMessage['attachments'] },
 ): WebChatMessage[] {
   if (prev.some((m) => m.id === sent.messageId)) {
     return dedupeMessagesById(prev.filter((m) => m.id !== optimisticId));
   }
-  const next = prev.map((m) =>
-    m.id === optimisticId ? { ...m, id: sent.messageId, timestamp: sent.timestamp } : m,
-  );
+  const next = prev.map((m) => {
+    if (m.id !== optimisticId) return m;
+    const attachments =
+      sent.attachments ??
+      m.attachments?.map(({ previewUrl: _preview, ...rest }) => rest);
+    return {
+      ...m,
+      id: sent.messageId,
+      timestamp: sent.timestamp,
+      ...(attachments?.length ? { attachments } : {}),
+    };
+  });
   return dedupeMessagesById(next);
 }
 

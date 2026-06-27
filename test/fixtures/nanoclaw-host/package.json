@@ -7,10 +7,12 @@
   },
   "dependencies": {
     "better-sqlite3": "11.10.0",
+    "busboy": "^1.6.0",
     "ws": "8.18.3"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",
+    "@types/busboy": "^1.5.4",
     "@types/node": "^22.10.0",
     "@types/ws": "8.18.1",
     "@vitest/coverage-v8": "^4.1.9",

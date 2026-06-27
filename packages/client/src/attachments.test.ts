@@ -26,6 +26,8 @@ import {
   fetchAttachmentBlob,
   fetchAttachmentText,
   formatAttachmentRejections,
+  formatMaxUploadLabel,
+  formatUploadBytesLabel,
   formatAttachmentSize,
   inferMimeType,
   isSafeAttachmentUrl,
@@ -42,8 +44,13 @@ import {
   readAttachmentFiles,
   removePendingAtIndex,
   revokeAttachmentPreviews,
+  toSendAttachmentsFromUploads,
+  uploadAttachmentFile,
+  uploadPendingAttachments,
+  CHUNK_SIZE,
   type PendingAttachment,
 } from './attachments';
+import * as api from './api';
 
 describe('attachments', () => {
   afterEach(() => {
@@ -156,6 +163,8 @@ describe('attachments', () => {
   });
 
   it('formats rejection messages', () => {
+    expect(formatUploadBytesLabel(50 * 1024 * 1024)).toBe('50 MB');
+    expect(formatMaxUploadLabel()).toBe('1 GB');
     expect(
       formatAttachmentRejections([
         { name: 'big.png', reason: 'too_large' },
@@ -163,9 +172,12 @@ describe('attachments', () => {
         { name: 'extra.txt', reason: 'capacity' },
       ]),
     ).toBe(
-      'big.png exceeds the 5 MB limit; Could not read bad.txt; Only 4 attachments allowed (extra.txt skipped)',
+      'big.png exceeds the 1 GB limit; Could not read bad.txt; Only 10 attachments allowed (extra.txt skipped)',
     );
     expect(formatAttachmentRejections([])).toBeNull();
+    expect(
+      formatAttachmentRejections([{ name: 'x.png', reason: 'upload_failed' }]),
+    ).toBe('Upload failed for x.png');
   });
 
   it('leaves matching attachment types unchanged', () => {
@@ -175,13 +187,14 @@ describe('attachments', () => {
 
   it('merges pending attachments without exceeding the cap', () => {
     const make = (name: string, previewUrl: string): PendingAttachment => ({
+      file: new File(['x'], name, { type: 'text/plain' }),
       name,
       mimeType: 'text/plain',
       type: 'file',
+      size: 1,
       previewUrl,
-      data: 'x',
     });
-    const prev = [make('a.txt', 'blob:a'), make('b.txt', 'blob:b'), make('c.txt', 'blob:c')];
+    const prev = Array.from({ length: MAX_ATTACHMENTS - 1 }, (_, i) => make(`file-${i}.txt`, `blob:${i}`));
     const next = [make('d.txt', 'blob:d'), make('e.txt', 'blob:e')];
     const revoke = vi.spyOn(URL, 'revokeObjectURL');
 
@@ -193,13 +206,31 @@ describe('attachments', () => {
     revoke.mockRestore();
   });
 
-  it('revokes all incoming previews when already at capacity', () => {
+  it('accepts merges below the attachment cap', () => {
     const make = (name: string, previewUrl: string): PendingAttachment => ({
+      file: new File(['x'], name, { type: 'text/plain' }),
       name,
       mimeType: 'text/plain',
       type: 'file',
+      size: 1,
       previewUrl,
-      data: 'x',
+    });
+    const prev = [make('a.txt', 'blob:a'), make('b.txt', 'blob:b'), make('c.txt', 'blob:c')];
+    const next = [make('d.txt', 'blob:d'), make('e.txt', 'blob:e')];
+
+    const { attachments, dropped } = mergePendingAttachments(prev, next);
+    expect(attachments).toHaveLength(5);
+    expect(dropped).toHaveLength(0);
+  });
+
+  it('revokes all incoming previews when already at capacity', () => {
+    const make = (name: string, previewUrl: string): PendingAttachment => ({
+      file: new File(['x'], name, { type: 'text/plain' }),
+      name,
+      mimeType: 'text/plain',
+      type: 'file',
+      size: 1,
+      previewUrl,
     });
     const prev = Array.from({ length: MAX_ATTACHMENTS }, (_, i) => make(`file-${i}.txt`, `blob:${i}`));
     const next = [make('extra.txt', 'blob:extra')];
@@ -213,7 +244,7 @@ describe('attachments', () => {
     revoke.mockRestore();
   });
 
-  it('reads image files as base64 attachments', async () => {
+  it('stages image files without reading base64', async () => {
     const file = new File(['hello'], 'photo.png', { type: 'image/png' });
     const { attachments } = await readAttachmentFiles([file]);
     expect(attachments).toHaveLength(1);
@@ -223,11 +254,11 @@ describe('attachments', () => {
       type: 'image',
       size: 5,
     });
-    expect(attachments[0]?.data).toBeTruthy();
+    expect(attachments[0]?.previewUrl).toMatch(/^blob:/);
     URL.revokeObjectURL(attachments[0]!.previewUrl);
   });
 
-  it('reads non-image files such as markdown', async () => {
+  it('stages non-image files such as markdown', async () => {
     const file = new File(['# Title'], 'notes.md', { type: 'text/markdown' });
     const { attachments } = await readAttachmentFiles([file]);
     expect(attachments).toHaveLength(1);
@@ -650,6 +681,14 @@ describe('attachments', () => {
         previewUrl: 'blob:preview',
         data: 'aGVsbG8=',
       }),
+    ).toBe('data:image/png;base64,aGVsbG8=');
+    expect(
+      attachmentPreviewUrl({
+        name: 'a.png',
+        mimeType: 'image/png',
+        type: 'image',
+        previewUrl: 'blob:preview',
+      }),
     ).toBe('blob:preview');
     expect(
       attachmentPreviewUrl({
@@ -661,65 +700,15 @@ describe('attachments', () => {
     ).toBe('data:image/png;base64,aGVsbG8=');
   });
 
-  it('reads raw base64 results without a data URL prefix', async () => {
-    const Original = global.FileReader;
-    class RawReader extends Original {
-      readAsDataURL() {
-        Object.defineProperty(this, 'result', { value: 'rawbase64', configurable: true });
-        this.onload?.({ target: this } as ProgressEvent<FileReader>);
-      }
-    }
-    vi.stubGlobal('FileReader', RawReader);
-    const { attachments } = await readAttachmentFiles([new File(['x'], 'a.txt', { type: 'text/plain' })]);
-    expect(attachments[0]?.data).toBe('rawbase64');
-    URL.revokeObjectURL(attachments[0]!.previewUrl);
-    vi.stubGlobal('FileReader', Original);
-  });
-
-  it('reports FileReader errors per file without failing the batch', async () => {
-    const Original = global.FileReader;
-    class ErrorReader extends Original {
-      readAsDataURL() {
-        this.onerror?.(new ProgressEvent('error'));
-      }
-    }
-    vi.stubGlobal('FileReader', ErrorReader);
-    const good = new File(['x'], 'good.txt', { type: 'text/plain' });
-    const bad = new File(['x'], 'bad.txt', { type: 'text/plain' });
-    const { attachments, rejected } = await readAttachmentFiles([good, bad]);
-    expect(attachments).toHaveLength(0);
-    expect(rejected).toEqual([
-      { name: 'good.txt', reason: 'read_failed' },
-      { name: 'bad.txt', reason: 'read_failed' },
-    ]);
-    vi.stubGlobal('FileReader', Original);
-  });
-
-  it('rejects non-string FileReader results per file', async () => {
-    const Original = global.FileReader;
-    class BadReader extends Original {
-      readAsDataURL() {
-        Object.defineProperty(this, 'result', { value: new ArrayBuffer(8), configurable: true });
-        this.onload?.({ target: this } as ProgressEvent<FileReader>);
-      }
-    }
-    vi.stubGlobal('FileReader', BadReader);
-    const { attachments, rejected } = await readAttachmentFiles([
-      new File(['x'], 'a.txt', { type: 'text/plain' }),
-    ]);
-    expect(attachments).toHaveLength(0);
-    expect(rejected).toEqual([{ name: 'a.txt', reason: 'read_failed' }]);
-    vi.stubGlobal('FileReader', Original);
-  });
-
   it('removes pending attachments by index', () => {
-    const pending = [
+    const pending: PendingAttachment[] = [
       {
+        file: new File(['a'], 'a.png', { type: 'image/png' }),
         name: 'a.png',
         mimeType: 'image/png',
-        type: 'image' as const,
+        type: 'image',
+        size: 1,
         previewUrl: 'blob:a',
-        data: 'a',
       },
     ];
     const revoke = vi.spyOn(URL, 'revokeObjectURL');
@@ -767,7 +756,9 @@ describe('attachments', () => {
         url: '/api/attachments/msg-1/notes.md',
       }, 'secret'),
     ).toBe('from server');
-    expect(fetch).toHaveBeenCalledWith('/api/attachments/msg-1/notes.md?token=secret');
+    expect(fetch).toHaveBeenCalledWith('/api/attachments/msg-1/notes.md', {
+      headers: { Authorization: 'Bearer secret' },
+    });
     vi.unstubAllGlobals();
   });
 
@@ -983,7 +974,9 @@ describe('attachments', () => {
       type: 'image',
       url: '/api/attachments/msg-1/photo.png',
     });
-    expect(fetch).toHaveBeenCalledWith('/api/attachments/msg-1/photo.png?token=stored');
+    expect(fetch).toHaveBeenCalledWith('/api/attachments/msg-1/photo.png', {
+      headers: { Authorization: 'Bearer stored' },
+    });
     sessionStorage.removeItem('webchat_token');
     vi.unstubAllGlobals();
 
@@ -1069,7 +1062,9 @@ describe('attachments', () => {
       'explicit',
     );
     expect(tokenSuccess).toHaveBeenCalled();
-    expect(fetch).toHaveBeenCalledWith('/api/attachments/m/notes.md?token=explicit');
+    expect(fetch).toHaveBeenCalledWith('/api/attachments/m/notes.md', {
+      headers: { Authorization: 'Bearer explicit' },
+    });
 
     const tokenLinkSuccess = vi.fn();
     await copyAttachmentForPreview(
@@ -1084,5 +1079,121 @@ describe('attachments', () => {
     );
     expect(tokenLinkSuccess).toHaveBeenCalled();
     vi.unstubAllGlobals();
+  });
+
+  describe('upload helpers', () => {
+    it('uploads small files via multipart', async () => {
+      vi.spyOn(api, 'uploadAttachmentMultipart').mockResolvedValue({
+        uploadId: 'upload-id',
+        name: 'a.txt',
+        mimeType: 'text/plain',
+        type: 'file',
+        size: 5,
+      });
+      const file = new File(['hello'], 'a.txt', { type: 'text/plain' });
+      const result = await uploadAttachmentFile('tok', 'lobby', 'main', file);
+      expect(result.uploadId).toBe('upload-id');
+      expect(api.uploadAttachmentMultipart).toHaveBeenCalledWith('tok', 'lobby', 'main', file);
+    });
+
+    it('uploads all files via multipart regardless of size', async () => {
+      vi.spyOn(api, 'uploadAttachmentMultipart').mockResolvedValue({
+        uploadId: 'upload-id',
+        name: 'big.bin',
+        mimeType: 'application/octet-stream',
+        type: 'file',
+        size: CHUNK_SIZE + 1,
+      });
+      const file = new File([new Uint8Array(CHUNK_SIZE + 1)], 'big.bin');
+      const result = await uploadAttachmentFile('tok', 'lobby', 'main', file);
+      expect(result.uploadId).toBe('upload-id');
+      expect(api.uploadAttachmentMultipart).toHaveBeenCalledWith('tok', 'lobby', 'main', file);
+    });
+
+    it('collects upload failures from pending attachments', async () => {
+      vi.spyOn(api, 'uploadAttachmentMultipart').mockRejectedValue(new Error('network down'));
+      const pending: PendingAttachment[] = [
+        {
+          name: 'a.txt',
+          mimeType: 'text/plain',
+          type: 'file',
+          size: 1,
+          file: new File(['x'], 'a.txt'),
+          previewUrl: 'blob:preview',
+        },
+      ];
+      const { uploads, failed } = await uploadPendingAttachments('tok', 'lobby', 'main', pending);
+      expect(uploads).toHaveLength(0);
+      expect(failed).toEqual([{ name: 'a.txt', reason: 'upload_failed', detail: 'network down' }]);
+    });
+
+    it('falls back to a generic attachment label when upload failure lacks a name', async () => {
+      vi.spyOn(api, 'uploadAttachmentMultipart').mockRejectedValue(new Error('network down'));
+      const pending = [
+        {
+          name: undefined,
+          mimeType: 'text/plain',
+          type: 'file',
+          size: 1,
+          file: new File(['x'], 'a.txt'),
+          previewUrl: 'blob:preview',
+        },
+      ] as unknown as PendingAttachment[];
+      const { failed } = await uploadPendingAttachments('tok', 'lobby', 'main', pending);
+      expect(failed).toEqual([{ name: 'attachment', reason: 'upload_failed', detail: 'network down' }]);
+    });
+
+    it('records a generic upload failure when rejection is not an Error', async () => {
+      vi.spyOn(api, 'uploadAttachmentMultipart').mockRejectedValue('nope');
+      const pending: PendingAttachment[] = [
+        {
+          name: 'a.txt',
+          mimeType: 'text/plain',
+          type: 'file',
+          size: 1,
+          file: new File(['x'], 'a.txt'),
+          previewUrl: 'blob:preview',
+        },
+      ];
+      const { failed } = await uploadPendingAttachments('tok', 'lobby', 'main', pending);
+      expect(failed).toEqual([{ name: 'a.txt', reason: 'upload_failed', detail: 'Upload failed' }]);
+    });
+
+    it('maps uploaded attachments to send refs', () => {
+      expect(
+        toSendAttachmentsFromUploads([
+          {
+            uploadId: 'upload-id',
+            name: 'a.txt',
+            mimeType: 'text/plain',
+            type: 'file',
+            size: 1,
+          },
+        ]),
+      ).toEqual([
+        {
+          uploadId: 'upload-id',
+          name: 'a.txt',
+          mimeType: 'text/plain',
+          type: 'file',
+          size: 1,
+        },
+      ]);
+    });
+
+    it('revokes preview object URLs', () => {
+      const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+      revokeAttachmentPreviews([
+        {
+          name: 'a.txt',
+          mimeType: 'text/plain',
+          type: 'file',
+          size: 1,
+          file: new File(['x'], 'a.txt'),
+          previewUrl: 'blob:test',
+        },
+      ]);
+      expect(revoke).toHaveBeenCalledWith('blob:test');
+    });
   });
 });

@@ -120,6 +120,7 @@ function createFetchMock(handlers: {
   messagesError?: number;
   sendError?: number;
   disengageError?: number;
+  uploadError?: number;
 }): FetchHandler {
   return async (input, init) => {
     const url = String(input);
@@ -134,6 +135,31 @@ function createFetchMock(handlers: {
         return jsonResponse(null, false, handlers.disengageError);
       }
       return jsonResponse({ agents: handlers.disengageResult ?? [] });
+    }
+    if (url.includes('/uploads/chunk') && init?.method === 'POST') {
+      if (handlers.uploadError) {
+        return jsonResponse(null, false, handlers.uploadError);
+      }
+      const body = JSON.parse(String(init.body)) as { filename?: string; mimeType?: string };
+      return jsonResponse({
+        uploadId: '550e8400-e29b-41d4-a716-446655440000',
+        name: body.filename ?? 'upload.bin',
+        mimeType: body.mimeType ?? 'application/octet-stream',
+        type: 'file',
+        size: 5,
+      });
+    }
+    if (url.includes('/uploads') && init?.method === 'POST') {
+      if (handlers.uploadError) {
+        return jsonResponse(null, false, handlers.uploadError);
+      }
+      return jsonResponse({
+        uploadId: '550e8400-e29b-41d4-a716-446655440000',
+        name: 'photo.png',
+        mimeType: 'image/png',
+        type: 'image',
+        size: 5,
+      });
     }
     if (url.includes('/messages') && init?.method === 'POST') {
       if (handlers.sendError) {
@@ -1698,10 +1724,40 @@ describe('App', () => {
         'main',
         '',
         expect.arrayContaining([
-          expect.objectContaining({ name: 'photo.png', mimeType: 'image/png', type: 'image' }),
+          expect.objectContaining({
+            uploadId: '550e8400-e29b-41d4-a716-446655440000',
+            name: 'photo.png',
+            mimeType: 'image/png',
+            type: 'image',
+          }),
         ]),
       );
     });
+  });
+
+  it('shows an error when attachment upload fails before send', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    vi.spyOn(attachments, 'uploadPendingAttachments').mockResolvedValue({
+      uploads: [],
+      failed: [{ name: 'photo.png', reason: 'upload_failed', detail: 'upload failed: 500' }],
+    });
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const file = new File(['hello'], 'photo.png', { type: 'image/png' });
+    fireEvent.change(document.querySelector('input[type="file"]') as HTMLInputElement, {
+      target: { files: [file] },
+    });
+    await waitFor(() => {
+      expect(screen.getByAltText('photo.png')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('photo.png: upload failed: 500')).toBeInTheDocument();
+    });
+    expect(api.sendMessage).not.toHaveBeenCalled();
   });
 
   it('supports composer attachment workflows', async () => {
@@ -1742,19 +1798,22 @@ describe('App', () => {
   it('caps pending attachments when files are added concurrently', async () => {
     sessionStorage.setItem('webchat_token', 'secret');
     const pending = (name: string) => ({
+      file: new File(['x'], name, { type: 'text/plain' }),
       name,
       mimeType: 'text/plain',
       type: 'file' as const,
       size: 1,
-      data: 'eA==',
       previewUrl: `blob:${name}`,
     });
 
     vi.spyOn(attachments, 'readAttachmentFiles')
-      .mockResolvedValueOnce({ attachments: [pending('a.txt'), pending('b.txt')], rejected: [] })
       .mockResolvedValueOnce({
-        attachments: [pending('c.txt'), pending('d.txt'), pending('e.txt')],
+        attachments: Array.from({ length: 9 }, (_, i) => pending(`${i}.txt`)),
         rejected: [],
+      })
+      .mockResolvedValueOnce({
+        attachments: [pending('nine.txt')],
+        rejected: [{ name: 'overflow.txt', reason: 'capacity' }],
       });
 
     render(<App />);
@@ -1763,25 +1822,57 @@ describe('App', () => {
     const composer = document.querySelector('.composer-box')!;
     fireEvent.drop(composer, { dataTransfer: { files: [new File(['a'], 'a.txt')] } });
     await waitFor(() => {
-      expect(document.querySelectorAll('.composer-preview')).toHaveLength(2);
+      expect(document.querySelectorAll('.composer-preview')).toHaveLength(9);
     });
 
     fireEvent.drop(composer, { dataTransfer: { files: [new File(['c'], 'c.txt')] } });
     await waitFor(() => {
       expect(document.querySelectorAll('.composer-preview')).toHaveLength(attachments.MAX_ATTACHMENTS);
-      expect(screen.getByText(/Only 4 attachments allowed \(e.txt skipped\)/)).toBeInTheDocument();
+      expect(screen.getByText(/Only 10 attachments allowed \(overflow.txt skipped\)/)).toBeInTheDocument();
     });
   });
 
-  it('shows an error when attachment upload fails', async () => {
+  it('revokes previews for attachments dropped during merge', async () => {
     sessionStorage.setItem('webchat_token', 'secret');
-    const Original = global.FileReader;
-    class ErrorReader extends Original {
-      readAsDataURL() {
-        this.onerror?.(new ProgressEvent('error'));
-      }
-    }
-    vi.stubGlobal('FileReader', ErrorReader);
+    const pending = (name: string) => ({
+      file: new File(['x'], name, { type: 'text/plain' }),
+      name,
+      mimeType: 'text/plain',
+      type: 'file' as const,
+      size: 1,
+      previewUrl: `blob:${name}`,
+    });
+
+    vi.spyOn(attachments, 'readAttachmentFiles')
+      .mockResolvedValueOnce({
+        attachments: Array.from({ length: 9 }, (_, i) => pending(`${i}.txt`)),
+        rejected: [],
+      })
+      .mockResolvedValueOnce({
+        attachments: [pending('nine.txt'), pending('ten.txt')],
+        rejected: [],
+      });
+    const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const composer = document.querySelector('.composer-box')!;
+    fireEvent.drop(composer, { dataTransfer: { files: [new File(['a'], 'a.txt')] } });
+    await waitFor(() => {
+      expect(document.querySelectorAll('.composer-preview')).toHaveLength(9);
+    });
+
+    fireEvent.drop(composer, { dataTransfer: { files: [new File(['b'], 'b.txt')] } });
+    await waitFor(() => {
+      expect(document.querySelectorAll('.composer-preview')).toHaveLength(attachments.MAX_ATTACHMENTS);
+    });
+    expect(revoke).toHaveBeenCalledWith('blob:ten.txt');
+  });
+
+  it('shows an error when attachment staging fails', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    vi.spyOn(attachments, 'readAttachmentFiles').mockRejectedValueOnce(new Error('read failed'));
     render(<App />);
     await screen.findByRole('heading', { name: 'Lobby' });
 
@@ -1790,9 +1881,8 @@ describe('App', () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText('Could not read bad.txt')).toBeInTheDocument();
+      expect(screen.getByText('read failed')).toBeInTheDocument();
     });
-    vi.stubGlobal('FileReader', Original);
   });
 
   it('ignores empty attachment drops and invalid attachment batches', async () => {
@@ -1819,7 +1909,7 @@ describe('App', () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText('big.png exceeds the 5 MB limit')).toBeInTheDocument();
+      expect(screen.getByText('big.png exceeds the 1 GB limit')).toBeInTheDocument();
     });
   });
 

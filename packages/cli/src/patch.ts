@@ -9,6 +9,46 @@ import {
   WEBCHAT_BOOT_BLOCK,
 } from './paths.js';
 
+const HOST_ADAPTER_DEPENDENCIES: Record<string, string> = {
+  busboy: '^1.6.0',
+};
+
+const HOST_ADAPTER_DEV_DEPENDENCIES: Record<string, string> = {
+  '@types/busboy': '^1.5.4',
+};
+
+/** Ensure runtime/type deps required by copied adapter sources exist on the host. */
+export function ensureHostAdapterDependencies(nanoclawRoot: string): string[] {
+  const pkgPath = path.join(nanoclawRoot, 'package.json');
+  if (!fs.existsSync(pkgPath)) return [];
+
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as {
+    dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
+  };
+  const added: string[] = [];
+  pkg.dependencies ??= {};
+  pkg.devDependencies ??= {};
+
+  for (const [name, version] of Object.entries(HOST_ADAPTER_DEPENDENCIES)) {
+    if (!pkg.dependencies[name]) {
+      pkg.dependencies[name] = version;
+      added.push(name);
+    }
+  }
+  for (const [name, version] of Object.entries(HOST_ADAPTER_DEV_DEPENDENCIES)) {
+    if (!pkg.devDependencies[name]) {
+      pkg.devDependencies[name] = version;
+      added.push(name);
+    }
+  }
+
+  if (added.length > 0) {
+    fs.writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
+  }
+  return added;
+}
+
 export function copyAdapterFiles(nanoclawRoot: string, resources = resourcesDir()): string[] {
   const copied: string[] = [];
   for (const rule of ADAPTER_COPY_RULES) {

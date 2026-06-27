@@ -1,11 +1,32 @@
 import { buildCodePopoutDocument, buildCsvPopoutDocument, buildHtmlPopoutDocument, buildMarkdownPopoutDocument, buildPlainTextPopoutDocument, openHtmlDocumentInNewTab, ATTACHMENT_HTML_IFRAME_SANDBOX } from './attachment-text-popout';
 import { codeLanguageFromAttachment, isCodeFilename, isCodeMimeType } from './attachment-code';
 import { isCsvAttachment } from './csv-preview';
-import { getStoredToken } from './api';
+import { getStoredToken, uploadAttachmentMultipart } from './api';
 import type { WebChatAttachment } from './types';
 
-export const MAX_ATTACHMENTS = 4;
-export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+export const MAX_ATTACHMENTS = 10;
+export const MAX_ATTACHMENT_BYTES = 1024 * 1024 * 1024;
+/** Client uses streaming multipart for all sizes up to MAX; chunked API remains for resumability. */
+export const CHUNK_SIZE = 512 * 1024;
+
+export function formatUploadBytesLabel(bytes: number): string {
+  if (bytes >= 1024 * 1024 * 1024) {
+    return `${(bytes / 1024 / 1024 / 1024).toFixed(0)} GB`;
+  }
+  return `${Math.round(bytes / 1024 / 1024)} MB`;
+}
+
+export function formatMaxUploadLabel(): string {
+  return formatUploadBytesLabel(MAX_ATTACHMENT_BYTES);
+}
+
+export interface UploadedAttachment {
+  uploadId: string;
+  name: string;
+  mimeType: string;
+  type: 'image' | 'file';
+  size: number;
+}
 
 const EXT_TO_MIME: Record<string, string> = {
   '.jpg': 'image/jpeg',
@@ -120,14 +141,16 @@ const EXT_TO_MIME: Record<string, string> = {
 };
 
 export interface PendingAttachment extends WebChatAttachment {
+  file: File;
   previewUrl: string;
 }
 
-export type AttachmentRejectReason = 'too_large' | 'read_failed' | 'capacity';
+export type AttachmentRejectReason = 'too_large' | 'read_failed' | 'capacity' | 'upload_failed';
 
 export interface AttachmentRejection {
   name: string;
   reason: AttachmentRejectReason;
+  detail?: string;
 }
 
 export interface ReadAttachmentFilesResult {
@@ -236,34 +259,19 @@ export function normalizeAttachment(att: WebChatAttachment): WebChatAttachment {
 
 export function formatAttachmentRejections(rejected: AttachmentRejection[]): string | null {
   if (rejected.length === 0) return null;
-  const parts = rejected.map(({ name, reason }) => {
+  const parts = rejected.map(({ name, reason, detail }) => {
     switch (reason) {
       case 'too_large':
-        return `${name} exceeds the 5 MB limit`;
+        return `${name} exceeds the ${formatMaxUploadLabel()} limit`;
       case 'read_failed':
         return `Could not read ${name}`;
+      case 'upload_failed':
+        return detail ? `${name}: ${detail}` : `Upload failed for ${name}`;
       case 'capacity':
         return `Only ${MAX_ATTACHMENTS} attachments allowed (${name} skipped)`;
     }
   });
   return parts.join('; ');
-}
-
-function readFileAsBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result;
-      if (typeof result !== 'string') {
-        reject(new Error('read failed'));
-        return;
-      }
-      const comma = result.indexOf(',');
-      resolve(comma >= 0 ? result.slice(comma + 1) : result);
-    };
-    reader.onerror = () => reject(reader.error ?? new Error('read failed'));
-    reader.readAsDataURL(file);
-  });
 }
 
 export async function readAttachmentFiles(
@@ -290,31 +298,36 @@ export async function readAttachmentFiles(
     rejected.push({ name: file.name, reason: 'capacity' });
   }
 
-  const attachments: PendingAttachment[] = [];
+  const attachments = await Promise.all(
+    selected.map(async (file) => {
+      if (file.size > MAX_ATTACHMENT_BYTES) {
+        return { ok: false as const, name: file.name, reason: 'too_large' as const };
+      }
+      const mimeType = inferMimeType(file.name, file.type);
+      return {
+        ok: true as const,
+        attachment: {
+          file,
+          name: file.name,
+          mimeType,
+          type: attachmentTypeFromMime(mimeType),
+          size: file.size,
+          previewUrl: URL.createObjectURL(file),
+        },
+      };
+    }),
+  );
 
-  for (const file of selected) {
-    if (file.size > MAX_ATTACHMENT_BYTES) {
-      rejected.push({ name: file.name, reason: 'too_large' });
-      continue;
-    }
-    const mimeType = inferMimeType(file.name, file.type);
-    try {
-      const data = await readFileAsBase64(file);
-      const previewUrl = URL.createObjectURL(file);
-      attachments.push({
-        name: file.name,
-        mimeType,
-        type: attachmentTypeFromMime(mimeType),
-        size: file.size,
-        data,
-        previewUrl,
-      });
-    } catch {
-      rejected.push({ name: file.name, reason: 'read_failed' });
+  const pending: PendingAttachment[] = [];
+  for (const result of attachments) {
+    if (result.ok) {
+      pending.push(result.attachment);
+    } else {
+      rejected.push({ name: result.name, reason: result.reason });
     }
   }
 
-  return { attachments, rejected };
+  return { attachments: pending, rejected };
 }
 
 /** Append new pending attachments without exceeding MAX_ATTACHMENTS. Caller revokes `dropped` previews. */
@@ -343,6 +356,10 @@ function attachmentUrlWithAuth(path: string, token: string): string {
   if (!token) return path;
   const sep = path.includes('?') ? '&' : '?';
   return `${path}${sep}token=${encodeURIComponent(token)}`;
+}
+
+function attachmentFetchHeaders(token: string): HeadersInit {
+  return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
 export function attachmentDataUrl(att: WebChatAttachment, token?: string): string | null {
@@ -451,8 +468,10 @@ export async function openCsvAttachmentInNewTab(
 }
 
 export function attachmentPreviewUrl(att: PendingAttachment | WebChatAttachment): string | null {
+  const fromServer = attachmentDataUrl(att);
+  if (fromServer) return fromServer;
   if ('previewUrl' in att && att.previewUrl) return att.previewUrl;
-  return attachmentDataUrl(att);
+  return null;
 }
 
 export function revokeAttachmentPreviews(attachments: PendingAttachment[]): void {
@@ -467,8 +486,59 @@ export function removePendingAtIndex(list: PendingAttachment[], index: number): 
   return list.filter((_, i) => i !== index);
 }
 
-export function toSendAttachments(attachments: PendingAttachment[]): WebChatAttachment[] {
-  return attachments.map(({ previewUrl: _previewUrl, ...rest }) => rest);
+export function toSendAttachmentsFromUploads(uploads: UploadedAttachment[]): WebChatAttachment[] {
+  return uploads.map(({ uploadId, name, mimeType, type, size }) => ({
+    uploadId,
+    name,
+    mimeType,
+    type,
+    size,
+  }));
+}
+
+export async function uploadAttachmentFile(
+  token: string,
+  platformId: string,
+  threadId: string,
+  file: File,
+): Promise<UploadedAttachment> {
+  return uploadAttachmentMultipart(token, platformId, threadId, file);
+}
+
+export async function uploadPendingAttachments(
+  token: string,
+  platformId: string,
+  threadId: string,
+  pending: PendingAttachment[],
+): Promise<{ uploads: UploadedAttachment[]; failed: AttachmentRejection[] }> {
+  const results = await Promise.allSettled(
+    pending.map((att) => uploadAttachmentFile(token, platformId, threadId, att.file)),
+  );
+
+  const uploads: UploadedAttachment[] = [];
+  const failed: AttachmentRejection[] = [];
+  results.forEach((result, index) => {
+    const name = pending[index]?.name ?? 'attachment';
+    if (result.status === 'fulfilled') {
+      uploads.push(result.value);
+    } else {
+      const detail =
+        result.reason instanceof Error ? result.reason.message : 'Upload failed';
+      failed.push({ name, reason: 'upload_failed', detail });
+    }
+  });
+
+  return { uploads, failed };
+}
+
+export function optimisticAttachmentsFromPending(pending: PendingAttachment[]): WebChatAttachment[] {
+  return pending.map(({ name, mimeType, type, size, previewUrl }) => ({
+    name,
+    mimeType,
+    type,
+    size,
+    previewUrl,
+  }));
 }
 
 export async function fetchAttachmentText(att: WebChatAttachment, token?: string): Promise<string | null> {
@@ -477,9 +547,8 @@ export async function fetchAttachmentText(att: WebChatAttachment, token?: string
   }
   if (att.url && isSafeAttachmentUrl(att.url)) {
     const authToken = token ?? getStoredToken();
-    const url = attachmentUrlWithAuth(att.url, authToken);
     try {
-      const res = await fetch(url);
+      const res = await fetch(att.url, { headers: attachmentFetchHeaders(authToken) });
       if (!res.ok) return null;
       return res.text();
     } catch {
@@ -494,9 +563,8 @@ export async function fetchAttachmentBlob(att: WebChatAttachment, token?: string
   if (fromData) return fromData;
   if (att.url && isSafeAttachmentUrl(att.url)) {
     const authToken = token ?? getStoredToken();
-    const url = attachmentUrlWithAuth(att.url, authToken);
     try {
-      const res = await fetch(url);
+      const res = await fetch(att.url, { headers: attachmentFetchHeaders(authToken) });
       if (!res.ok) return null;
       return res.blob();
     } catch {
