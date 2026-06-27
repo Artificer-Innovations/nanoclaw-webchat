@@ -58,8 +58,10 @@ export function resolveLinkedAdapterSrc(nanoclawRoot: string): string | null {
   if (!fs.existsSync(pkgPath)) return null;
   const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as {
     dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
   };
-  const dep = pkg.dependencies?.['nanoclaw-webchat'];
+  const dep =
+    pkg.dependencies?.['nanoclaw-webchat'] ?? pkg.devDependencies?.['nanoclaw-webchat'];
   if (!dep?.startsWith('file:')) return null;
   const linkedRoot = path.resolve(nanoclawRoot, dep.slice('file:'.length));
   const adapterSrc = path.join(linkedRoot, 'packages/adapter/src');

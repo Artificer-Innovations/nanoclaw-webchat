@@ -51,6 +51,7 @@ import { SendArrowIcon, PlusIcon, SidebarHideIcon, SidebarShowIcon } from './nav
 import { senderColor } from './sender-color';
 import { SidebarSection } from './SidebarRoom';
 import { ThemeToggle } from './ThemeToggle';
+import { ComposerVideoPreview, composerVideoPreviewUsesFileChip } from './VideoAttachmentPreview';
 import {
   getStoredAttachmentDrawerWidth,
   setStoredAttachmentDrawerWidth,
@@ -966,9 +967,11 @@ export function App() {
                       <div
                         key={`${att.name}-${index}`}
                         className={`composer-preview${
-                          att.type === 'file' &&
-                          !attachmentIsVideo(att.mimeType) &&
-                          !attachmentIsAudio(att.mimeType)
+                          (att.type === 'file' &&
+                            !attachmentIsVideo(att.mimeType) &&
+                            !attachmentIsAudio(att.mimeType)) ||
+                          (attachmentIsVideo(att.mimeType) &&
+                            composerVideoPreviewUsesFileChip(att.mimeType))
                             ? ' composer-preview-file'
                             : ''
                         }${attachmentIsAudio(att.mimeType) ? ' composer-preview-audio' : ''}`}
@@ -976,12 +979,10 @@ export function App() {
                         {att.type === 'image' ? (
                           <img src={att.previewUrl} alt={att.name} />
                         ) : attachmentIsVideo(att.mimeType) ? (
-                          <video
-                            src={att.previewUrl}
-                            preload="metadata"
-                            muted
-                            playsInline
-                            aria-label={att.name}
+                          <ComposerVideoPreview
+                            previewUrl={att.previewUrl}
+                            mimeType={att.mimeType}
+                            name={att.name}
                           />
                         ) : attachmentIsAudio(att.mimeType) ? (
                           <audio

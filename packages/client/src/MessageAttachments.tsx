@@ -1,5 +1,6 @@
 import { attachmentIsAudio, attachmentIsVideo, attachmentPreviewUrl, normalizeAttachment } from './attachments';
 import type { WebChatAttachment } from './types';
+import { MessageVideoAttachment } from './VideoAttachmentPreview';
 
 export function MessageAttachments({
   attachments,
@@ -35,15 +36,12 @@ export function MessageAttachments({
         if (attachmentIsVideo(att.mimeType)) {
           if (!previewUrl) return null;
           return (
-            <button
+            <MessageVideoAttachment
               key={key}
-              type="button"
-              className="msg-attachment-video"
-              aria-label={`View ${att.name}`}
-              onClick={() => onOpenAttachment(att)}
-            >
-              <video src={previewUrl} preload="metadata" muted playsInline aria-hidden />
-            </button>
+              att={att}
+              previewUrl={previewUrl}
+              onOpenAttachment={onOpenAttachment}
+            />
           );
         }
 

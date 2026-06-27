@@ -199,8 +199,48 @@ describe('AttachmentDrawer', () => {
     const video = container.querySelector('.attachment-drawer-video');
     expect(video).toHaveAttribute('src', 'data:video/mp4;base64,aGVsbG8=');
     expect(video).toHaveAttribute('controls');
+    expect(video).toHaveAttribute('preload', 'metadata');
     expect(screen.getByRole('button', { name: 'Open clip.mp4 in new tab' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Download clip.mp4' })).toBeInTheDocument();
+  });
+
+  it('shows a download fallback when the browser cannot play the video container', () => {
+    vi.spyOn(attachments, 'videoMimeTypePlayable').mockReturnValue(false);
+    render(
+      <AttachmentDrawer
+        attachment={{
+          name: 'clip.mov',
+          mimeType: 'video/quicktime',
+          type: 'file',
+          data: 'aGVsbG8=',
+        }}
+        token="secret"
+        onClose={vi.fn()}
+      />,
+    );
+    expect(document.querySelector('.attachment-drawer-download-fallback')).toBeInTheDocument();
+    expect(screen.getByText('Preview unavailable in this browser.')).toBeInTheDocument();
+    expect(document.querySelector('.attachment-drawer-video')).toBeNull();
+  });
+
+  it('shows a download fallback when video playback is not supported', () => {
+    const { container } = render(
+      <AttachmentDrawer
+        attachment={{
+          name: 'clip.mp4',
+          mimeType: 'video/mp4',
+          type: 'file',
+          data: 'aGVsbG8=',
+        }}
+        token="secret"
+        onClose={vi.fn()}
+      />,
+    );
+    const video = container.querySelector('.attachment-drawer-video') as HTMLVideoElement;
+    Object.defineProperty(video, 'error', { value: { code: 4 }, configurable: true });
+    fireEvent.error(video);
+    expect(document.querySelector('.attachment-drawer-download-fallback')).toBeInTheDocument();
+    expect(container.querySelector('.attachment-drawer-video')).toBeNull();
   });
 
   it('opens video attachments in a viewer pop-out tab', () => {

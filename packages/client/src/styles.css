@@ -1445,6 +1445,26 @@ body.attachment-drawer-resizing * {
   background: var(--bg);
 }
 
+.attachment-drawer-video-fallback {
+  display: grid;
+  gap: 12px;
+  justify-items: start;
+}
+
+.attachment-drawer-download-fallback {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  padding: 8px 12px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.attachment-drawer-download-fallback:hover {
+  background: color-mix(in srgb, var(--border) 20%, var(--panel));
+}
+
 .attachment-drawer-audio {
   display: block;
   width: 100%;

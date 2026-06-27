@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import * as attachments from './attachments';
 import { MessageAttachments } from './MessageAttachments';
 
 const onOpenAttachment = vi.fn();
@@ -8,6 +9,7 @@ describe('MessageAttachments', () => {
   afterEach(() => {
     cleanup();
     onOpenAttachment.mockClear();
+    vi.restoreAllMocks();
   });
   it('renders nothing for empty attachments', () => {
     const { container } = render(
@@ -139,6 +141,51 @@ describe('MessageAttachments', () => {
     );
     const button = screen.getByRole('button', { name: 'View clip.mp4' });
     expect(button).toHaveClass('msg-attachment-video');
+    expect(container.querySelector('.msg-attachment-video video')).toHaveAttribute('preload', 'none');
+  });
+
+  it('falls back to a file button when the browser cannot play the video container', () => {
+    vi.spyOn(attachments, 'videoMimeTypePlayable').mockReturnValue(false);
+    const { container } = render(
+      <MessageAttachments
+        attachments={[
+          {
+            name: 'clip.mov',
+            mimeType: 'video/quicktime',
+            type: 'file',
+            data: 'aGVsbG8=',
+          },
+        ]}
+        onOpenAttachment={onOpenAttachment}
+      />,
+    );
+    expect(container.querySelector('.msg-attachment-video')).toBeNull();
+    expect(screen.getByRole('button', { name: 'clip.mov' })).toHaveClass('msg-attachment-file');
+    fireEvent.click(screen.getByRole('button', { name: 'clip.mov' }));
+    expect(onOpenAttachment).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'clip.mov', mimeType: 'video/quicktime' }),
+    );
+  });
+
+  it('falls back to a file button when video playback is not supported', () => {
+    const { container } = render(
+      <MessageAttachments
+        attachments={[
+          {
+            name: 'clip.mp4',
+            mimeType: 'video/mp4',
+            type: 'file',
+            data: 'aGVsbG8=',
+          },
+        ]}
+        onOpenAttachment={onOpenAttachment}
+      />,
+    );
+    const video = container.querySelector('.msg-attachment-video video') as HTMLVideoElement;
+    Object.defineProperty(video, 'error', { value: { code: 4 }, configurable: true });
+    fireEvent.error(video);
+    expect(container.querySelector('.msg-attachment-video')).toBeNull();
+    expect(screen.getByRole('button', { name: 'clip.mp4' })).toHaveClass('msg-attachment-file');
   });
 
   it('opens video attachments in the drawer on click', () => {

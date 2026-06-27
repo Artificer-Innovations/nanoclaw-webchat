@@ -34,8 +34,10 @@ import {
   formatMaxUploadLabel,
   formatUploadBytesLabel,
   formatAttachmentSize,
+  handleVideoPreviewError,
   inferMimeType,
   isSafeAttachmentUrl,
+  isVideoSrcNotSupportedError,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENTS,
   mergePendingAttachments,
@@ -54,6 +56,7 @@ import {
   toSendAttachmentsFromUploads,
   uploadAttachmentFile,
   uploadPendingAttachments,
+  videoMimeTypePlayable,
   CHUNK_SIZE,
   type PendingAttachment,
 } from './attachments';
@@ -109,6 +112,23 @@ describe('attachments', () => {
     expect(attachmentIsVideo('image/png')).toBe(false);
     expect(attachmentUsesVideoPreview('video/mp4')).toBe(true);
     expect(attachmentUsesVideoPreview('application/pdf')).toBe(false);
+    expect(videoMimeTypePlayable('video/mp4')).toBe(true);
+    expect(isVideoSrcNotSupportedError({ code: 4 } as MediaError)).toBe(true);
+    expect(isVideoSrcNotSupportedError({ code: 1 } as MediaError)).toBe(false);
+    expect(isVideoSrcNotSupportedError(undefined)).toBe(false);
+    expect(isVideoSrcNotSupportedError(null)).toBe(false);
+    const onUnsupported = vi.fn();
+    handleVideoPreviewError({ currentTarget: { error: { code: 4 } as MediaError } as HTMLVideoElement }, onUnsupported);
+    expect(onUnsupported).toHaveBeenCalledOnce();
+    onUnsupported.mockClear();
+    handleVideoPreviewError({ currentTarget: { error: { code: 1 } as MediaError } as HTMLVideoElement }, onUnsupported);
+    expect(onUnsupported).not.toHaveBeenCalled();
+  });
+
+  it('assumes video is playable during SSR', () => {
+    vi.stubGlobal('document', undefined);
+    expect(videoMimeTypePlayable('video/quicktime')).toBe(true);
+    vi.unstubAllGlobals();
   });
 
   it('classifies audio attachments', () => {
@@ -726,6 +746,7 @@ describe('attachments', () => {
       expect.stringContaining('class="video-preview"'),
     );
     expect(openDoc.mock.calls[0]![0]).toContain('data:video/mp4;base64,aGVsbG8=');
+    expect(openDoc.mock.calls[0]![0]).toContain('video.canPlayType("video/mp4")');
   });
 
   it('uses absolute urls in video popouts for persisted attachments', () => {

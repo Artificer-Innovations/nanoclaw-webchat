@@ -37,13 +37,17 @@ describe('attachment-text-popout', () => {
     const html = buildVideoPopoutDocument(
       'clip.mp4',
       'http://127.0.0.1:3200/api/attachments/msg-1/clip.mp4?token=secret',
+      'video/mp4',
     );
     expect(html).toContain('<title>clip.mp4</title>');
+    expect(html).toContain('id="attachment-video"');
     expect(html).toContain('class="video-preview"');
+    expect(html).toContain('id="attachment-video-fallback"');
     expect(html).toContain('src="http://127.0.0.1:3200/api/attachments/msg-1/clip.mp4?token=secret"');
     expect(html).not.toContain('<source');
     expect(html).toContain('controls');
     expect(html).toContain('playsinline');
+    expect(html).toContain('video.canPlayType("video/mp4")');
   });
 
   it('builds an audio popout document with native controls', () => {

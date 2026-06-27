@@ -96,6 +96,23 @@ describe('resourcesDir', () => {
     expect(resourcesDir(monorepo, temp)).toBe(path.join(monorepo, 'packages/adapter/src'));
   });
 
+  it('resolves file: linked monorepo adapter src from devDependencies', () => {
+    const host = fs.mkdtempSync(path.join(os.tmpdir(), 'resources-dir-dev-link-'));
+    tempDirs.push(host);
+    const monorepo = fs.mkdtempSync(path.join(os.tmpdir(), 'resources-dir-dev-monorepo-'));
+    tempDirs.push(monorepo);
+    fs.mkdirSync(path.join(monorepo, 'packages/adapter/src'), { recursive: true });
+    fs.writeFileSync(path.join(monorepo, 'packages/adapter/src/web.ts'), 'export {};\n');
+    fs.writeFileSync(
+      path.join(host, 'package.json'),
+      JSON.stringify({
+        name: 'nanoclaw-host',
+        devDependencies: { 'nanoclaw-webchat': `file:${monorepo}` },
+      }),
+    );
+    expect(resolveLinkedAdapterSrc(host)).toBe(path.join(monorepo, 'packages/adapter/src'));
+  });
+
   it('returns null when host package.json is missing', () => {
     const host = fs.mkdtempSync(path.join(os.tmpdir(), 'resources-dir-no-pkg-'));
     tempDirs.push(host);

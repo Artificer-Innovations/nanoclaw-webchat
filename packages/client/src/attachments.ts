@@ -208,6 +208,27 @@ export function attachmentIsVideo(mimeType: string): boolean {
   return mimeType.startsWith('video/');
 }
 
+const MEDIA_ERR_SRC_NOT_SUPPORTED = 4;
+
+/** True when the browser reports it can play the container MIME (SSR: defer to onError). */
+export function videoMimeTypePlayable(mimeType: string): boolean {
+  if (typeof document === 'undefined') return true;
+  return document.createElement('video').canPlayType(mimeType) !== '';
+}
+
+export function isVideoSrcNotSupportedError(error: MediaError | null | undefined): boolean {
+  return (error?.code ?? 0) === MEDIA_ERR_SRC_NOT_SUPPORTED;
+}
+
+export function handleVideoPreviewError(
+  event: { currentTarget: HTMLVideoElement },
+  onUnsupported: () => void,
+): void {
+  if (isVideoSrcNotSupportedError(event.currentTarget.error)) {
+    onUnsupported();
+  }
+}
+
 export function attachmentIsAudio(mimeType: string): boolean {
   return mimeType.startsWith('audio/');
 }
@@ -478,7 +499,7 @@ export function openAttachmentInNewTab(att: WebChatAttachment, token?: string): 
 export function openVideoAttachmentInNewTab(att: WebChatAttachment, token?: string): boolean {
   const videoSrc = attachmentEmbedUrl(att, token);
   if (!videoSrc) return false;
-  return openHtmlDocumentInNewTab(buildVideoPopoutDocument(att.name, videoSrc));
+  return openHtmlDocumentInNewTab(buildVideoPopoutDocument(att.name, videoSrc, att.mimeType));
 }
 
 /** Audio pop-out with native controls in a styled viewer page. */

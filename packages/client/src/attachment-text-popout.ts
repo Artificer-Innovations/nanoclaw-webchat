@@ -189,6 +189,14 @@ main { padding: 20px; }
   border-radius: 8px;
   background: #000;
 }
+.video-fallback {
+  text-align: center;
+  padding: 2rem 1rem;
+  color: var(--muted);
+}
+.video-fallback a {
+  color: var(--accent);
+}
 .audio-preview {
   display: block;
   width: min(100%, 640px);
@@ -267,9 +275,14 @@ export function buildPlainTextPopoutDocument(title: string, text: string): strin
 </html>`;
 }
 
-export function buildVideoPopoutDocument(title: string, videoSrc: string): string {
+export function buildVideoPopoutDocument(
+  title: string,
+  videoSrc: string,
+  mimeType = 'video/mp4',
+): string {
   const safeTitle = escapeHtml(title);
   const safeSrc = escapeHtml(videoSrc);
+  const mimeJson = JSON.stringify(mimeType);
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -283,8 +296,29 @@ export function buildVideoPopoutDocument(title: string, videoSrc: string): strin
   <h1>${safeTitle}</h1>
 </header>
 <main>
-  <video class="video-preview" src="${safeSrc}" controls playsinline preload="metadata"></video>
+  <video id="attachment-video" class="video-preview" src="${safeSrc}" controls playsinline preload="metadata"></video>
+  <div id="attachment-video-fallback" class="video-fallback" hidden>
+    <p>Preview unavailable in this browser.</p>
+    <a href="${safeSrc}" download="${safeTitle}">Download ${safeTitle}</a>
+  </div>
 </main>
+<script>
+(function () {
+  var video = document.getElementById('attachment-video');
+  var fallback = document.getElementById('attachment-video-fallback');
+  function showFallback() {
+    video.hidden = true;
+    fallback.hidden = false;
+  }
+  if (video.canPlayType(${mimeJson}) === '') {
+    showFallback();
+    return;
+  }
+  video.addEventListener('error', function () {
+    if (video.error && video.error.code === 4) showFallback();
+  });
+})();
+</script>
 </body>
 </html>`;
 }

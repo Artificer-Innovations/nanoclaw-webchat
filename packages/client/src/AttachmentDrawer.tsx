@@ -28,6 +28,7 @@ import {
   downloadAttachment,
   formatAttachmentSize,
   attachmentTypeLabel,
+  handleVideoPreviewError,
   normalizeAttachment,
   openAttachmentInNewTab,
   openCodeAttachmentInNewTab,
@@ -38,6 +39,7 @@ import {
   openVideoAttachmentInNewTab,
   openAudioAttachmentInNewTab,
   fetchAttachmentText,
+  videoMimeTypePlayable,
 } from './attachments';
 import { CodePreview } from './CodePreview';
 import { CsvPreview } from './CsvPreview';
@@ -78,6 +80,7 @@ export function AttachmentDrawer({
   const [loading, setLoading] = useState(mode === 'text');
   const [copied, setCopied] = useState(false);
   const [textView, setTextView] = useState<TextAttachmentView>('preview');
+  const [videoFailed, setVideoFailed] = useState(false);
   const supportsPreviewToggle = attachmentSupportsPreviewToggle(att.mimeType, att.name);
   const supportsPopOut = attachmentSupportsPopOut(att.mimeType, att.name);
   const codeLanguage = category === 'code' ? codeLanguageFromAttachment(att.name, att.mimeType) : null;
@@ -85,6 +88,7 @@ export function AttachmentDrawer({
   useEffect(() => {
     resetDrawerBodyScroll(bodyRef.current);
     setTextView('preview');
+    setVideoFailed(false);
   }, [att.name, att.mimeType, att.data, att.url]);
 
   useEffect(() => {
@@ -384,12 +388,27 @@ export function AttachmentDrawer({
               sandbox={attachmentIframeSandbox(att.mimeType)}
             />
           ) : attachmentUsesVideoPreview(att.mimeType) ? (
-            <video
-              className="attachment-drawer-video"
-              src={embedUrl}
-              controls
-              playsInline
-            />
+            videoFailed || !videoMimeTypePlayable(att.mimeType) ? (
+              <div className="attachment-drawer-video-fallback">
+                <p className="attachment-drawer-status">Preview unavailable in this browser.</p>
+                <button
+                  type="button"
+                  className="attachment-drawer-download-fallback"
+                  onClick={handleDownload}
+                >
+                  Download {att.name}
+                </button>
+              </div>
+            ) : (
+              <video
+                className="attachment-drawer-video"
+                src={embedUrl}
+                controls
+                playsInline
+                preload="metadata"
+                onError={(event) => handleVideoPreviewError(event, () => setVideoFailed(true))}
+              />
+            )
           ) : attachmentUsesAudioPreview(att.mimeType) ? (
             <audio className="attachment-drawer-audio" src={embedUrl} controls preload="metadata" />
           ) : (
