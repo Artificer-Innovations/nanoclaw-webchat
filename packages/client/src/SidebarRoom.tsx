@@ -6,6 +6,7 @@ import {
   CaretDownIcon,
   CaretRightIcon,
   DoorIcon,
+  InboxIcon,
   PencilIcon,
   PlusIcon,
   TrashIcon,
@@ -37,6 +38,7 @@ interface SidebarRoomProps {
 }
 
 function RoomIcon({ kind }: { kind: WebChatRoom['kind'] }) {
+  if (kind === 'inbox') return <InboxIcon />;
   return kind === 'lobby' ? <DoorIcon /> : <BotIcon />;
 }
 
@@ -184,6 +186,7 @@ export function SidebarRoom({
             e.stopPropagation();
             onNewThread();
           }}
+          hidden={room.kind === 'inbox'}
         >
           <PlusIcon />
         </button>

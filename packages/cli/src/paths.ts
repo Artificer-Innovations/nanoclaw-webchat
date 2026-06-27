@@ -40,12 +40,33 @@ export function adapterSrcDir(startDir: string = __dirname): string {
  * package.json `files`), so `packages/adapter/src` is absent there and we fall
  * back to build-synced skill resources. No separate isMonorepo flag needed.
  */
-export function resourcesDir(startDir: string = __dirname): string {
+export function resourcesDir(startDir: string = __dirname, nanoclawRoot?: string): string {
   const adapterSrc = adapterSrcDir(startDir);
   if (fs.existsSync(path.join(adapterSrc, 'web.ts'))) {
     return adapterSrc;
   }
+  if (nanoclawRoot) {
+    const linked = resolveLinkedAdapterSrc(nanoclawRoot);
+    if (linked) return linked;
+  }
   return path.join(skillDir(startDir), 'resources');
+}
+
+/** When the host uses `file:` to link the monorepo, pnpm may omit `packages/` from node_modules. */
+export function resolveLinkedAdapterSrc(nanoclawRoot: string): string | null {
+  const pkgPath = path.join(nanoclawRoot, 'package.json');
+  if (!fs.existsSync(pkgPath)) return null;
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as {
+    dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
+  };
+  const dep =
+    pkg.dependencies?.['nanoclaw-webchat'] ?? pkg.devDependencies?.['nanoclaw-webchat'];
+  if (!dep?.startsWith('file:')) return null;
+  const linkedRoot = path.resolve(nanoclawRoot, dep.slice('file:'.length));
+  const adapterSrc = path.join(linkedRoot, 'packages/adapter/src');
+  if (fs.existsSync(path.join(adapterSrc, 'web.ts'))) return adapterSrc;
+  return null;
 }
 
 export interface AdapterCopyRule {
@@ -63,11 +84,24 @@ export const ADAPTER_COPY_RULES: AdapterCopyRule[] = [
   { source: 'webchat-wiring.test.ts', dest: 'src/webchat-wiring.test.ts' },
   { source: 'webchat-store.ts', dest: 'src/webchat-store.ts' },
   { source: 'webchat-store.test.ts', dest: 'src/webchat-store.test.ts' },
+  { source: 'webchat-uploads.ts', dest: 'src/webchat-uploads.ts' },
+  { source: 'webchat-uploads.test.ts', dest: 'src/webchat-uploads.test.ts' },
+  { source: 'webchat-serve-attachment.ts', dest: 'src/webchat-serve-attachment.ts' },
+  { source: 'webchat-serve-attachment.test.ts', dest: 'src/webchat-serve-attachment.test.ts' },
   { source: 'webchat-thread-cleanup.ts', dest: 'src/webchat-thread-cleanup.ts' },
   { source: 'webchat-routing.ts', dest: 'src/webchat-routing.ts' },
   { source: 'webchat-routing.test.ts', dest: 'src/webchat-routing.test.ts' },
   { source: 'webchat-mentions.ts', dest: 'src/webchat-mentions.ts' },
   { source: 'webchat-mentions.test.ts', dest: 'src/webchat-mentions.test.ts' },
+  { source: 'webchat-auth-config.ts', dest: 'src/webchat-auth-config.ts' },
+  { source: 'webchat-auth-config.test.ts', dest: 'src/webchat-auth-config.test.ts' },
+  { source: 'webchat-auth-sessions.ts', dest: 'src/webchat-auth-sessions.ts' },
+  { source: 'webchat-auth-jwt.ts', dest: 'src/webchat-auth-jwt.ts' },
+  { source: 'webchat-auth-jwt.test.ts', dest: 'src/webchat-auth-jwt.test.ts' },
+  { source: 'webchat-auth.ts', dest: 'src/webchat-auth.ts' },
+  { source: 'webchat-auth.test.ts', dest: 'src/webchat-auth.test.ts' },
+  { source: 'webchat-room-scope.ts', dest: 'src/webchat-room-scope.ts' },
+  { source: 'webchat-room-scope.test.ts', dest: 'src/webchat-room-scope.test.ts' },
 ];
 
 export const WEBCHAT_BARREL_IMPORT = "import './web.js';";
@@ -80,6 +114,10 @@ export const VERIFY_TESTS = [
   'src/channels/web.test.ts',
   'src/webchat-sync.test.ts',
   'src/webchat-wiring.test.ts',
+  'src/webchat-auth.test.ts',
+  'src/webchat-auth-jwt.test.ts',
+  'src/webchat-auth-config.test.ts',
+  'src/webchat-room-scope.test.ts',
 ];
 
 export function findNanoclawRoot(start = process.cwd()): string {

@@ -16,6 +16,9 @@ async function main(): Promise<void> {
   const dbPath = path.join(DATA_DIR, 'v2.db');
   const db = initDb(dbPath);
   runMigrations(db);
+  const { startWebChat } = await import('./webchat-boot.js');
+  await startWebChat();
+
 
   await initChannelAdapters((adapter: ChannelAdapter): ChannelSetup => {
     return {

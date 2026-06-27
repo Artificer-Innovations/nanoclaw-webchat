@@ -11,6 +11,7 @@ import {
   removeWebchatBootBlock,
   scaffoldEnv,
   syncSkillToFork,
+  ensureHostAdapterDependencies,
 } from './patch.js';
 import { readProjectNodeMajor, runUnderProjectNode, scaffoldProjectNodeFiles, verifyHostReminder } from './node-runner.js';
 import { findNanoclawRoot, readPackageVersion, VERIFY_TESTS } from './paths.js';
@@ -18,6 +19,8 @@ import { findNanoclawRoot, readPackageVersion, VERIFY_TESTS } from './paths.js';
 export interface InstallResult {
   root: string;
   copied: string[];
+  dependenciesAdded: string[];
+  dependenciesInstalled: boolean;
   barrelPatched: boolean;
   bootPatched: boolean;
   env: { created: string[]; skipped: string[] };
@@ -26,10 +29,27 @@ export interface InstallResult {
   npmrcUpdated: boolean;
 }
 
+function installAddedHostDependencies(nanoclawRoot: string, dependenciesAdded: string[]): boolean {
+  if (dependenciesAdded.length === 0) return true;
+  console.log(`Installing host dependencies: ${dependenciesAdded.join(', ')}...`);
+  const result = runUnderProjectNode(nanoclawRoot, 'pnpm', ['install']);
+  if (result.status !== 0) {
+    console.warn(
+      `pnpm install failed (exit ${result.status ?? 'unknown'}). Run \`pnpm install\` in the host root, then rebuild.`,
+    );
+    const detail = `${result.stdout}${result.stderr}`.trim();
+    if (detail) console.warn(detail);
+    return false;
+  }
+  return true;
+}
+
 export function runInstall(root?: string): InstallResult {
   const nanoclawRoot = root ?? findNanoclawRoot();
   console.log(`Detected NanoClaw root: ${nanoclawRoot}`);
   const copied = copyAdapterFiles(nanoclawRoot);
+  const dependenciesAdded = ensureHostAdapterDependencies(nanoclawRoot);
+  const dependenciesInstalled = installAddedHostDependencies(nanoclawRoot, dependenciesAdded);
   const barrelPatched = appendBarrelImport(nanoclawRoot);
   const bootPatched = insertWebchatBootBlock(nanoclawRoot);
   const env = scaffoldEnv(nanoclawRoot);
@@ -37,6 +57,8 @@ export function runInstall(root?: string): InstallResult {
   return {
     root: nanoclawRoot,
     copied,
+    dependenciesAdded,
+    dependenciesInstalled,
     barrelPatched,
     bootPatched,
     env,
@@ -98,6 +120,15 @@ export function runVerify(root?: string): {
 export function printInstallNextSteps(result: InstallResult): void {
   console.log(`Installed nanoclaw-webchat@${result.version} adapter into ${result.root}`);
   console.log(`Copied ${result.copied.length} files.`);
+  if (result.dependenciesAdded.length > 0) {
+    if (result.dependenciesInstalled) {
+      console.log(`Installed host dependencies: ${result.dependenciesAdded.join(', ')}`);
+    } else {
+      console.log(
+        `Added host dependencies: ${result.dependenciesAdded.join(', ')} — run pnpm install, then rebuild`,
+      );
+    }
+  }
   if (result.env.created.length > 0) {
     console.log(`Added .env: ${result.env.created.join(', ')}`);
   }

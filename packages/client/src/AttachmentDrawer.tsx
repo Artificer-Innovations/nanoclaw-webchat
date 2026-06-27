@@ -13,17 +13,29 @@ import { codeLanguageFromAttachment } from './attachment-code';
 import {
   attachmentDataUrl,
   attachmentIframeSandbox,
+  attachmentIsAudio,
+  attachmentIsMdx,
+  attachmentIsHeic,
+  attachmentIsVideo,
   attachmentPreviewMode,
   attachmentSupportsPopOut,
   attachmentSupportsPreviewToggle,
   attachmentTextCategory,
+  attachmentTextTooLargeForPreview,
+  attachmentUsesAudioPreview,
   attachmentUsesFormattedMessagePreview,
   attachmentUsesIframePreview,
+  attachmentUsesSvgPreview,
+  attachmentUsesVideoPreview,
   ATTACHMENT_HTML_IFRAME_SANDBOX,
+  ATTACHMENT_SVG_IFRAME_SANDBOX,
+  attachmentFriendlyTypeLabel,
   copyAttachmentForPreview,
   downloadAttachment,
   formatAttachmentSize,
-  attachmentTypeLabel,
+  handleAudioPreviewError,
+  handleVideoPreviewError,
+  imageMimeTypeDisplayable,
   normalizeAttachment,
   openAttachmentInNewTab,
   openCodeAttachmentInNewTab,
@@ -31,9 +43,14 @@ import {
   openHtmlAttachmentInNewTab,
   openMarkdownAttachmentInNewTab,
   openPlainTextAttachmentInNewTab,
+  openVideoAttachmentInNewTab,
+  openAudioAttachmentInNewTab,
+  audioMimeTypePlayable,
   fetchAttachmentText,
+  videoMimeTypePlayable,
 } from './attachments';
 import { CodePreview } from './CodePreview';
+import { JsonPreview } from './JsonPreview';
 import { CsvPreview } from './CsvPreview';
 import { FormattedMessage } from './FormattedMessage';
 import { CloseIcon, CopyIcon, DownloadIcon, ExternalLinkIcon } from './nav-icons';
@@ -72,13 +89,19 @@ export function AttachmentDrawer({
   const [loading, setLoading] = useState(mode === 'text');
   const [copied, setCopied] = useState(false);
   const [textView, setTextView] = useState<TextAttachmentView>('preview');
+  const [videoFailed, setVideoFailed] = useState(false);
+  const [audioFailed, setAudioFailed] = useState(false);
+  const [imageFailed, setImageFailed] = useState(false);
   const supportsPreviewToggle = attachmentSupportsPreviewToggle(att.mimeType, att.name);
-  const supportsPopOut = attachmentSupportsPopOut(att.mimeType, att.name);
+  const supportsPopOut = attachmentSupportsPopOut(att.mimeType, att.name, att.url);
   const codeLanguage = category === 'code' ? codeLanguageFromAttachment(att.name, att.mimeType) : null;
 
   useEffect(() => {
     resetDrawerBodyScroll(bodyRef.current);
     setTextView('preview');
+    setVideoFailed(false);
+    setAudioFailed(false);
+    setImageFailed(false);
   }, [att.name, att.mimeType, att.data, att.url]);
 
   useEffect(() => {
@@ -99,6 +122,15 @@ export function AttachmentDrawer({
       return;
     }
 
+    if (attachmentTextTooLargeForPreview(att.size)) {
+      setLoading(false);
+      setLoadError(
+        `File is too large to preview (${formatAttachmentSize(att.size)}). Use download instead.`,
+      );
+      setTextContent(null);
+      return;
+    }
+
     let cancelled = false;
     setLoading(true);
     setLoadError(null);
@@ -115,7 +147,7 @@ export function AttachmentDrawer({
     return () => {
       cancelled = true;
     };
-  }, [att.data, att.mimeType, att.name, att.url, mode, token]);
+  }, [att.data, att.mimeType, att.name, att.url, att.size, mode, token]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -172,6 +204,14 @@ export function AttachmentDrawer({
     }
     if (category === 'csv') {
       void openCsvAttachmentInNewTab(att, token);
+      return;
+    }
+    if (attachmentIsVideo(att.mimeType)) {
+      openVideoAttachmentInNewTab(att, token);
+      return;
+    }
+    if (attachmentIsAudio(att.mimeType)) {
+      openAudioAttachmentInNewTab(att, token);
       return;
     }
     openAttachmentInNewTab(att, token);
@@ -263,6 +303,9 @@ export function AttachmentDrawer({
       <header className="attachment-drawer-header">
         <h3 className="attachment-drawer-title" title={att.name}>
           {att.name}
+          {attachmentIsMdx(att.name) ? (
+            <span className="attachment-drawer-mdx-badge">MDX (markdown only)</span>
+          ) : null}
         </h3>
         {supportsPreviewToggle ? (
           <div className="attachment-drawer-view-toggle" role="group" aria-label="View mode">
@@ -348,6 +391,8 @@ export function AttachmentDrawer({
           ) : category === 'code' ? (
             textView === 'raw' || !codeLanguage ? (
               <pre className="attachment-drawer-raw">{textContent}</pre>
+            ) : codeLanguage === 'json' ? (
+              <JsonPreview text={textContent} />
             ) : (
               <CodePreview text={textContent} language={codeLanguage} />
             )
@@ -369,8 +414,78 @@ export function AttachmentDrawer({
               src={embedUrl}
               sandbox={attachmentIframeSandbox(att.mimeType)}
             />
+          ) : attachmentUsesVideoPreview(att.mimeType) ? (
+            videoFailed || !videoMimeTypePlayable(att.mimeType) ? (
+              <div className="attachment-drawer-video-fallback">
+                <p className="attachment-drawer-status">Preview unavailable in this browser.</p>
+                <button
+                  type="button"
+                  className="attachment-drawer-download-fallback"
+                  onClick={handleDownload}
+                >
+                  Download {att.name}
+                </button>
+              </div>
+            ) : (
+              <video
+                className="attachment-drawer-video"
+                src={embedUrl}
+                controls
+                playsInline
+                preload="metadata"
+                onError={(event) => handleVideoPreviewError(event, () => setVideoFailed(true))}
+              />
+            )
+          ) : attachmentUsesAudioPreview(att.mimeType) ? (
+            audioFailed || !audioMimeTypePlayable(att.mimeType) ? (
+              <div className="attachment-drawer-video-fallback">
+                <p className="attachment-drawer-status">Preview unavailable in this browser.</p>
+                <button
+                  type="button"
+                  className="attachment-drawer-download-fallback"
+                  onClick={handleDownload}
+                >
+                  Download {att.name}
+                </button>
+              </div>
+            ) : (
+              <audio
+                className="attachment-drawer-audio"
+                src={embedUrl}
+                controls
+                preload="metadata"
+                onError={(event) => handleAudioPreviewError(event, () => setAudioFailed(true))}
+              />
+            )
+          ) : attachmentUsesSvgPreview(att.mimeType) ? (
+            <iframe
+              className="attachment-drawer-embed"
+              title={att.name}
+              src={embedUrl}
+              sandbox={ATTACHMENT_SVG_IFRAME_SANDBOX}
+            />
+          ) : imageFailed || !imageMimeTypeDisplayable(att.mimeType) ? (
+            <div className="attachment-drawer-video-fallback">
+              <p className="attachment-drawer-status">
+                {attachmentIsHeic(att.mimeType)
+                  ? 'HEIC/HEIF preview is not supported in this browser. Download to view or open on a device that supports HEIC/HEIF.'
+                  : 'Preview unavailable in this browser.'}
+              </p>
+              <button
+                type="button"
+                className="attachment-drawer-download-fallback"
+                onClick={handleDownload}
+              >
+                Download {att.name}
+              </button>
+            </div>
           ) : (
-            <img className="attachment-drawer-image" src={embedUrl} alt={att.name} />
+            <img
+              className="attachment-drawer-image"
+              src={embedUrl}
+              alt={att.name}
+              onError={() => setImageFailed(true)}
+            />
           )
         ) : null}
         {mode === 'embed' && !embedUrl ? (
@@ -392,7 +507,7 @@ export function AttachmentDrawer({
             </div>
             <div>
               <dt>Type</dt>
-              <dd>{attachmentTypeLabel(att.type)}</dd>
+              <dd>{attachmentFriendlyTypeLabel(att.mimeType, att.name)}</dd>
             </div>
           </dl>
         ) : null}

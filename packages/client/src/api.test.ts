@@ -4,16 +4,26 @@ import {
   connectWebSocket,
   createThread,
   deleteThread,
+  detectPublicAuthMode,
   disengageAgent,
+  fetchAuthConfig,
+  fetchAuthMe,
   fetchBootstrap,
   fetchMessages,
   getStoredToken,
+  isLocalTokenMode,
   loadLegacyThreads,
+  loginBasic,
+  logoutSession,
   removeLegacyThread,
   renameThread,
   resolveWebSocketUrl,
   sendMessage,
+  startOidcLogin,
   storeToken,
+  submitAction,
+  uploadAttachmentMultipart,
+  uploadAttachmentChunk,
 } from './api';
 import type { BootstrapPayload, WebChatMessage, WsEvent } from './types';
 
@@ -130,7 +140,7 @@ describe('api', () => {
 
       await fetchBootstrap('');
 
-      expect(fetch).toHaveBeenCalledWith('/api/bootstrap', { headers: {} });
+      expect(fetch).toHaveBeenCalledWith('/api/bootstrap', { credentials: 'include', headers: {} });
     });
 
     it('throws when bootstrap request fails', async () => {
@@ -284,6 +294,217 @@ describe('api', () => {
       expect(resolveWebSocketUrl('token', { DEV: false, VITE_WEBCHAT_API_TARGET: undefined })).toBe(
         'ws://chat.example.com/api/ws?token=token',
       );
+    });
+
+    it('omits token query in public session mode', () => {
+      vi.stubGlobal('location', {
+        protocol: 'http:',
+        host: 'chat.example.com',
+        search: '',
+      });
+      expect(resolveWebSocketUrl('', { DEV: false, VITE_WEBCHAT_API_TARGET: undefined })).toBe(
+        'ws://chat.example.com/api/ws',
+      );
+    });
+  });
+
+  describe('public auth helpers', () => {
+    it('fetchAuthConfig returns parsed config', async () => {
+      vi.mocked(fetch).mockResolvedValue({
+        ok: true,
+        json: async () => ({ basic: { enabled: true }, providers: [] }),
+      } as Response);
+      await expect(fetchAuthConfig()).resolves.toEqual({ basic: { enabled: true }, providers: [] });
+    });
+
+    it('fetchAuthConfig throws on failure', async () => {
+      vi.mocked(fetch).mockResolvedValue({ ok: false, status: 503 } as Response);
+      await expect(fetchAuthConfig()).rejects.toThrow('auth config failed: 503');
+    });
+
+    it('fetchAuthMe returns null on 401', async () => {
+      vi.mocked(fetch).mockResolvedValue({ ok: false, status: 401 } as Response);
+      await expect(fetchAuthMe()).resolves.toBeNull();
+    });
+
+    it('fetchAuthMe returns user on success', async () => {
+      vi.mocked(fetch).mockResolvedValue({
+        ok: true,
+        json: async () => ({ userId: 'web:basic:alice', displayName: 'Alice' }),
+      } as Response);
+      await expect(fetchAuthMe()).resolves.toEqual({
+        userId: 'web:basic:alice',
+        displayName: 'Alice',
+      });
+    });
+
+    it('fetchAuthMe throws on other errors', async () => {
+      vi.mocked(fetch).mockResolvedValue({ ok: false, status: 500 } as Response);
+      await expect(fetchAuthMe()).rejects.toThrow('auth me failed: 500');
+    });
+
+    it('loginBasic posts credentials', async () => {
+      vi.mocked(fetch).mockResolvedValue({ ok: true } as Response);
+      await loginBasic('alice', 'secret');
+      expect(fetch).toHaveBeenCalledWith('/api/auth/login/basic', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'alice', password: 'secret' }),
+      });
+    });
+
+    it('loginBasic throws when login fails', async () => {
+      vi.mocked(fetch).mockResolvedValue({ ok: false, status: 401 } as Response);
+      await expect(loginBasic('alice', 'bad')).rejects.toThrow('login failed');
+    });
+
+    it('logoutSession posts to logout endpoint', async () => {
+      vi.mocked(fetch).mockResolvedValue({ ok: true } as Response);
+      await logoutSession();
+      expect(fetch).toHaveBeenCalledWith('/api/auth/logout', {
+        method: 'POST',
+        credentials: 'include',
+      });
+    });
+
+    it('startOidcLogin navigates to provider login', () => {
+      vi.stubGlobal('location', { href: 'http://localhost/' });
+      startOidcLogin('google');
+      expect(window.location.href).toBe('/api/auth/login?provider=google');
+    });
+
+    it('detectPublicAuthMode is false with meta token', async () => {
+      const meta = document.createElement('meta');
+      meta.setAttribute('name', 'webchat-token');
+      meta.setAttribute('content', 'secret');
+      document.head.appendChild(meta);
+      await expect(detectPublicAuthMode()).resolves.toBe(false);
+    });
+
+    it('detectPublicAuthMode is true when auth config succeeds', async () => {
+      vi.mocked(fetch).mockResolvedValue({
+        ok: true,
+        json: async () => ({ basic: { enabled: true }, providers: [] }),
+      } as Response);
+      await expect(detectPublicAuthMode()).resolves.toBe(true);
+    });
+
+    it('detectPublicAuthMode is false when auth config fails', async () => {
+      vi.mocked(fetch).mockResolvedValue({ ok: false, status: 404 } as Response);
+      await expect(detectPublicAuthMode()).resolves.toBe(false);
+    });
+
+    it('isLocalTokenMode reflects meta tag presence', () => {
+      expect(isLocalTokenMode()).toBe(false);
+      const meta = document.createElement('meta');
+      meta.setAttribute('name', 'webchat-token');
+      meta.setAttribute('content', 'secret');
+      document.head.appendChild(meta);
+      expect(isLocalTokenMode()).toBe(true);
+    });
+  });
+
+  describe('uploadAttachmentMultipart', () => {
+    it('throws with server error message', async () => {
+      vi.mocked(fetch).mockResolvedValue({
+        ok: false,
+        status: 400,
+        json: async () => ({ error: 'bad file' }),
+      } as Response);
+      await expect(
+        uploadAttachmentMultipart('token', 'lobby', 'main', new File(['x'], 'a.txt')),
+      ).rejects.toThrow('bad file');
+    });
+
+    it('throws generic message when error body is invalid', async () => {
+      vi.mocked(fetch).mockResolvedValue({
+        ok: false,
+        status: 500,
+        json: async () => {
+          throw new Error('invalid json');
+        },
+      } as Response);
+      await expect(
+        uploadAttachmentMultipart('token', 'lobby', 'main', new File(['x'], 'a.txt')),
+      ).rejects.toThrow('upload failed: 500');
+    });
+  });
+
+  describe('uploadAttachmentChunk', () => {
+    it('throws with server error message', async () => {
+      vi.mocked(fetch).mockResolvedValue({
+        ok: false,
+        status: 413,
+        json: async () => ({ error: 'chunk too large' }),
+      } as Response);
+      await expect(
+        uploadAttachmentChunk('token', 'lobby', 'main', {
+          uploadId: 'up-1',
+          chunkIndex: 0,
+          totalChunks: 1,
+          filename: 'a.bin',
+          mimeType: 'application/octet-stream',
+          data: 'aa==',
+        }),
+      ).rejects.toThrow('chunk too large');
+    });
+
+    it('returns chunk progress payload', async () => {
+      vi.mocked(fetch).mockResolvedValue({
+        ok: true,
+        json: async () => ({ ok: true, received: 1, total: 2 }),
+      } as Response);
+      await expect(
+        uploadAttachmentChunk('token', 'lobby', 'main', {
+          uploadId: 'up-1',
+          chunkIndex: 0,
+          totalChunks: 2,
+          filename: 'a.bin',
+          mimeType: 'application/octet-stream',
+          data: 'aa==',
+        }),
+      ).resolves.toEqual({ ok: true, received: 1, total: 2 });
+    });
+
+    it('throws generic message when chunk error body is invalid', async () => {
+      vi.mocked(fetch).mockResolvedValue({
+        ok: false,
+        status: 500,
+        json: async () => {
+          throw new Error('invalid json');
+        },
+      } as Response);
+      await expect(
+        uploadAttachmentChunk('token', 'lobby', 'main', {
+          uploadId: 'up-1',
+          chunkIndex: 0,
+          totalChunks: 1,
+          filename: 'a.bin',
+          mimeType: 'application/octet-stream',
+          data: 'aa==',
+        }),
+      ).rejects.toThrow('upload failed: 500');
+    });
+  });
+
+  describe('submitAction', () => {
+    it('posts card action payload', async () => {
+      vi.mocked(fetch).mockResolvedValue({ ok: true } as Response);
+      await submitAction('token', 'inbox', 'main', 'q1', 'yes');
+      expect(fetch).toHaveBeenCalledWith('/api/rooms/inbox/threads/main/actions', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ questionId: 'q1', value: 'yes' }),
+      });
+    });
+
+    it('throws when action request fails', async () => {
+      vi.mocked(fetch).mockResolvedValue({ ok: false, status: 500 } as Response);
+      await expect(submitAction('', 'inbox', 'main', 'q1', 'yes')).rejects.toThrow('action failed: 500');
     });
   });
 

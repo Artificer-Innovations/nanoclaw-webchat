@@ -22,6 +22,7 @@ const threadMocks = vi.hoisted(() => ({
 
 const actualApi = vi.hoisted(() => ({
   sendMessage: null as typeof api.sendMessage | null,
+  detectPublicAuthMode: null as typeof api.detectPublicAuthMode | null,
   createThread: vi.fn(threadMocks.createThreadImpl),
   renameThread: vi.fn(threadMocks.renameThreadImpl),
   deleteThread: vi.fn(threadMocks.deleteThreadImpl),
@@ -30,12 +31,15 @@ const actualApi = vi.hoisted(() => ({
 vi.mock('./api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./api')>();
   actualApi.sendMessage = actual.sendMessage;
+  actualApi.detectPublicAuthMode = actual.detectPublicAuthMode;
   return {
     ...actual,
     createThread: actualApi.createThread,
     renameThread: actualApi.renameThread,
     deleteThread: actualApi.deleteThread,
     sendMessage: vi.fn(actual.sendMessage),
+    detectPublicAuthMode: vi.fn(actual.detectPublicAuthMode),
+    submitAction: vi.fn(actual.submitAction),
   };
 });
 
@@ -120,9 +124,16 @@ function createFetchMock(handlers: {
   messagesError?: number;
   sendError?: number;
   disengageError?: number;
+  uploadError?: number;
 }): FetchHandler {
   return async (input, init) => {
     const url = String(input);
+    if (url === '/api/auth/config') {
+      return jsonResponse(null, false, 404);
+    }
+    if (url === '/api/auth/me') {
+      return jsonResponse(null, false, 401);
+    }
     if (url === '/api/bootstrap') {
       if (handlers.bootstrapError) {
         return jsonResponse(null, false, handlers.bootstrapError);
@@ -135,11 +146,39 @@ function createFetchMock(handlers: {
       }
       return jsonResponse({ agents: handlers.disengageResult ?? [] });
     }
+    if (url.includes('/uploads/chunk') && init?.method === 'POST') {
+      if (handlers.uploadError) {
+        return jsonResponse(null, false, handlers.uploadError);
+      }
+      const body = JSON.parse(String(init.body)) as { filename?: string; mimeType?: string };
+      return jsonResponse({
+        uploadId: '550e8400-e29b-41d4-a716-446655440000',
+        name: body.filename ?? 'upload.bin',
+        mimeType: body.mimeType ?? 'application/octet-stream',
+        type: 'file',
+        size: 5,
+      });
+    }
+    if (url.includes('/uploads') && init?.method === 'POST') {
+      if (handlers.uploadError) {
+        return jsonResponse(null, false, handlers.uploadError);
+      }
+      return jsonResponse({
+        uploadId: '550e8400-e29b-41d4-a716-446655440000',
+        name: 'photo.png',
+        mimeType: 'image/png',
+        type: 'image',
+        size: 5,
+      });
+    }
     if (url.includes('/messages') && init?.method === 'POST') {
       if (handlers.sendError) {
         return jsonResponse(null, false, handlers.sendError);
       }
       return jsonResponse({ messageId: 'web-test', timestamp: Date.now() });
+    }
+    if (url.includes('/actions') && init?.method === 'POST') {
+      return jsonResponse({ ok: true });
     }
     if (url.includes('/messages')) {
       if (handlers.messagesError) {
@@ -217,6 +256,8 @@ describe('App', () => {
     localStorage.clear();
     document.head.querySelectorAll('meta[name="webchat-token"]').forEach((node) => node.remove());
     vi.mocked(api.sendMessage).mockImplementation(actualApi.sendMessage!);
+    vi.mocked(api.detectPublicAuthMode).mockImplementation(actualApi.detectPublicAuthMode!);
+    vi.mocked(api.submitAction).mockResolvedValue(undefined);
     vi.mocked(api.createThread).mockImplementation(threadMocks.createThreadImpl);
     vi.mocked(api.renameThread).mockImplementation(threadMocks.renameThreadImpl);
     vi.mocked(api.deleteThread).mockImplementation(threadMocks.deleteThreadImpl);
@@ -241,12 +282,58 @@ describe('App', () => {
     vi.restoreAllMocks();
   });
 
-  it('renders setup hint when no token is available', () => {
+  it('renders setup hint when no token is available', async () => {
     render(<App />);
 
-    expect(screen.getByRole('heading', { name: 'NanoClaw Web Chat' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'NanoClaw Web Chat' })).toBeInTheDocument();
     expect(screen.getByText(/Open this UI from the NanoClaw webchat server/)).toBeInTheDocument();
     expect(screen.queryByLabelText('Bearer token')).not.toBeInTheDocument();
+  });
+
+  it('renders login page when public auth is enabled', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input) => {
+        const url = String(input);
+        if (url === '/api/auth/config') {
+          return jsonResponse({ basic: { enabled: true }, providers: [] });
+        }
+        if (url === '/api/auth/me') {
+          return jsonResponse(null, false, 401);
+        }
+        throw new Error(`Unhandled fetch: ${url}`);
+      }),
+    );
+
+    render(<App />);
+
+    expect(await screen.findByRole('button', { name: 'Sign in' })).toBeInTheDocument();
+  });
+
+  it('falls back to local mode when public auth detection rejects', async () => {
+    vi.mocked(api.detectPublicAuthMode).mockRejectedValue(new Error('network'));
+    render(<App />);
+    expect(await screen.findByText(/Open this UI from the NanoClaw webchat server/)).toBeInTheDocument();
+  });
+
+  it('shows login when public session lookup fails', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input) => {
+        const url = String(input);
+        if (url === '/api/auth/config') {
+          return jsonResponse({ basic: { enabled: true }, providers: [] });
+        }
+        if (url === '/api/auth/me') {
+          return jsonResponse(null, false, 500);
+        }
+        throw new Error(`Unhandled fetch: ${url}`);
+      }),
+    );
+
+    render(<App />);
+
+    expect(await screen.findByRole('button', { name: 'Sign in' })).toBeInTheDocument();
   });
 
   it('connects using injected token meta and loads chat UI', async () => {
@@ -415,6 +502,20 @@ describe('App', () => {
     expect(await screen.findByRole('button', { name: 'Stop Team from listening' })).toBeInTheDocument();
   });
 
+  it('sends without optimistic sender metadata when bootstrap has no user', async () => {
+    const bootstrapWithoutUser = { rooms: bootstrapFixture.rooms, agents: bootstrapFixture.agents } as BootstrapPayload;
+    vi.stubGlobal('fetch', vi.fn(createFetchMock({ messages: [], bootstrap: bootstrapWithoutUser })));
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    await user.type(screen.getByRole('textbox'), 'hello without user');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+
+    expect(await screen.findByText('hello without user')).toBeInTheDocument();
+  });
+
   it('does not track engaged agents when sending in a DM', async () => {
     vi.stubGlobal('fetch', vi.fn(createFetchMock({ messages: [], sendError: 500 })));
     sessionStorage.setItem('webchat_token', 'secret');
@@ -548,7 +649,7 @@ describe('App', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'Lobby' });
 
-    const ws = MockWebSocket.instances[0]!;
+    const ws = await waitForWebSocket(MockWebSocket);
     act(() => {
       ws.onmessage?.({
         data: JSON.stringify({
@@ -561,6 +662,209 @@ describe('App', () => {
     });
 
     expect(await screen.findByRole('button', { name: 'Stop Sarah from listening' })).toBeInTheDocument();
+  });
+
+  it('applies message_update websocket events in the active thread', async () => {
+    const cardMessage: WebChatMessage = {
+      id: 'card-1',
+      direction: 'inbound',
+      text: '',
+      timestamp: 2,
+      platformId: 'lobby-1',
+      threadId: 'main',
+      card: {
+        type: 'ask_question',
+        questionId: 'q1',
+        title: 'Approve?',
+        question: 'Go live?',
+        status: 'pending',
+        options: [{ label: 'Yes', value: 'yes' }],
+      },
+    };
+    vi.stubGlobal('fetch', vi.fn(createFetchMock({ messages: [cardMessage] })));
+    const MockWebSocket = createWebSocketMock();
+    sessionStorage.setItem('webchat_token', 'secret');
+
+    render(<App />);
+    await screen.findByRole('button', { name: 'Yes' });
+
+    const ws = MockWebSocket.instances[0]!;
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: 'message_update',
+          message: {
+            ...cardMessage,
+            card: {
+              ...cardMessage.card!,
+              status: 'answered',
+              selectedValue: 'yes',
+              selectedLabel: 'Yes',
+            },
+          },
+        }),
+      } as MessageEvent);
+    });
+
+    expect(await screen.findByText('Yes')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Yes' })).not.toBeInTheDocument();
+  });
+
+  it('ignores message_update events for inactive threads', async () => {
+    const cardMessage: WebChatMessage = {
+      id: 'card-1',
+      direction: 'inbound',
+      text: '',
+      timestamp: 2,
+      platformId: 'lobby-1',
+      threadId: 'main',
+      card: {
+        type: 'ask_question',
+        questionId: 'q1',
+        title: 'Approve?',
+        question: 'Go live?',
+        status: 'pending',
+        options: [{ label: 'Yes', value: 'yes' }],
+      },
+    };
+    vi.stubGlobal('fetch', vi.fn(createFetchMock({ messages: [cardMessage] })));
+    const MockWebSocket = createWebSocketMock();
+    sessionStorage.setItem('webchat_token', 'secret');
+
+    render(<App />);
+    await screen.findByRole('button', { name: 'Yes' });
+
+    const ws = MockWebSocket.instances[0]!;
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: 'message_update',
+          message: {
+            ...cardMessage,
+            threadId: 'thread_b',
+            card: { ...cardMessage.card!, status: 'answered', selectedValue: 'yes', selectedLabel: 'Yes' },
+          },
+        }),
+      } as MessageEvent);
+    });
+
+    expect(screen.getByRole('button', { name: 'Yes' })).toBeInTheDocument();
+  });
+
+  it('loads chat after successful public login', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input, init) => {
+        const url = String(input);
+        if (url === '/api/auth/config') {
+          return jsonResponse({ basic: { enabled: true }, providers: [] });
+        }
+        if (url === '/api/auth/me') {
+          return jsonResponse(null, false, 401);
+        }
+        if (url === '/api/auth/login/basic' && init?.method === 'POST') {
+          return jsonResponse({ ok: true });
+        }
+        return createFetchMock({ messages: [] })(input, init);
+      }),
+    );
+
+    render(<App />);
+    await user.type(await screen.findByLabelText(/username/i), 'alice');
+    await user.type(screen.getByLabelText(/password/i), 'secret');
+    await user.click(screen.getByRole('button', { name: 'Sign in' }));
+
+    expect(await screen.findByRole('heading', { name: 'Lobby' })).toBeInTheDocument();
+  });
+
+  it('signs out from public auth and returns to login', async () => {
+    const user = userEvent.setup();
+    let authed = false;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input, init) => {
+        const url = String(input);
+        if (url === '/api/auth/config') {
+          return jsonResponse({ basic: { enabled: true }, providers: [] });
+        }
+        if (url === '/api/auth/me') {
+          return authed
+            ? jsonResponse({ id: 'alice', displayName: 'Alice' })
+            : jsonResponse(null, false, 401);
+        }
+        if (url === '/api/auth/login/basic' && init?.method === 'POST') {
+          authed = true;
+          return jsonResponse({ ok: true });
+        }
+        if (url === '/api/auth/logout' && init?.method === 'POST') {
+          authed = false;
+          return jsonResponse({ ok: true });
+        }
+        return createFetchMock({ messages: [] })(input, init);
+      }),
+    );
+
+    render(<App />);
+    await user.type(await screen.findByLabelText(/username/i), 'alice');
+    await user.type(screen.getByLabelText(/password/i), 'secret');
+    await user.click(screen.getByRole('button', { name: 'Sign in' }));
+
+    expect(await screen.findByRole('heading', { name: 'Lobby' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Sign out' }));
+
+    expect(await screen.findByRole('button', { name: 'Sign in' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Lobby' })).not.toBeInTheDocument();
+  });
+
+  it('updates inbox messages after interactive card selection', async () => {
+    const user = userEvent.setup();
+    const cardMessage: WebChatMessage = {
+      id: 'card-1',
+      direction: 'inbound',
+      text: '',
+      timestamp: 2,
+      platformId: 'inbox',
+      threadId: 'main',
+      card: {
+        type: 'ask_question',
+        questionId: 'q1',
+        title: 'Approve?',
+        question: 'Go live?',
+        status: 'pending',
+        options: [{ label: 'Yes', value: 'yes', selectedLabel: 'Approved' }],
+      },
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input, init) => {
+        const url = String(input);
+        if (url.includes('/actions') && init?.method === 'POST') {
+          return jsonResponse({ ok: true });
+        }
+        if (url.includes('/messages')) {
+          return jsonResponse({ messages: [cardMessage], engagedAgents: [] });
+        }
+        return createFetchMock({
+          bootstrap: {
+            ...bootstrapFixture,
+            rooms: [
+              ...bootstrapFixture.rooms,
+              { platformId: 'inbox', name: 'Inbox', kind: 'inbox', threads: [...defaultThreads] },
+            ],
+          },
+        })(input, init);
+      }),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+    await user.click(screen.getByRole('button', { name: 'Inbox' }));
+    await user.click(await screen.findByRole('button', { name: 'Yes' }));
+
+    expect(await screen.findByText('Approved')).toBeInTheDocument();
+    expect(api.submitAction).toHaveBeenCalledWith('secret', 'inbox', 'main', 'q1', 'yes');
   });
 
   it('renders inline code and fenced blocks in chat messages', async () => {
@@ -848,7 +1152,7 @@ describe('App', () => {
     const { unmount } = render(<App />);
     await screen.findByRole('heading', { name: 'Lobby' });
 
-    const ws = MockWebSocket.instances[0]!;
+    const ws = await waitForWebSocket(MockWebSocket);
     act(() => {
       ws.onmessage?.({
         data: JSON.stringify({
@@ -1695,10 +1999,40 @@ describe('App', () => {
         'main',
         '',
         expect.arrayContaining([
-          expect.objectContaining({ name: 'photo.png', mimeType: 'image/png', type: 'image' }),
+          expect.objectContaining({
+            uploadId: '550e8400-e29b-41d4-a716-446655440000',
+            name: 'photo.png',
+            mimeType: 'image/png',
+            type: 'image',
+          }),
         ]),
       );
     });
+  });
+
+  it('shows an error when attachment upload fails before send', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    vi.spyOn(attachments, 'uploadPendingAttachments').mockResolvedValue({
+      uploads: [],
+      failed: [{ name: 'photo.png', reason: 'upload_failed', detail: 'upload failed: 500' }],
+    });
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const file = new File(['hello'], 'photo.png', { type: 'image/png' });
+    fireEvent.change(document.querySelector('input[type="file"]') as HTMLInputElement, {
+      target: { files: [file] },
+    });
+    await waitFor(() => {
+      expect(screen.getByAltText('photo.png')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('photo.png: upload failed: 500')).toBeInTheDocument();
+    });
+    expect(api.sendMessage).not.toHaveBeenCalled();
   });
 
   it('supports composer attachment workflows', async () => {
@@ -1736,22 +2070,98 @@ describe('App', () => {
     clickSpy.mockRestore();
   });
 
+  it('shows video preview in composer pending attachments', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const video = new File(['hello'], 'clip.mp4', { type: 'video/mp4' });
+    fireEvent.change(document.querySelector('input[type="file"]') as HTMLInputElement, {
+      target: { files: [video] },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('clip.mp4')).toBeInTheDocument();
+    });
+    expect(document.querySelector('.composer-preview video')).toHaveAttribute(
+      'src',
+      expect.stringMatching(/^blob:/),
+    );
+    expect(document.querySelector('.composer-preview')).not.toHaveClass('composer-preview-file');
+  });
+
+  it('shows audio preview in composer pending attachments', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const audio = new File(['hello'], 'song.mp3', { type: 'audio/mpeg' });
+    fireEvent.change(document.querySelector('input[type="file"]') as HTMLInputElement, {
+      target: { files: [audio] },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('song.mp3')).toBeInTheDocument();
+    });
+    expect(document.querySelector('.composer-preview-audio audio')).toHaveAttribute(
+      'src',
+      expect.stringMatching(/^blob:/),
+    );
+    expect(document.querySelector('.composer-preview-audio')).not.toHaveClass('composer-preview-file');
+  });
+
+  it('shows text preview snippet in composer pending attachments', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const md = new File(['# Title\nbody'], 'notes.md', { type: 'text/markdown' });
+    fireEvent.change(document.querySelector('input[type="file"]') as HTMLInputElement, {
+      target: { files: [md] },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('Markdown')).toBeInTheDocument();
+      expect(screen.getByText('# Title')).toBeInTheDocument();
+    });
+    expect(document.querySelector('.composer-preview-text')).not.toBeNull();
+  });
+
+  it('shows pdf file chip styling in composer pending attachments', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const pdf = new File(['hello'], 'report.pdf', { type: 'application/pdf' });
+    fireEvent.change(document.querySelector('input[type="file"]') as HTMLInputElement, {
+      target: { files: [pdf] },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('report.pdf')).toBeInTheDocument();
+    });
+    expect(document.querySelector('.composer-preview')).toHaveClass('composer-preview-file');
+  });
+
   it('caps pending attachments when files are added concurrently', async () => {
     sessionStorage.setItem('webchat_token', 'secret');
     const pending = (name: string) => ({
+      file: new File(['x'], name, { type: 'text/plain' }),
       name,
       mimeType: 'text/plain',
       type: 'file' as const,
       size: 1,
-      data: 'eA==',
       previewUrl: `blob:${name}`,
     });
 
     vi.spyOn(attachments, 'readAttachmentFiles')
-      .mockResolvedValueOnce({ attachments: [pending('a.txt'), pending('b.txt')], rejected: [] })
       .mockResolvedValueOnce({
-        attachments: [pending('c.txt'), pending('d.txt'), pending('e.txt')],
+        attachments: Array.from({ length: 9 }, (_, i) => pending(`${i}.txt`)),
         rejected: [],
+      })
+      .mockResolvedValueOnce({
+        attachments: [pending('nine.txt')],
+        rejected: [{ name: 'overflow.txt', reason: 'capacity' }],
       });
 
     render(<App />);
@@ -1760,25 +2170,57 @@ describe('App', () => {
     const composer = document.querySelector('.composer-box')!;
     fireEvent.drop(composer, { dataTransfer: { files: [new File(['a'], 'a.txt')] } });
     await waitFor(() => {
-      expect(document.querySelectorAll('.composer-preview')).toHaveLength(2);
+      expect(document.querySelectorAll('.composer-preview')).toHaveLength(9);
     });
 
     fireEvent.drop(composer, { dataTransfer: { files: [new File(['c'], 'c.txt')] } });
     await waitFor(() => {
       expect(document.querySelectorAll('.composer-preview')).toHaveLength(attachments.MAX_ATTACHMENTS);
-      expect(screen.getByText(/Only 4 attachments allowed \(e.txt skipped\)/)).toBeInTheDocument();
+      expect(screen.getByText(/Only 10 attachments allowed \(overflow.txt skipped\)/)).toBeInTheDocument();
     });
   });
 
-  it('shows an error when attachment upload fails', async () => {
+  it('revokes previews for attachments dropped during merge', async () => {
     sessionStorage.setItem('webchat_token', 'secret');
-    const Original = global.FileReader;
-    class ErrorReader extends Original {
-      readAsDataURL() {
-        this.onerror?.(new ProgressEvent('error'));
-      }
-    }
-    vi.stubGlobal('FileReader', ErrorReader);
+    const pending = (name: string) => ({
+      file: new File(['x'], name, { type: 'text/plain' }),
+      name,
+      mimeType: 'text/plain',
+      type: 'file' as const,
+      size: 1,
+      previewUrl: `blob:${name}`,
+    });
+
+    vi.spyOn(attachments, 'readAttachmentFiles')
+      .mockResolvedValueOnce({
+        attachments: Array.from({ length: 9 }, (_, i) => pending(`${i}.txt`)),
+        rejected: [],
+      })
+      .mockResolvedValueOnce({
+        attachments: [pending('nine.txt'), pending('ten.txt')],
+        rejected: [],
+      });
+    const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const composer = document.querySelector('.composer-box')!;
+    fireEvent.drop(composer, { dataTransfer: { files: [new File(['a'], 'a.txt')] } });
+    await waitFor(() => {
+      expect(document.querySelectorAll('.composer-preview')).toHaveLength(9);
+    });
+
+    fireEvent.drop(composer, { dataTransfer: { files: [new File(['b'], 'b.txt')] } });
+    await waitFor(() => {
+      expect(document.querySelectorAll('.composer-preview')).toHaveLength(attachments.MAX_ATTACHMENTS);
+    });
+    expect(revoke).toHaveBeenCalledWith('blob:ten.txt');
+  });
+
+  it('shows an error when attachment staging fails', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    vi.spyOn(attachments, 'readAttachmentFiles').mockRejectedValueOnce(new Error('read failed'));
     render(<App />);
     await screen.findByRole('heading', { name: 'Lobby' });
 
@@ -1787,9 +2229,8 @@ describe('App', () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText('Could not read bad.txt')).toBeInTheDocument();
+      expect(screen.getByText('read failed')).toBeInTheDocument();
     });
-    vi.stubGlobal('FileReader', Original);
   });
 
   it('ignores empty attachment drops and invalid attachment batches', async () => {
@@ -1816,7 +2257,7 @@ describe('App', () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText('big.png exceeds the 5 MB limit')).toBeInTheDocument();
+      expect(screen.getByText('big.png exceeds the 1 GB limit')).toBeInTheDocument();
     });
   });
 
@@ -1910,6 +2351,114 @@ describe('App', () => {
     );
     fireEvent.click(button);
     expect(screen.getByLabelText('Attachment preview: chart.png')).toBeInTheDocument();
+  });
+
+  it('renders video attachments in message history and opens drawer', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/messages')) {
+        return {
+          ok: true,
+          json: async () => ({
+            messages: [
+              {
+                id: 'msg-vid',
+                direction: 'outbound',
+                text: '',
+                timestamp: 1_700_000_000_000,
+                platformId: 'lobby-1',
+                threadId: 'main',
+                attachments: [
+                  {
+                    name: 'clip.mp4',
+                    mimeType: 'video/mp4',
+                    type: 'file',
+                    data: 'aGVsbG8=',
+                  },
+                ],
+              },
+            ],
+          }),
+        } as Response;
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          user: { id: 'u1', displayName: 'Test User' },
+          rooms: [{ platformId: 'lobby-1', name: 'Lobby', kind: 'lobby' }],
+          agents: [{ folder: 'sarah', name: 'Sarah', mention: '@sarah' }],
+        }),
+      } as Response;
+    });
+
+    const { container } = render(<App />);
+    const button = await screen.findByRole('button', { name: 'View clip.mp4' });
+    expect(button).toHaveClass('msg-attachment-video');
+    expect(container.querySelector('.msg-attachment-video video')).toHaveAttribute(
+      'src',
+      'data:video/mp4;base64,aGVsbG8=',
+    );
+    fireEvent.click(button);
+    expect(screen.getByLabelText('Attachment preview: clip.mp4')).toBeInTheDocument();
+    expect(container.querySelector('.attachment-drawer-video')).toHaveAttribute(
+      'src',
+      'data:video/mp4;base64,aGVsbG8=',
+    );
+  });
+
+  it('renders audio attachments in message history and opens drawer', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/messages')) {
+        return {
+          ok: true,
+          json: async () => ({
+            messages: [
+              {
+                id: 'msg-aud',
+                direction: 'outbound',
+                text: '',
+                timestamp: 1_700_000_000_000,
+                platformId: 'lobby-1',
+                threadId: 'main',
+                attachments: [
+                  {
+                    name: 'song.mp3',
+                    mimeType: 'audio/mpeg',
+                    type: 'file',
+                    data: 'aGVsbG8=',
+                  },
+                ],
+              },
+            ],
+          }),
+        } as Response;
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          user: { id: 'u1', displayName: 'Test User' },
+          rooms: [{ platformId: 'lobby-1', name: 'Lobby', kind: 'lobby' }],
+          agents: [{ folder: 'sarah', name: 'Sarah', mention: '@sarah' }],
+        }),
+      } as Response;
+    });
+
+    const { container } = render(<App />);
+    const button = await screen.findByRole('button', { name: 'View song.mp3' });
+    expect(button).toHaveClass('msg-attachment-audio-title');
+    expect(container.querySelector('.msg-attachment-audio audio')).toHaveAttribute(
+      'src',
+      'data:audio/mpeg;base64,aGVsbG8=',
+    );
+    fireEvent.click(button);
+    expect(screen.getByLabelText('Attachment preview: song.mp3')).toBeInTheDocument();
+    expect(container.querySelector('.attachment-drawer-audio')).toHaveAttribute(
+      'src',
+      'data:audio/mpeg;base64,aGVsbG8=',
+    );
   });
 
   it('deletes a thread from the sidebar and returns to main', async () => {
@@ -2512,7 +3061,7 @@ describe('App', () => {
     messages.scrollTop = 0;
     fireEvent.scroll(messages);
 
-    const ws = latestWebSocket(MockWebSocket);
+    const ws = await waitForWebSocket(MockWebSocket);
     ws.onmessage?.({
       data: JSON.stringify({
         type: 'message',
@@ -2543,7 +3092,8 @@ describe('App', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'Lobby' });
 
-    MockWebSocket.instances[0]!.onmessage?.({
+    const ws = await waitForWebSocket(MockWebSocket);
+    ws.onmessage?.({
       data: JSON.stringify({
         type: 'message',
         message: { ...messageFixture, id: 'msg-dm', platformId: 'dm-sarah', text: 'dm ping' },
@@ -2673,5 +3223,167 @@ describe('App', () => {
     expect(localStorage.getItem('webchat_attachment_drawer_width')).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Show sidebar' }));
     expect(document.querySelector('.layout--sidebar-collapsed')).not.toBeInTheDocument();
+  });
+
+  it('applies message_update websocket events to interactive cards', async () => {
+    const cardMessage: WebChatMessage = {
+      ...messageFixture,
+      id: 'card-1',
+      platformId: 'inbox',
+      text: 'Approve MCP',
+      card: {
+        type: 'ask_question',
+        questionId: 'q-1',
+        title: 'MCP',
+        question: 'Add server?',
+        options: [{ label: 'Approve', value: 'approve' }],
+        status: 'pending',
+      },
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          bootstrap: {
+            ...bootstrapFixture,
+            rooms: [
+              { platformId: 'inbox', name: 'Inbox', kind: 'inbox', threads: [...defaultThreads] },
+              ...bootstrapFixture.rooms,
+            ],
+          },
+          messagesForThread: (platformId, threadId) => {
+            if (platformId === 'inbox' && threadId === 'main') {
+              return { messages: [cardMessage] };
+            }
+            return { messages: [] };
+          },
+        }),
+      ),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+    const MockWebSocket = createWebSocketMock();
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByRole('button', { name: 'Inbox' }));
+    await screen.findByRole('button', { name: 'Approve' });
+
+    const ws = await waitForWebSocket(MockWebSocket);
+    ws.onmessage?.({
+      data: JSON.stringify({
+        type: 'message_update',
+        message: {
+          ...cardMessage,
+          card: {
+            ...cardMessage.card!,
+            status: 'answered',
+            selectedLabel: 'Approved',
+            selectedValue: 'approve',
+          },
+        },
+      }),
+    } as MessageEvent);
+
+    await screen.findByText('Approved');
+    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
+  });
+
+  it('ignores message_update events for inactive conversations', async () => {
+    vi.stubGlobal('fetch', vi.fn(createFetchMock({})));
+    sessionStorage.setItem('webchat_token', 'secret');
+    const MockWebSocket = createWebSocketMock();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const ws = await waitForWebSocket(MockWebSocket);
+    ws.onmessage?.({
+      data: JSON.stringify({
+        type: 'message_update',
+        message: {
+          ...messageFixture,
+          id: 'card-other',
+          platformId: 'inbox',
+          threadId: 'main',
+          card: {
+            type: 'ask_question',
+            questionId: 'q-other',
+            title: 'Other',
+            question: 'Other?',
+            options: [{ label: 'Yes', value: 'yes' }],
+            status: 'answered',
+            selectedLabel: 'Yes',
+          },
+        },
+      }),
+    } as MessageEvent);
+
+    expect(screen.queryByText('Yes')).not.toBeInTheDocument();
+  });
+
+  it('shows inbox hint instead of composer in inbox room', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          bootstrap: {
+            ...bootstrapFixture,
+            rooms: [
+              { platformId: 'inbox', name: 'Inbox', kind: 'inbox', threads: [...defaultThreads] },
+              ...bootstrapFixture.rooms,
+            ],
+          },
+        }),
+      ),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByRole('button', { name: 'Inbox' }));
+    expect(
+      screen.getByText(/Approvals and system notifications appear here/),
+    ).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(/Message… use @folder/)).not.toBeInTheDocument();
+  });
+
+  it('updates message state when an interactive card action succeeds', async () => {
+    const cardMessage: WebChatMessage = {
+      ...messageFixture,
+      id: 'card-2',
+      platformId: 'inbox',
+      text: 'Approve MCP',
+      card: {
+        type: 'ask_question',
+        questionId: 'q-2',
+        title: 'MCP',
+        question: 'Add server?',
+        options: [{ label: 'Approve', selectedLabel: 'Approved', value: 'approve' }],
+        status: 'pending',
+      },
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          bootstrap: {
+            ...bootstrapFixture,
+            rooms: [
+              { platformId: 'inbox', name: 'Inbox', kind: 'inbox', threads: [...defaultThreads] },
+              ...bootstrapFixture.rooms,
+            ],
+          },
+          messagesForThread: (platformId, threadId) => {
+            if (platformId === 'inbox' && threadId === 'main') {
+              return { messages: [cardMessage] };
+            }
+            return { messages: [] };
+          },
+        }),
+      ),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByRole('button', { name: 'Inbox' }));
+    await user.click(await screen.findByRole('button', { name: 'Approve' }));
+    await screen.findByText('Approved');
   });
 });

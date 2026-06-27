@@ -9,14 +9,66 @@ import {
   WEBCHAT_BOOT_BLOCK,
 } from './paths.js';
 
-export function copyAdapterFiles(nanoclawRoot: string, resources = resourcesDir()): string[] {
+const HOST_ADAPTER_DEPENDENCIES: Record<string, string> = {
+  busboy: '^1.6.0',
+};
+
+const HOST_ADAPTER_DEV_DEPENDENCIES: Record<string, string> = {
+  '@types/busboy': '^1.5.4',
+};
+
+/** Ensure runtime/type deps required by copied adapter sources exist on the host. */
+export function ensureHostAdapterDependencies(nanoclawRoot: string): string[] {
+  const pkgPath = path.join(nanoclawRoot, 'package.json');
+  if (!fs.existsSync(pkgPath)) return [];
+
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as {
+    dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
+  };
+  const added: string[] = [];
+  pkg.dependencies ??= {};
+  pkg.devDependencies ??= {};
+
+  for (const [name, version] of Object.entries(HOST_ADAPTER_DEPENDENCIES)) {
+    if (!pkg.dependencies[name]) {
+      pkg.dependencies[name] = version;
+      added.push(name);
+    }
+  }
+  for (const [name, version] of Object.entries(HOST_ADAPTER_DEV_DEPENDENCIES)) {
+    if (!pkg.devDependencies[name]) {
+      pkg.devDependencies[name] = version;
+      added.push(name);
+    }
+  }
+
+  if (added.length > 0) {
+    fs.writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
+  }
+  return added;
+}
+
+export function copyAdapterFiles(nanoclawRoot: string, resources?: string): string[] {
+  const resolvedResources = resources ?? resourcesDir(undefined, nanoclawRoot);
+  const missing: string[] = [];
+  for (const rule of ADAPTER_COPY_RULES) {
+    const from = path.join(resolvedResources, rule.source);
+    if (!fs.existsSync(from)) {
+      missing.push(rule.source);
+    }
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `Missing adapter resource${missing.length > 1 ? 's' : ''}: ${missing.join(', ')}. ` +
+        'Run `pnpm run build` in nanoclaw-webchat to sync skills/add-webchat/resources.',
+    );
+  }
+
   const copied: string[] = [];
   for (const rule of ADAPTER_COPY_RULES) {
-    const from = path.join(resources, rule.source);
+    const from = path.join(resolvedResources, rule.source);
     const to = path.join(nanoclawRoot, rule.dest);
-    if (!fs.existsSync(from)) {
-      throw new Error(`Missing adapter resource: ${rule.source}`);
-    }
     fs.mkdirSync(path.dirname(to), { recursive: true });
     fs.copyFileSync(from, to);
     copied.push(rule.dest);

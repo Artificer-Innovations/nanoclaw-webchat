@@ -316,4 +316,23 @@ describe('ensureBetterSqlite3', () => {
       expect(result.message?.split('\n').at(-1)).not.toBe('');
     });
   });
+
+  it('omits sqlite mismatch guidance when node and driver versions are compatible', () => {
+    withShellNodeMajor(22, () => {
+      const root = makeRoot({ 'better-sqlite3': '11.10.0' });
+      spawnSyncMock.mockReturnValue({
+        status: 1,
+        stdout: 'load failed',
+        stderr: '',
+        output: [null, 'load failed', ''],
+        pid: 0,
+        signal: null,
+      });
+
+      const result = ensureBetterSqlite3(root);
+      expect(result.ok).toBe(false);
+      expect(result.message).toContain('load failed');
+      expect(result.message).not.toContain('does not support Node');
+    });
+  });
 });

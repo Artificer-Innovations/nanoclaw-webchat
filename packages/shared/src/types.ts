@@ -6,7 +6,7 @@ export interface WebChatUser {
 export interface WebChatRoom {
   platformId: string;
   name: string;
-  kind: 'lobby' | 'dm';
+  kind: 'lobby' | 'dm' | 'inbox';
   folder?: string;
   threads?: ThreadMeta[];
 }
@@ -21,6 +21,12 @@ export interface BootstrapPayload {
   user: WebChatUser;
   rooms: WebChatRoom[];
   agents: WebChatAgent[];
+  authMode?: 'local' | 'public';
+}
+
+export interface AuthConfigResponse {
+  basic: { enabled: boolean };
+  providers: Array<{ id: string; label: string }>;
 }
 
 export interface ThreadMeta {
@@ -31,6 +37,7 @@ export interface ThreadMeta {
 export interface SendMessageResult {
   messageId: string;
   timestamp: number;
+  attachments?: WebChatAttachment[];
 }
 
 export interface WebChatAttachment {
@@ -46,6 +53,29 @@ export interface WebChatAttachment {
   data?: string;
   /** Future: server URL when `data` is omitted from history/WS responses. */
   url?: string;
+  /** Client upload staging reference (send-only). */
+  uploadId?: string;
+  /** Client optimistic preview blob URL (display-only). */
+  previewUrl?: string;
+  /** Client composer mini-preview snippet (display-only; never sent to server). */
+  textSnippet?: string;
+}
+
+export interface WebChatCardOption {
+  label: string;
+  selectedLabel?: string;
+  value: string;
+}
+
+export interface WebChatAskQuestionCard {
+  type: 'ask_question';
+  questionId: string;
+  title: string;
+  question: string;
+  options: WebChatCardOption[];
+  status: 'pending' | 'answered';
+  selectedValue?: string;
+  selectedLabel?: string;
 }
 
 export interface WebChatMessage {
@@ -57,7 +87,11 @@ export interface WebChatMessage {
   threadId: string;
   /** Agent display name when provided by the host adapter. */
   senderName?: string;
+  /** Web user id for inbound messages in shared rooms (public auth). */
+  senderId?: string;
   attachments?: WebChatAttachment[];
+  /** Interactive ask_question card (approvals, agent questions, etc.). */
+  card?: WebChatAskQuestionCard;
 }
 
 export interface WsMessageEvent {
@@ -83,4 +117,9 @@ export interface WsEngagedEvent {
   agents: string[];
 }
 
-export type WsEvent = WsMessageEvent | WsTypingEvent | WsEngagedEvent;
+export interface WsMessageUpdateEvent {
+  type: 'message_update';
+  message: WebChatMessage;
+}
+
+export type WsEvent = WsMessageEvent | WsTypingEvent | WsEngagedEvent | WsMessageUpdateEvent;

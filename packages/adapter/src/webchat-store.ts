@@ -80,6 +80,23 @@ export interface WebchatAttachmentInput {
   url?: string;
 }
 
+export interface WebchatCardOption {
+  label: string;
+  selectedLabel?: string;
+  value: string;
+}
+
+export interface WebchatAskQuestionCard {
+  type: 'ask_question';
+  questionId: string;
+  title: string;
+  question: string;
+  options: WebchatCardOption[];
+  status: 'pending' | 'answered';
+  selectedValue?: string;
+  selectedLabel?: string;
+}
+
 export interface WebchatStoredMessage {
   id: string;
   direction: 'inbound' | 'outbound';
@@ -89,7 +106,9 @@ export interface WebchatStoredMessage {
   threadId: string;
   threadSeq?: number;
   senderName?: string;
+  senderId?: string;
   attachments?: WebchatAttachmentInput[];
+  card?: WebchatAskQuestionCard;
 }
 
 interface StoredAttachmentMeta {
@@ -99,6 +118,8 @@ interface StoredAttachmentMeta {
   size: number;
   storageName: string;
 }
+
+export type { StoredAttachmentMeta };
 
 export function webchatDbPath(): string {
   return path.join(DATA_DIR, 'webchat.db');
@@ -138,6 +159,16 @@ export function ensureWebchatSchema(): void {
     db.exec(WEBCHAT_SCHEMA);
     try {
       db.exec('ALTER TABLE web_messages ADD COLUMN thread_seq INTEGER');
+    } catch {
+      // column already exists
+    }
+    try {
+      db.exec('ALTER TABLE web_messages ADD COLUMN card_json TEXT');
+    } catch {
+      // column already exists
+    }
+    try {
+      db.exec('ALTER TABLE web_messages ADD COLUMN sender_id TEXT');
     } catch {
       // column already exists
     }
@@ -249,7 +280,91 @@ function sanitizeStorageName(name: string, index: number): string {
   return `${index}-${trimmed}`;
 }
 
-function writeAttachmentFiles(messageId: string, attachments: WebchatAttachmentInput[]): StoredAttachmentMeta[] {
+function assertRegularFile(filePath: string): void {
+  const st = fs.lstatSync(filePath);
+  if (!st.isFile()) throw new Error('not a file');
+}
+
+export interface AttachmentFileSource {
+  name: string;
+  mimeType: string;
+  type: 'image' | 'file';
+  size: number;
+  sourcePath: string;
+}
+
+export function moveAttachmentIntoMessage(
+  messageId: string,
+  index: number,
+  source: AttachmentFileSource,
+): StoredAttachmentMeta {
+  const dir = messageFilesDir(messageId);
+  fs.mkdirSync(dir, { recursive: true });
+  assertRegularFile(source.sourcePath);
+  const storageName = sanitizeStorageName(source.name, index);
+  const destPath = path.join(dir, storageName);
+  try {
+    fs.renameSync(source.sourcePath, destPath);
+  } catch {
+    fs.copyFileSync(source.sourcePath, destPath);
+    fs.unlinkSync(source.sourcePath);
+  }
+  return {
+    name: source.name,
+    mimeType: source.mimeType,
+    type: source.type,
+    size: source.size,
+    storageName,
+  };
+}
+
+export function appendMessageWithAttachmentMeta(
+  msg: WebchatStoredMessage,
+  storedAttachments: StoredAttachmentMeta[],
+): WebchatStoredMessage {
+  const attachmentsJson = storedAttachments.length > 0 ? JSON.stringify(storedAttachments) : null;
+  const cardJson = msg.card ? JSON.stringify(msg.card) : null;
+
+  let threadSeq = 0;
+  const db = openDb();
+  try {
+    threadSeq = allocateThreadSeq(db, msg.platformId, msg.threadId);
+    db.prepare(
+      `INSERT INTO web_messages
+         (id, platform_id, thread_id, thread_seq, direction, text, timestamp_ms, sender_name, sender_id, attachments_json, card_json)
+       VALUES (@id, @platform_id, @thread_id, @thread_seq, @direction, @text, @timestamp_ms, @sender_name, @sender_id, @attachments_json, @card_json)`,
+    ).run({
+      id: msg.id,
+      platform_id: msg.platformId,
+      thread_id: msg.threadId,
+      thread_seq: threadSeq,
+      direction: msg.direction,
+      text: msg.text,
+      timestamp_ms: msg.timestamp,
+      sender_name: msg.senderName ?? null,
+      sender_id: msg.senderId ?? null,
+      attachments_json: attachmentsJson,
+      card_json: cardJson,
+    });
+  } finally {
+    db.close();
+  }
+
+  const apiAttachments =
+    storedAttachments.length > 0 ? storedToApiAttachments(msg.id, storedAttachments) : undefined;
+
+  return {
+    ...msg,
+    threadSeq,
+    ...(apiAttachments ? { attachments: apiAttachments } : {}),
+  };
+}
+
+export function writeAttachmentFiles(
+  messageId: string,
+  attachments: WebchatAttachmentInput[],
+  startIndex = 0,
+): StoredAttachmentMeta[] {
   if (attachments.length === 0) return [];
   const dir = messageFilesDir(messageId);
   fs.mkdirSync(dir, { recursive: true });
@@ -259,7 +374,7 @@ function writeAttachmentFiles(messageId: string, attachments: WebchatAttachmentI
     const att = attachments[i]!;
     const data = att.data ?? '';
     if (!data) continue;
-    const storageName = sanitizeStorageName(att.name, i);
+    const storageName = sanitizeStorageName(att.name, startIndex + i);
     const filePath = path.join(dir, storageName);
     const decoded = Buffer.from(data, 'base64');
     fs.writeFileSync(filePath, decoded);
@@ -274,7 +389,7 @@ function writeAttachmentFiles(messageId: string, attachments: WebchatAttachmentI
   return stored;
 }
 
-function deleteMessageFiles(messageId: string): void {
+export function deleteMessageFiles(messageId: string): void {
   const dir = messageFilesDir(messageId);
   if (fs.existsSync(dir)) {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -304,9 +419,58 @@ function parseStoredAttachments(raw: string | null): StoredAttachmentMeta[] {
   }
 }
 
+function parseStoredCard(raw: string | null): WebchatAskQuestionCard | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as WebchatAskQuestionCard;
+    if (parsed.type !== 'ask_question') return undefined;
+    if (typeof parsed.questionId !== 'string') return undefined;
+    return {
+      ...parsed,
+      status: parsed.status ?? 'pending',
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function rowToMessage(
+  row: {
+    id: string;
+    direction: 'inbound' | 'outbound';
+    text: string;
+    timestamp_ms: number;
+    sender_name: string | null;
+    sender_id?: string | null;
+    attachments_json: string | null;
+    thread_seq: number | null;
+    card_json?: string | null;
+  },
+  platformId: string,
+  threadId: string,
+): WebchatStoredMessage {
+  const stored = parseStoredAttachments(row.attachments_json);
+  const attachments = stored.length > 0 ? storedToApiAttachments(row.id, stored) : undefined;
+  const card = parseStoredCard(row.card_json ?? null);
+  return {
+    id: row.id,
+    direction: row.direction,
+    text: row.text,
+    timestamp: row.timestamp_ms,
+    platformId,
+    threadId,
+    ...(row.thread_seq != null ? { threadSeq: row.thread_seq } : {}),
+    ...(row.sender_name ? { senderName: row.sender_name } : {}),
+    ...(row.sender_id ? { senderId: row.sender_id } : {}),
+    ...(attachments ? { attachments } : {}),
+    ...(card ? { card } : {}),
+  };
+}
+
 export function appendMessage(msg: WebchatStoredMessage): WebchatStoredMessage {
   const storedAttachments = writeAttachmentFiles(msg.id, msg.attachments ?? []);
   const attachmentsJson = storedAttachments.length > 0 ? JSON.stringify(storedAttachments) : null;
+  const cardJson = msg.card ? JSON.stringify(msg.card) : null;
 
   let threadSeq = 0;
   const db = openDb();
@@ -314,8 +478,8 @@ export function appendMessage(msg: WebchatStoredMessage): WebchatStoredMessage {
     threadSeq = allocateThreadSeq(db, msg.platformId, msg.threadId);
     db.prepare(
       `INSERT INTO web_messages
-         (id, platform_id, thread_id, thread_seq, direction, text, timestamp_ms, sender_name, attachments_json)
-       VALUES (@id, @platform_id, @thread_id, @thread_seq, @direction, @text, @timestamp_ms, @sender_name, @attachments_json)`,
+         (id, platform_id, thread_id, thread_seq, direction, text, timestamp_ms, sender_name, sender_id, attachments_json, card_json)
+       VALUES (@id, @platform_id, @thread_id, @thread_seq, @direction, @text, @timestamp_ms, @sender_name, @sender_id, @attachments_json, @card_json)`,
     ).run({
       id: msg.id,
       platform_id: msg.platformId,
@@ -325,7 +489,9 @@ export function appendMessage(msg: WebchatStoredMessage): WebchatStoredMessage {
       text: msg.text,
       timestamp_ms: msg.timestamp,
       sender_name: msg.senderName ?? null,
+      sender_id: msg.senderId ?? null,
       attachments_json: attachmentsJson,
+      card_json: cardJson,
     });
   } finally {
     db.close();
@@ -345,7 +511,7 @@ export function getMessages(platformId: string, threadId: string, sinceMs = 0): 
   try {
     const rows = db
       .prepare(
-        `SELECT id, direction, text, timestamp_ms, sender_name, attachments_json, thread_seq
+        `SELECT id, direction, text, timestamp_ms, sender_name, sender_id, attachments_json, thread_seq, card_json
          FROM web_messages
          WHERE platform_id = ? AND thread_id = ? AND timestamp_ms > ?
          ORDER BY timestamp_ms ASC`,
@@ -356,25 +522,13 @@ export function getMessages(platformId: string, threadId: string, sinceMs = 0): 
       text: string;
       timestamp_ms: number;
       sender_name: string | null;
+      sender_id?: string | null;
       attachments_json: string | null;
       thread_seq: number | null;
+      card_json: string | null;
     }>;
 
-    return rows.map((row) => {
-      const stored = parseStoredAttachments(row.attachments_json);
-      const attachments = stored.length > 0 ? storedToApiAttachments(row.id, stored) : undefined;
-      return {
-        id: row.id,
-        direction: row.direction,
-        text: row.text,
-        timestamp: row.timestamp_ms,
-        platformId,
-        threadId,
-        ...(row.thread_seq != null ? { threadSeq: row.thread_seq } : {}),
-        ...(row.sender_name ? { senderName: row.sender_name } : {}),
-        ...(attachments ? { attachments } : {}),
-      };
-    });
+    return rows.map((row) => rowToMessage(row, platformId, threadId));
   } finally {
     db.close();
   }
@@ -525,7 +679,7 @@ export function getRecentMessages(platformId: string, threadId: string, limit: n
   try {
     const rows = db
       .prepare(
-        `SELECT id, direction, text, timestamp_ms, sender_name, attachments_json, thread_seq
+        `SELECT id, direction, text, timestamp_ms, sender_name, sender_id, attachments_json, thread_seq, card_json
          FROM web_messages
          WHERE platform_id = ? AND thread_id = ?
          ORDER BY timestamp_ms DESC
@@ -537,25 +691,13 @@ export function getRecentMessages(platformId: string, threadId: string, limit: n
       text: string;
       timestamp_ms: number;
       sender_name: string | null;
+      sender_id?: string | null;
       attachments_json: string | null;
       thread_seq: number | null;
+      card_json: string | null;
     }>;
 
-    return rows.reverse().map((row) => {
-      const stored = parseStoredAttachments(row.attachments_json);
-      const attachments = stored.length > 0 ? storedToApiAttachments(row.id, stored) : undefined;
-      return {
-        id: row.id,
-        direction: row.direction,
-        text: row.text,
-        timestamp: row.timestamp_ms,
-        platformId,
-        threadId,
-        ...(row.thread_seq != null ? { threadSeq: row.thread_seq } : {}),
-        ...(row.sender_name ? { senderName: row.sender_name } : {}),
-        ...(attachments ? { attachments } : {}),
-      };
-    });
+    return rows.reverse().map((row) => rowToMessage(row, platformId, threadId));
   } finally {
     db.close();
   }
@@ -587,4 +729,215 @@ export function deleteThreadData(platformId: string, threadId: string): string[]
     deleteMessageFiles(id);
   }
   return messageIds;
+}
+
+export function findMessagesByQuestionId(questionId: string): WebchatStoredMessage[] {
+  const db = openDb();
+  try {
+    const rows = db
+      .prepare(
+        `SELECT id, direction, text, timestamp_ms, sender_name, sender_id, attachments_json, thread_seq, card_json,
+                platform_id, thread_id
+         FROM web_messages
+         WHERE card_json IS NOT NULL
+           AND json_valid(card_json)
+           AND json_extract(card_json, '$.questionId') = ?
+         ORDER BY timestamp_ms DESC`,
+      )
+      .all(questionId) as Array<{
+      id: string;
+      direction: 'inbound' | 'outbound';
+      text: string;
+      timestamp_ms: number;
+      sender_name: string | null;
+      sender_id?: string | null;
+      attachments_json: string | null;
+      thread_seq: number | null;
+      card_json: string | null;
+      platform_id: string;
+      thread_id: string;
+    }>;
+
+    const matches: WebchatStoredMessage[] = [];
+    for (const row of rows) {
+      const card = parseStoredCard(row.card_json);
+      if (card?.questionId === questionId) {
+        matches.push(rowToMessage(row, row.platform_id, row.thread_id));
+      }
+    }
+    return matches;
+  } finally {
+    db.close();
+  }
+}
+
+export type AnswerCardsResult =
+  | { ok: true; messages: WebchatStoredMessage[] }
+  | { ok: false; reason: 'already_answered' | 'not_found' };
+
+export function answerCardsByQuestionId(
+  questionId: string,
+  selectedValue: string,
+  selectedLabel: string,
+): AnswerCardsResult {
+  const db = openDb();
+  try {
+    const patch = JSON.stringify({ status: 'answered', selectedValue, selectedLabel });
+    const result = db
+      .prepare(
+        `UPDATE web_messages
+         SET card_json = json_patch(card_json, json(?))
+         WHERE card_json IS NOT NULL
+           AND json_valid(card_json)
+           AND json_extract(card_json, '$.questionId') = ?
+           AND (json_extract(card_json, '$.status') IS NULL OR json_extract(card_json, '$.status') = 'pending')`,
+      )
+      .run(patch, questionId);
+
+    if (result.changes === 0) {
+      const answered = db
+        .prepare(
+          `SELECT 1 AS ok FROM web_messages
+           WHERE card_json IS NOT NULL
+             AND json_valid(card_json)
+             AND json_extract(card_json, '$.questionId') = ?
+             AND json_extract(card_json, '$.status') = 'answered'
+           LIMIT 1`,
+        )
+        .get(questionId) as { ok: number } | undefined;
+      if (answered) return { ok: false, reason: 'already_answered' };
+      return { ok: false, reason: 'not_found' };
+    }
+
+    const rows = db
+      .prepare(
+        `SELECT id, direction, text, timestamp_ms, sender_name, sender_id, attachments_json, thread_seq, card_json,
+                platform_id, thread_id
+         FROM web_messages
+         WHERE card_json IS NOT NULL
+           AND json_valid(card_json)
+           AND json_extract(card_json, '$.questionId') = ?
+         ORDER BY timestamp_ms DESC`,
+      )
+      .all(questionId) as Array<{
+      id: string;
+      direction: 'inbound' | 'outbound';
+      text: string;
+      timestamp_ms: number;
+      sender_name: string | null;
+      sender_id?: string | null;
+      attachments_json: string | null;
+      thread_seq: number | null;
+      card_json: string | null;
+      platform_id: string;
+      thread_id: string;
+    }>;
+
+    const messages = rows
+      .map((row) => {
+        const card = parseStoredCard(row.card_json);
+        if (card?.questionId !== questionId) return undefined;
+        return rowToMessage(row, row.platform_id, row.thread_id);
+      })
+      .filter((message): message is WebchatStoredMessage => message !== undefined);
+
+    return { ok: true, messages };
+  } finally {
+    db.close();
+  }
+}
+
+/** Revert all answered copies of a question back to pending (e.g. after onAction failure). */
+export function revertCardsByQuestionId(questionId: string): void {
+  const db = openDb();
+  try {
+    const patch = JSON.stringify({ status: 'pending' });
+    db.prepare(
+      `UPDATE web_messages
+       SET card_json = json_patch(
+         json_remove(json_remove(card_json, '$.selectedValue'), '$.selectedLabel'),
+         json(?)
+       )
+       WHERE card_json IS NOT NULL
+         AND json_valid(card_json)
+         AND json_extract(card_json, '$.questionId') = ?
+         AND json_extract(card_json, '$.status') = 'answered'`,
+    ).run(patch, questionId);
+  } finally {
+    db.close();
+  }
+}
+
+export function findMessageByQuestionId(
+  platformId: string,
+  threadId: string,
+  questionId: string,
+): WebchatStoredMessage | undefined {
+  const db = openDb();
+  try {
+    const row = db
+      .prepare(
+        `SELECT id, direction, text, timestamp_ms, sender_name, sender_id, attachments_json, thread_seq, card_json
+         FROM web_messages
+         WHERE platform_id = ? AND thread_id = ?
+           AND json_valid(card_json)
+           AND json_extract(card_json, '$.questionId') = ?
+         ORDER BY timestamp_ms DESC
+         LIMIT 1`,
+      )
+      .get(platformId, threadId, questionId) as
+      | {
+          id: string;
+          direction: 'inbound' | 'outbound';
+          text: string;
+          timestamp_ms: number;
+          sender_name: string | null;
+          sender_id?: string | null;
+          attachments_json: string | null;
+          thread_seq: number | null;
+          card_json: string | null;
+        }
+      | undefined;
+
+    if (!row) return undefined;
+    const card = parseStoredCard(row.card_json);
+    if (card?.questionId !== questionId) return undefined;
+    return rowToMessage(row, platformId, threadId);
+  } finally {
+    db.close();
+  }
+}
+
+export function updateMessageCard(messageId: string, card: WebchatAskQuestionCard): WebchatStoredMessage | undefined {
+  const db = openDb();
+  try {
+    const row = db
+      .prepare(
+        `SELECT id, direction, text, timestamp_ms, sender_name, sender_id, attachments_json, thread_seq, card_json,
+                platform_id, thread_id
+         FROM web_messages WHERE id = ?`,
+      )
+      .get(messageId) as
+      | {
+          id: string;
+          direction: 'inbound' | 'outbound';
+          text: string;
+          timestamp_ms: number;
+          sender_name: string | null;
+          sender_id?: string | null;
+          attachments_json: string | null;
+          thread_seq: number | null;
+          card_json: string | null;
+          platform_id: string;
+          thread_id: string;
+        }
+      | undefined;
+    if (!row) return undefined;
+
+    db.prepare('UPDATE web_messages SET card_json = ? WHERE id = ?').run(JSON.stringify(card), messageId);
+
+    return rowToMessage({ ...row, card_json: JSON.stringify(card) }, row.platform_id, row.thread_id);
+  } finally {
+    db.close();
+  }
 }

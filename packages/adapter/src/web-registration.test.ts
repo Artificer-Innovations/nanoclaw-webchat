@@ -14,6 +14,7 @@ vi.mock('nanoclaw-webchat', () => ({
 
 import { readEnvFile } from '../env.js';
 import { getRegisteredChannelNames, getActiveAdapters, initChannelAdapters, teardownChannelAdapters } from './channel-registry.js';
+import { resolveWebchatPort } from './web.js';
 import './index.js';
 import './web.js';
 
@@ -112,5 +113,44 @@ describe('web channel factory', () => {
     expect(webAdapter).toBeDefined();
     expect(webAdapter!.isConnected()).toBe(true);
     await webAdapter!.teardown();
+  });
+
+  it('uses default port 3200 when WEBCHAT_PORT is unset', () => {
+    delete process.env.WEBCHAT_PORT;
+    expect(resolveWebchatPort({})).toBe(3200);
+    expect(resolveWebchatPort({ WEBCHAT_PORT: '4100' })).toBe(4100);
+  });
+
+  it('starts adapter in public auth mode when configured', async () => {
+    vi.mocked(readEnvFile).mockReturnValue({
+      WEBCHAT_ENABLED: 'true',
+      WEBCHAT_SECRET: 'factory-secret',
+      WEBCHAT_PORT: '39995',
+      WEBCHAT_AUTH_MODE: 'public',
+      WEBCHAT_SESSION_SECRET: 'a'.repeat(32),
+      WEBCHAT_AUTH_BASIC_ENABLED: 'true',
+      WEBCHAT_BASIC_PASSWORD: 'pass',
+      WEBCHAT_BASIC_ALLOWED_USERNAMES: 'alice',
+    });
+    delete process.env.WEBCHAT_ENABLED;
+    delete process.env.WEBCHAT_SECRET;
+    delete process.env.WEBCHAT_PORT;
+    await initChannelAdapters(setupFn);
+    const webAdapter = getActiveAdapters().find((a) => a.channelType === 'web');
+    expect(webAdapter).toBeDefined();
+    expect(webAdapter!.isConnected()).toBe(true);
+    await webAdapter!.teardown();
+  });
+
+  it('skips adapter when public auth configuration is invalid', async () => {
+    vi.mocked(readEnvFile).mockReturnValue({
+      WEBCHAT_ENABLED: 'true',
+      WEBCHAT_SECRET: 'factory-secret',
+      WEBCHAT_AUTH_MODE: 'public',
+    });
+    delete process.env.WEBCHAT_ENABLED;
+    delete process.env.WEBCHAT_SECRET;
+    await initChannelAdapters(setupFn);
+    expect(getActiveAdapters().some((a) => a.channelType === 'web')).toBe(false);
   });
 });

@@ -6,6 +6,7 @@ import type { WebChatRoom } from './types';
 
 const lobby: WebChatRoom = { platformId: 'lobby-1', name: 'Lobby', kind: 'lobby' };
 const dm: WebChatRoom = { platformId: 'dm-sarah', name: 'Sarah', kind: 'dm', folder: 'sarah' };
+const inbox: WebChatRoom = { platformId: 'inbox', name: 'Inbox', kind: 'inbox' };
 
 afterEach(() => {
   cleanup();
@@ -125,6 +126,27 @@ describe('SidebarRoom', () => {
     expect(onRenameThread).not.toHaveBeenCalled();
   });
 
+  it('uses the inbox icon for inbox rooms', () => {
+    render(
+      <SidebarRoom
+        room={inbox}
+        threads={[{ id: 'main', title: 'Main' }]}
+        isActiveRoom
+        activeThreadId="main"
+        expanded={false}
+        unreadCounts={{}}
+        onToggleExpand={vi.fn()}
+        onSelectMain={vi.fn()}
+        onSelectThread={vi.fn()}
+        onNewThread={vi.fn()}
+        onRenameThread={vi.fn()}
+        onDeleteThread={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: 'Inbox' })).toBeInTheDocument();
+  });
+
   it('uses the bot icon for direct-message rooms', () => {
     const { container } = render(
       <SidebarRoom
@@ -146,6 +168,29 @@ describe('SidebarRoom', () => {
     expect(screen.getByRole('button', { name: 'Sarah' })).toBeInTheDocument();
     expect(container.querySelectorAll('svg').length).toBeGreaterThan(0);
   });
+
+  it('hides new-thread control for inbox rooms', () => {
+    render(
+      <SidebarRoom
+        room={inbox}
+        threads={[{ id: 'main', title: 'Main' }]}
+        isActiveRoom
+        activeThreadId="main"
+        expanded={false}
+        unreadCounts={{}}
+        onToggleExpand={vi.fn()}
+        onSelectMain={vi.fn()}
+        onSelectThread={vi.fn()}
+        onNewThread={vi.fn()}
+        onRenameThread={vi.fn()}
+        onDeleteThread={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: 'Inbox' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'New thread in Inbox' })).not.toBeInTheDocument();
+  });
+
   it('shows unread badges on room main and child threads', () => {
     render(
       <SidebarRoom

@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ATTACHMENT_HTML_IFRAME_SANDBOX,
+  ATTACHMENT_SVG_IFRAME_SANDBOX,
   buildCodePopoutDocument,
   buildCsvPopoutDocument,
   buildHtmlPopoutDocument,
   buildMarkdownPopoutDocument,
   buildPlainTextPopoutDocument,
+  buildVideoPopoutDocument,
+  buildAudioPopoutDocument,
   openHtmlDocumentInNewTab,
 } from './attachment-text-popout';
 
@@ -31,6 +34,35 @@ describe('attachment-text-popout', () => {
     expect(html).not.toContain('Preview</button>');
   });
 
+  it('builds a video popout document with native controls', () => {
+    const html = buildVideoPopoutDocument(
+      'clip.mp4',
+      'http://127.0.0.1:3200/api/attachments/msg-1/clip.mp4?token=secret',
+      'video/mp4',
+    );
+    expect(html).toContain('<title>clip.mp4</title>');
+    expect(html).toContain('id="attachment-video"');
+    expect(html).toContain('class="video-preview"');
+    expect(html).toContain('id="attachment-video-fallback"');
+    expect(html).toContain('src="http://127.0.0.1:3200/api/attachments/msg-1/clip.mp4?token=secret"');
+    expect(html).not.toContain('<source');
+    expect(html).toContain('controls');
+    expect(html).toContain('playsinline');
+    expect(html).toContain('video.canPlayType("video/mp4")');
+  });
+
+  it('builds an audio popout document with native controls', () => {
+    const html = buildAudioPopoutDocument(
+      'song.mp3',
+      'http://127.0.0.1:3200/api/attachments/msg-1/song.mp3?token=secret',
+    );
+    expect(html).toContain('<title>song.mp3</title>');
+    expect(html).toContain('class="audio-preview"');
+    expect(html).toContain('src="http://127.0.0.1:3200/api/attachments/msg-1/song.mp3?token=secret"');
+    expect(html).not.toContain('<source');
+    expect(html).toContain('controls');
+  });
+
   it('builds a code popout document with syntax highlighting', () => {
     const html = buildCodePopoutDocument('app.ts', 'const x = 1;', 'typescript');
     expect(html).toContain('language-typescript');
@@ -43,6 +75,11 @@ describe('attachment-text-popout', () => {
     expect(html).toContain(`sandbox="${ATTACHMENT_HTML_IFRAME_SANDBOX}"`);
     expect(html).toContain('srcdoc="&lt;h1&gt;Hello&lt;/h1&gt;"');
     expect(html).toContain('Preview</button>');
+  });
+
+  it('defines a stricter sandbox for svg previews than html', () => {
+    expect(ATTACHMENT_SVG_IFRAME_SANDBOX).not.toContain('allow-scripts');
+    expect(ATTACHMENT_HTML_IFRAME_SANDBOX).toContain('allow-scripts');
   });
 
   it('builds a csv popout document with table preview', () => {

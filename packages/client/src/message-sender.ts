@@ -104,8 +104,18 @@ export function messageSenderLabel(
   messages: WebChatMessage[],
   room: WebChatRoom | null,
   agents: WebChatAgent[],
+  currentUser?: { id: string; displayName: string },
 ): string {
-  if (message.direction === 'inbound') return 'You';
+  if (message.direction === 'inbound') {
+    if (room?.kind === 'lobby' && message.senderName?.trim()) {
+      if (currentUser && message.senderId === currentUser.id) return 'You';
+      if (currentUser && !message.senderId && message.senderName.trim() === currentUser.displayName) {
+        return 'You';
+      }
+      return message.senderName.trim();
+    }
+    return 'You';
+  }
   if (message.senderName?.trim()) return message.senderName.trim();
   if (room?.kind === 'dm') return room.name;
 

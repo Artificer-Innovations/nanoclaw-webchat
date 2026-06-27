@@ -35,13 +35,19 @@ export function threadsForRoom(
 }
 
 export function canSendMessage(
-  token: string,
+  authed: boolean,
   room: WebChatRoom | null,
   draft: string,
   sending: boolean,
   attachmentCount = 0,
 ): room is WebChatRoom {
-  return Boolean(token && room && !sending && (draft.trim() || attachmentCount > 0));
+  return Boolean(
+    authed &&
+      room &&
+      room.kind !== 'inbox' &&
+      !sending &&
+      (draft.trim() || attachmentCount > 0),
+  );
 }
 
 export function canCreateThread(room: WebChatRoom | null): room is WebChatRoom {
@@ -101,23 +107,50 @@ export function applyLiveMessage(
   const withoutOptimistic = pendingOptimisticId
     ? prev.filter((m) => m.id !== pendingOptimisticId)
     : prev;
-  if (withoutOptimistic.some((m) => m.id === message.id)) {
-    return withoutOptimistic;
+  const idx = withoutOptimistic.findIndex((m) => m.id === message.id);
+  if (idx >= 0) {
+    // Replace on id collision so WS echoes can hydrate attachment URLs (do not restore drop-on-duplicate).
+    const next = [...withoutOptimistic];
+    next[idx] = message;
+    return next;
   }
   return [...withoutOptimistic, message];
+}
+
+export function applyMessageUpdate(
+  prev: WebChatMessage[],
+  message: WebChatMessage,
+  room: WebChatRoom | null,
+  threadId: string,
+): WebChatMessage[] {
+  if (!isActiveConversation(message, room, threadId)) return prev;
+  const idx = prev.findIndex((m) => m.id === message.id);
+  if (idx < 0) return prev;
+  const next = [...prev];
+  next[idx] = message;
+  return next;
 }
 
 export function reconcileOptimisticMessage(
   prev: WebChatMessage[],
   optimisticId: string,
-  sent: { messageId: string; timestamp: number },
+  sent: { messageId: string; timestamp: number; attachments?: WebChatMessage['attachments'] },
 ): WebChatMessage[] {
   if (prev.some((m) => m.id === sent.messageId)) {
     return dedupeMessagesById(prev.filter((m) => m.id !== optimisticId));
   }
-  const next = prev.map((m) =>
-    m.id === optimisticId ? { ...m, id: sent.messageId, timestamp: sent.timestamp } : m,
-  );
+  const next = prev.map((m) => {
+    if (m.id !== optimisticId) return m;
+    const attachments =
+      sent.attachments ??
+      m.attachments?.map(({ previewUrl: _preview, ...rest }) => rest);
+    return {
+      ...m,
+      id: sent.messageId,
+      timestamp: sent.timestamp,
+      ...(attachments?.length ? { attachments } : {}),
+    };
+  });
   return dedupeMessagesById(next);
 }
 

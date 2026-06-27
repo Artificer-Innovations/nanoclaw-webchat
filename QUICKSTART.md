@@ -91,6 +91,28 @@ open http://127.0.0.1:3200
 
 The host injects `WEBCHAT_SECRET` into the page automatically (localhost-only; same model as the dashboard).
 
+## Public authentication (optional)
+
+Use this when users reach webchat over a network — not only from the same machine. Public mode adds a login page, session cookies, per-user inbox/DMs, and a shared lobby with sender names.
+
+**Full setup guide:** **[docs/public-auth.md](./docs/public-auth.md)**
+
+Minimal example (shared password for a few users):
+
+```bash
+WEBCHAT_AUTH_MODE=public
+WEBCHAT_SESSION_SECRET=<run: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))">
+WEBCHAT_BIND_ADDRESS=0.0.0.0
+
+WEBCHAT_AUTH_BASIC_ENABLED=true
+WEBCHAT_BASIC_PASSWORD=<team-password>
+WEBCHAT_BASIC_ALLOWED_USERNAMES=alice,bob
+```
+
+For GitHub login, also set `WEBCHAT_AUTH_OIDC_ENABLED=true`, `WEBCHAT_OIDC_REDIRECT_URI`, and provider JSON — see the guide.
+
+`WEBCHAT_SECRET` remains required (MCP and automation still use bearer auth). Restart the host after changing auth env vars.
+
 ### Verify behavior
 
 - **Lobby:** `@sarah hello` routes to the sarah agent
@@ -158,7 +180,10 @@ See bundled [skills/add-webchat/REMOVE.md](./skills/add-webchat/REMOVE.md).
 
 | Symptom | Fix |
 |---------|-----|
-| 401 in browser | Wrong `WEBCHAT_SECRET` |
+| 401 in browser | Wrong `WEBCHAT_SECRET` (local mode) or expired session — sign in again (public mode) |
+| Login page missing | `WEBCHAT_AUTH_MODE=public` not set, or hard refresh to clear cached local UI |
+| OAuth redirect error | Callback URL in GitHub/IdP must match `WEBCHAT_OIDC_REDIRECT_URI` exactly |
+| Access denied after OAuth | User failed allowlist (`WEBCHAT_OIDC_ALLOWED_*`) or email not verified |
 | Blank page / 404 | `nanoclaw-webchat` not installed or host not rebuilt |
 | Agent not engaging in lobby | Message must include `@folder` (e.g. `@sarah`) |
 | Port in use | Change `WEBCHAT_PORT` in `.env` |

@@ -3,10 +3,26 @@ import * as attachmentsModule from './attachments';
 import * as popoutModule from './attachment-text-popout';
 import {
   attachmentDataUrl,
+  attachmentEmbedUrl,
   ATTACHMENT_HTML_IFRAME_SANDBOX,
+  ATTACHMENT_SVG_IFRAME_SANDBOX,
   attachmentIframeSandbox,
   attachmentPreviewMode,
   attachmentPreviewUrl,
+  attachmentChipKind,
+  attachmentChipLabel,
+  attachmentFriendlyTypeLabel,
+  attachmentIsArchive,
+  attachmentIsMdx,
+  attachmentIsSvg,
+  attachmentTextTooLargeForPreview,
+  ATTACHMENT_TEXT_PREVIEW_MAX_BYTES,
+  audioMimeTypePlayable,
+  handleAudioPreviewError,
+  COMPOSER_TEXT_SNIPPET_MAX,
+  COMPOSER_TEXT_SNIPPET_READ_BYTES,
+  attachmentIsVideo,
+  attachmentIsAudio,
   attachmentToBlob,
   attachmentTypeFromMime,
   attachmentTypeLabel,
@@ -18,6 +34,8 @@ import {
   attachmentUsesFormattedMessagePreview,
   attachmentUsesHtmlPreview,
   attachmentUsesIframePreview,
+  attachmentUsesVideoPreview,
+  attachmentUsesAudioPreview,
   copyAttachmentContent,
   copyAttachmentForPreview,
   copyAttachmentLink,
@@ -26,9 +44,16 @@ import {
   fetchAttachmentBlob,
   fetchAttachmentText,
   formatAttachmentRejections,
+  formatMaxUploadLabel,
+  formatUploadBytesLabel,
   formatAttachmentSize,
+  handleVideoPreviewError,
+  imageMimeTypeDisplayable,
   inferMimeType,
+  isHeicDisplaySupportedInBrowser,
+  attachmentIsHeic,
   isSafeAttachmentUrl,
+  isVideoSrcNotSupportedError,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENTS,
   mergePendingAttachments,
@@ -39,11 +64,19 @@ import {
   openCsvAttachmentInNewTab,
   openHtmlAttachmentInNewTab,
   openPlainTextAttachmentInNewTab,
+  openVideoAttachmentInNewTab,
+  openAudioAttachmentInNewTab,
   readAttachmentFiles,
   removePendingAtIndex,
   revokeAttachmentPreviews,
+  toSendAttachmentsFromUploads,
+  uploadAttachmentFile,
+  uploadPendingAttachments,
+  videoMimeTypePlayable,
+  CHUNK_SIZE,
   type PendingAttachment,
 } from './attachments';
+import * as api from './api';
 
 describe('attachments', () => {
   afterEach(() => {
@@ -63,6 +96,17 @@ describe('attachments', () => {
     expect(inferMimeType('lib.cpp')).toBe('text/x-c++');
     expect(inferMimeType('types.hpp')).toBe('text/x-c++');
     expect(inferMimeType('doc.pdf', 'application/pdf')).toBe('application/pdf');
+    expect(inferMimeType('page.html', 'text/html; charset=utf-8')).toBe('text/html');
+    expect(inferMimeType('clip.mp4')).toBe('video/mp4');
+    expect(inferMimeType('clip.webm')).toBe('video/webm');
+    expect(inferMimeType('24246.MOV')).toBe('video/quicktime');
+    expect(inferMimeType('song.mp3')).toBe('audio/mpeg');
+    expect(inferMimeType('tone.wav')).toBe('audio/wav');
+    expect(inferMimeType('song.mp3', 'application/octet-stream')).toBe('audio/mpeg');
+    expect(inferMimeType('song.mp3', 'audio/mp3')).toBe('audio/mp3');
+    expect(inferMimeType('song.mp3', 'text/plain')).toBe('audio/mpeg');
+    expect(inferMimeType('clip.mp4', 'text/plain')).toBe('video/mp4');
+    expect(inferMimeType('photo.png', 'text/plain')).toBe('image/png');
     expect(inferMimeType('unknown.xyz')).toBe('application/octet-stream');
     expect(inferMimeType('README')).toBe('application/octet-stream');
   });
@@ -75,6 +119,41 @@ describe('attachments', () => {
   it('labels attachment types for metadata display', () => {
     expect(attachmentTypeLabel('image')).toBe('Image');
     expect(attachmentTypeLabel('file')).toBe('File');
+    expect(attachmentTypeLabel('file', 'video/mp4')).toBe('Video');
+    expect(attachmentTypeLabel('file', 'audio/mpeg')).toBe('Audio');
+  });
+
+  it('classifies video attachments', () => {
+    expect(attachmentIsVideo('video/mp4')).toBe(true);
+    expect(attachmentIsVideo('video/webm')).toBe(true);
+    expect(attachmentIsVideo('image/png')).toBe(false);
+    expect(attachmentUsesVideoPreview('video/mp4')).toBe(true);
+    expect(attachmentUsesVideoPreview('application/pdf')).toBe(false);
+    expect(videoMimeTypePlayable('video/mp4')).toBe(true);
+    expect(isVideoSrcNotSupportedError({ code: 4 } as MediaError)).toBe(true);
+    expect(isVideoSrcNotSupportedError({ code: 1 } as MediaError)).toBe(false);
+    expect(isVideoSrcNotSupportedError(undefined)).toBe(false);
+    expect(isVideoSrcNotSupportedError(null)).toBe(false);
+    const onUnsupported = vi.fn();
+    handleVideoPreviewError({ currentTarget: { error: { code: 4 } as MediaError } as HTMLVideoElement }, onUnsupported);
+    expect(onUnsupported).toHaveBeenCalledOnce();
+    onUnsupported.mockClear();
+    handleVideoPreviewError({ currentTarget: { error: { code: 1 } as MediaError } as HTMLVideoElement }, onUnsupported);
+    expect(onUnsupported).not.toHaveBeenCalled();
+  });
+
+  it('assumes video is playable during SSR', () => {
+    vi.stubGlobal('document', undefined);
+    expect(videoMimeTypePlayable('video/quicktime')).toBe(true);
+    vi.unstubAllGlobals();
+  });
+
+  it('classifies audio attachments', () => {
+    expect(attachmentIsAudio('audio/mpeg')).toBe(true);
+    expect(attachmentIsAudio('audio/wav')).toBe(true);
+    expect(attachmentIsAudio('video/mp4')).toBe(false);
+    expect(attachmentUsesAudioPreview('audio/mpeg')).toBe(true);
+    expect(attachmentUsesAudioPreview('audio/wav')).toBe(true);
   });
 
   it('classifies attachment preview modes', () => {
@@ -83,6 +162,8 @@ describe('attachments', () => {
     expect(attachmentPreviewMode('text/javascript', 'app.js')).toBe('text');
     expect(attachmentPreviewMode('application/octet-stream', 'app.js')).toBe('text');
     expect(attachmentPreviewMode('image/png')).toBe('embed');
+    expect(attachmentPreviewMode('video/mp4')).toBe('embed');
+    expect(attachmentPreviewMode('audio/mpeg')).toBe('embed');
     expect(attachmentPreviewMode('application/pdf')).toBe('embed');
     expect(attachmentPreviewMode('text/html')).toBe('text');
     expect(attachmentPreviewMode('text/csv')).toBe('text');
@@ -97,7 +178,120 @@ describe('attachments', () => {
     expect(attachmentTextCategory('application/octet-stream', 'data.csv')).toBe('csv');
     expect(attachmentTextCategory('text/javascript', 'app.js')).toBe('code');
     expect(attachmentTextCategory('application/octet-stream', 'app.ts')).toBe('code');
+    expect(attachmentTextCategory('text/plain', '.env')).toBe('code');
     expect(attachmentTextCategory('application/zip', 'archive.zip')).toBeNull();
+  });
+
+  it('classifies chip kinds and friendly type labels', () => {
+    expect(attachmentChipKind('application/pdf', 'doc.pdf')).toBe('pdf');
+    expect(attachmentChipLabel('pdf')).toBe('PDF');
+    expect(attachmentChipKind('text/markdown', 'notes.md')).toBe('markdown');
+    expect(attachmentChipKind('text/html', 'page.html')).toBe('html');
+    expect(attachmentChipKind('text/csv', 'data.csv')).toBe('csv');
+    expect(attachmentChipKind('application/json', 'data.json')).toBe('json');
+    expect(attachmentChipKind('application/zip', 'archive.zip')).toBe('archive');
+    expect(attachmentChipKind('text/javascript', 'app.ts')).toBe('code');
+    expect(attachmentChipKind('image/png', 'photo.png')).toBe('image');
+    expect(attachmentFriendlyTypeLabel('application/zip', 'archive.zip')).toBe('ZIP archive');
+    expect(attachmentFriendlyTypeLabel('application/pdf', 'doc.pdf')).toBe('PDF document');
+    expect(
+      attachmentFriendlyTypeLabel(
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'data.xlsx',
+      ),
+    ).toBe('Excel spreadsheet');
+    expect(
+      attachmentFriendlyTypeLabel(
+        'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        'deck.pptx',
+      ),
+    ).toBe('PowerPoint presentation');
+    expect(attachmentIsArchive('application/zip', 'archive.zip')).toBe(true);
+    expect(attachmentFriendlyTypeLabel('application/x-7z-compressed', 'a.7z')).toBe('7-Zip archive');
+    expect(attachmentFriendlyTypeLabel('application/x-tar', 'a.tar')).toBe('Tar archive');
+    expect(attachmentFriendlyTypeLabel('application/gzip', 'a.gz')).toBe('Gzip archive');
+    expect(attachmentFriendlyTypeLabel('image/png', 'photo.png')).toBe('Image');
+    expect(attachmentFriendlyTypeLabel('video/mp4', 'clip.mp4')).toBe('Video');
+    expect(attachmentFriendlyTypeLabel('audio/mpeg', 'song.mp3')).toBe('Audio');
+    expect(attachmentFriendlyTypeLabel('application/msword', 'doc.doc')).toBe('Word document');
+    expect(attachmentIsMdx('post.mdx')).toBe(true);
+    expect(attachmentIsMdx('README')).toBe(false);
+    expect(attachmentIsArchive('application/octet-stream', 'archive.7z')).toBe(true);
+    expect(attachmentIsArchive('application/octet-stream', 'archive.tar')).toBe(true);
+    expect(attachmentIsArchive('application/octet-stream', 'archive.tgz')).toBe(true);
+    expect(attachmentIsArchive('application/octet-stream', 'nodot')).toBe(false);
+    expect(attachmentIsSvg('image/svg+xml')).toBe(true);
+    expect(inferMimeType('icon.svg')).toBe('image/svg+xml');
+    expect(attachmentPreviewMode('image/svg+xml', 'icon.svg')).toBe('embed');
+  });
+
+  it('guards large text previews and audio playability', () => {
+    expect(attachmentTextTooLargeForPreview(ATTACHMENT_TEXT_PREVIEW_MAX_BYTES + 1)).toBe(true);
+    expect(attachmentTextTooLargeForPreview(ATTACHMENT_TEXT_PREVIEW_MAX_BYTES)).toBe(false);
+    expect(audioMimeTypePlayable('audio/mpeg')).toBe(true);
+    const onUnsupported = vi.fn();
+    handleAudioPreviewError(
+      { currentTarget: { error: { code: 4 } as MediaError } as HTMLAudioElement },
+      onUnsupported,
+    );
+    expect(onUnsupported).toHaveBeenCalledOnce();
+    onUnsupported.mockClear();
+    handleAudioPreviewError(
+      { currentTarget: { error: { code: 1 } as MediaError } as HTMLAudioElement },
+      onUnsupported,
+    );
+    expect(onUnsupported).not.toHaveBeenCalled();
+  });
+
+  it('detects HEIC display support and chip labels for images', () => {
+    expect(attachmentIsHeic('image/heic')).toBe(true);
+    expect(attachmentIsHeic('image/heif')).toBe(true);
+    expect(imageMimeTypeDisplayable('image/png')).toBe(true);
+    expect(imageMimeTypeDisplayable('image/heic')).toBe(isHeicDisplaySupportedInBrowser());
+    expect(inferMimeType('photo.HEIC')).toBe('image/heic');
+  });
+
+  it('assumes HEIC is displayable during SSR', () => {
+    vi.stubGlobal('document', undefined);
+    vi.stubGlobal('navigator', undefined);
+    expect(imageMimeTypeDisplayable('image/heic')).toBe(true);
+    expect(isHeicDisplaySupportedInBrowser()).toBe(true);
+    vi.unstubAllGlobals();
+  });
+
+  it('detects Safari vs Chromium for HEIC display support', () => {
+    vi.stubGlobal('navigator', {
+      userAgent:
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15',
+    });
+    expect(isHeicDisplaySupportedInBrowser()).toBe(true);
+    vi.stubGlobal('navigator', {
+      userAgent:
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/120.0.6099.119 Mobile/15E148 Safari/604.1',
+    });
+    expect(isHeicDisplaySupportedInBrowser()).toBe(true);
+    vi.stubGlobal('navigator', {
+      userAgent:
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) FxiOS/120.0 Mobile/15E148 Safari/605.1.15',
+    });
+    expect(isHeicDisplaySupportedInBrowser()).toBe(true);
+    vi.stubGlobal('navigator', {
+      userAgent:
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    });
+    expect(isHeicDisplaySupportedInBrowser()).toBe(false);
+    vi.stubGlobal('navigator', {
+      userAgent:
+        'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+    });
+    expect(isHeicDisplaySupportedInBrowser()).toBe(false);
+    vi.unstubAllGlobals();
+  });
+
+  it('assumes audio is playable during SSR', () => {
+    vi.stubGlobal('document', undefined);
+    expect(audioMimeTypePlayable('audio/flac')).toBe(true);
+    vi.unstubAllGlobals();
   });
 
   it('classifies iframe preview and sandbox settings', () => {
@@ -106,16 +300,26 @@ describe('attachments', () => {
     expect(attachmentUsesIframePreview('image/png')).toBe(false);
     expect(attachmentIframeSandbox('text/html')).toBe(ATTACHMENT_HTML_IFRAME_SANDBOX);
     expect(ATTACHMENT_HTML_IFRAME_SANDBOX).not.toContain('allow-same-origin');
+    expect(ATTACHMENT_SVG_IFRAME_SANDBOX).not.toContain('allow-scripts');
     expect(attachmentIframeSandbox('application/pdf')).toBeUndefined();
   });
 
   it('classifies pop-out and preview toggle support', () => {
     expect(attachmentSupportsPopOut('text/plain')).toBe(true);
+    expect(attachmentSupportsPopOut('video/mp4')).toBe(true);
+    expect(attachmentSupportsPopOut('audio/mpeg')).toBe(true);
     expect(attachmentSupportsPopOut('text/markdown')).toBe(true);
     expect(attachmentSupportsPopOut('text/javascript', 'app.js')).toBe(true);
     expect(attachmentSupportsPopOut('text/html', 'page.html')).toBe(true);
     expect(attachmentSupportsPopOut('image/png')).toBe(true);
     expect(attachmentSupportsPopOut('application/zip')).toBe(false);
+    expect(
+      attachmentSupportsPopOut(
+        'application/zip',
+        'archive.zip',
+        '/api/attachments/msg-1/archive.zip',
+      ),
+    ).toBe(true);
     expect(attachmentSupportsPreviewToggle('text/markdown')).toBe(true);
     expect(attachmentSupportsPreviewToggle('text/plain')).toBe(false);
     expect(attachmentSupportsPreviewToggle('text/javascript', 'app.js')).toBe(true);
@@ -155,7 +359,23 @@ describe('attachments', () => {
     ).toMatchObject({ type: 'image' });
   });
 
+  it('normalizes generic mime types from filename', () => {
+    expect(
+      normalizeAttachment({
+        name: 'song.mp3',
+        mimeType: 'application/octet-stream',
+        type: 'file',
+      }),
+    ).toMatchObject({ mimeType: 'audio/mpeg', type: 'file' });
+  });
+
+  it('classifies preview mode for generic mp3 mime types', () => {
+    expect(attachmentPreviewMode('application/octet-stream', 'song.mp3')).toBe('embed');
+  });
+
   it('formats rejection messages', () => {
+    expect(formatUploadBytesLabel(50 * 1024 * 1024)).toBe('50 MB');
+    expect(formatMaxUploadLabel()).toBe('1 GB');
     expect(
       formatAttachmentRejections([
         { name: 'big.png', reason: 'too_large' },
@@ -163,9 +383,12 @@ describe('attachments', () => {
         { name: 'extra.txt', reason: 'capacity' },
       ]),
     ).toBe(
-      'big.png exceeds the 5 MB limit; Could not read bad.txt; Only 4 attachments allowed (extra.txt skipped)',
+      'big.png exceeds the 1 GB limit; Could not read bad.txt; Only 10 attachments allowed (extra.txt skipped)',
     );
     expect(formatAttachmentRejections([])).toBeNull();
+    expect(
+      formatAttachmentRejections([{ name: 'x.png', reason: 'upload_failed' }]),
+    ).toBe('Upload failed for x.png');
   });
 
   it('leaves matching attachment types unchanged', () => {
@@ -173,15 +396,26 @@ describe('attachments', () => {
     expect(normalizeAttachment(att)).toBe(att);
   });
 
+  it('returns a new object when mimeType is corrected from filename', () => {
+    const att = {
+      name: 'song.mp3',
+      mimeType: 'application/octet-stream',
+      type: 'file' as const,
+    };
+    expect(normalizeAttachment(att)).not.toBe(att);
+    expect(normalizeAttachment(att)).toMatchObject({ mimeType: 'audio/mpeg' });
+  });
+
   it('merges pending attachments without exceeding the cap', () => {
     const make = (name: string, previewUrl: string): PendingAttachment => ({
+      file: new File(['x'], name, { type: 'text/plain' }),
       name,
       mimeType: 'text/plain',
       type: 'file',
+      size: 1,
       previewUrl,
-      data: 'x',
     });
-    const prev = [make('a.txt', 'blob:a'), make('b.txt', 'blob:b'), make('c.txt', 'blob:c')];
+    const prev = Array.from({ length: MAX_ATTACHMENTS - 1 }, (_, i) => make(`file-${i}.txt`, `blob:${i}`));
     const next = [make('d.txt', 'blob:d'), make('e.txt', 'blob:e')];
     const revoke = vi.spyOn(URL, 'revokeObjectURL');
 
@@ -193,13 +427,31 @@ describe('attachments', () => {
     revoke.mockRestore();
   });
 
-  it('revokes all incoming previews when already at capacity', () => {
+  it('accepts merges below the attachment cap', () => {
     const make = (name: string, previewUrl: string): PendingAttachment => ({
+      file: new File(['x'], name, { type: 'text/plain' }),
       name,
       mimeType: 'text/plain',
       type: 'file',
+      size: 1,
       previewUrl,
-      data: 'x',
+    });
+    const prev = [make('a.txt', 'blob:a'), make('b.txt', 'blob:b'), make('c.txt', 'blob:c')];
+    const next = [make('d.txt', 'blob:d'), make('e.txt', 'blob:e')];
+
+    const { attachments, dropped } = mergePendingAttachments(prev, next);
+    expect(attachments).toHaveLength(5);
+    expect(dropped).toHaveLength(0);
+  });
+
+  it('revokes all incoming previews when already at capacity', () => {
+    const make = (name: string, previewUrl: string): PendingAttachment => ({
+      file: new File(['x'], name, { type: 'text/plain' }),
+      name,
+      mimeType: 'text/plain',
+      type: 'file',
+      size: 1,
+      previewUrl,
     });
     const prev = Array.from({ length: MAX_ATTACHMENTS }, (_, i) => make(`file-${i}.txt`, `blob:${i}`));
     const next = [make('extra.txt', 'blob:extra')];
@@ -213,7 +465,7 @@ describe('attachments', () => {
     revoke.mockRestore();
   });
 
-  it('reads image files as base64 attachments', async () => {
+  it('stages image files without reading base64', async () => {
     const file = new File(['hello'], 'photo.png', { type: 'image/png' });
     const { attachments } = await readAttachmentFiles([file]);
     expect(attachments).toHaveLength(1);
@@ -223,19 +475,63 @@ describe('attachments', () => {
       type: 'image',
       size: 5,
     });
-    expect(attachments[0]?.data).toBeTruthy();
+    expect(attachments[0]?.previewUrl).toMatch(/^blob:/);
+    expect(attachments[0]?.textSnippet).toBeUndefined();
     URL.revokeObjectURL(attachments[0]!.previewUrl);
   });
 
-  it('reads non-image files such as markdown', async () => {
-    const file = new File(['# Title'], 'notes.md', { type: 'text/markdown' });
+  it('stages non-image files such as markdown', async () => {
+    const file = new File(['# Title\nbody'], 'notes.md', { type: 'text/markdown' });
     const { attachments } = await readAttachmentFiles([file]);
     expect(attachments).toHaveLength(1);
     expect(attachments[0]).toMatchObject({
       name: 'notes.md',
       mimeType: 'text/markdown',
       type: 'file',
+      textSnippet: '# Title',
     });
+    URL.revokeObjectURL(attachments[0]!.previewUrl);
+  });
+
+  it('truncates long composer text snippets', async () => {
+    const longLine = 'x'.repeat(COMPOSER_TEXT_SNIPPET_MAX + 10);
+    const file = new File([longLine], 'notes.txt', { type: 'text/plain' });
+    const { attachments } = await readAttachmentFiles([file]);
+    expect(attachments[0]?.textSnippet?.endsWith('…')).toBe(true);
+    URL.revokeObjectURL(attachments[0]!.previewUrl);
+  });
+
+  it('skips composer snippet when text file has no content lines', async () => {
+    const file = new File(['\n\n'], 'blank.txt', { type: 'text/plain' });
+    const { attachments } = await readAttachmentFiles([file]);
+    expect(attachments[0]?.textSnippet).toBeUndefined();
+    URL.revokeObjectURL(attachments[0]!.previewUrl);
+  });
+
+  it('skips composer snippet when text read fails', async () => {
+    const file = new File(['hello'], 'notes.txt', { type: 'text/plain' });
+    const slice = file.slice(0, COMPOSER_TEXT_SNIPPET_READ_BYTES);
+    vi.spyOn(file, 'slice').mockReturnValue(slice);
+    vi.spyOn(slice, 'text').mockRejectedValue(new Error('read failed'));
+    const { attachments } = await readAttachmentFiles([file]);
+    expect(attachments[0]?.textSnippet).toBeUndefined();
+    URL.revokeObjectURL(attachments[0]!.previewUrl);
+  });
+
+  it('reads only the first bytes of a text file for composer snippets', async () => {
+    const file = new File(['first line\n' + 'x'.repeat(5000)], 'notes.txt', { type: 'text/plain' });
+    const sliceSpy = vi.spyOn(file, 'slice');
+    const { attachments } = await readAttachmentFiles([file]);
+    expect(sliceSpy).toHaveBeenCalledWith(0, COMPOSER_TEXT_SNIPPET_READ_BYTES);
+    expect(attachments[0]?.textSnippet).toBe('first line');
+    URL.revokeObjectURL(attachments[0]!.previewUrl);
+  });
+
+  it('skips composer snippet when attachment is too large', async () => {
+    const file = new File(['hello'], 'notes.txt', { type: 'text/plain' });
+    Object.defineProperty(file, 'size', { value: ATTACHMENT_TEXT_PREVIEW_MAX_BYTES + 1 });
+    const { attachments } = await readAttachmentFiles([file]);
+    expect(attachments[0]?.textSnippet).toBeUndefined();
     URL.revokeObjectURL(attachments[0]!.previewUrl);
   });
 
@@ -304,6 +600,31 @@ describe('attachments', () => {
         url: '/api/attachments/msg-1/a.png',
       }),
     ).toBe('data:image/png;base64,aGVsbG8=');
+  });
+
+  it('infers mime types in data URLs from filenames', () => {
+    expect(
+      attachmentDataUrl({
+        name: 'song.mp3',
+        mimeType: 'application/octet-stream',
+        type: 'file',
+        data: 'aGVsbG8=',
+      }),
+    ).toBe('data:audio/mpeg;base64,aGVsbG8=');
+  });
+
+  it('builds absolute embed URLs for persisted attachments', () => {
+    expect(
+      attachmentEmbedUrl(
+        {
+          name: 'clip.mov',
+          mimeType: 'video/quicktime',
+          type: 'file',
+          url: '/api/attachments/msg-1/clip.mov',
+        },
+        'secret',
+      ),
+    ).toBe(`${window.location.origin}/api/attachments/msg-1/clip.mov?token=secret`);
   });
 
   it('rejects unsafe attachment urls', () => {
@@ -593,6 +914,99 @@ describe('attachments', () => {
     ).toBe(false);
   });
 
+  it('opens video attachments in a viewer popout document', () => {
+    const openDoc = vi.spyOn(popoutModule, 'openHtmlDocumentInNewTab').mockReturnValue(true);
+    expect(
+      openVideoAttachmentInNewTab({
+        name: 'clip.mp4',
+        mimeType: 'video/mp4',
+        type: 'file',
+        data: 'aGVsbG8=',
+      }),
+    ).toBe(true);
+    expect(openDoc).toHaveBeenCalledWith(
+      expect.stringContaining('class="video-preview"'),
+    );
+    expect(openDoc.mock.calls[0]![0]).toContain('data:video/mp4;base64,aGVsbG8=');
+    expect(openDoc.mock.calls[0]![0]).toContain('video.canPlayType("video/mp4")');
+  });
+
+  it('uses absolute urls in video popouts for persisted attachments', () => {
+    const openDoc = vi.spyOn(popoutModule, 'openHtmlDocumentInNewTab').mockReturnValue(true);
+    expect(
+      openVideoAttachmentInNewTab(
+        {
+          name: '24246.MOV',
+          mimeType: 'application/octet-stream',
+          type: 'file',
+          url: '/api/attachments/msg-1/24246.MOV',
+        },
+        'secret',
+      ),
+    ).toBe(true);
+    expect(openDoc.mock.calls[0]![0]).toContain(
+      `${window.location.origin}/api/attachments/msg-1/24246.MOV?token=secret`,
+    );
+  });
+
+  it('returns false when video popout has no embed URL', () => {
+    expect(
+      openVideoAttachmentInNewTab({
+        name: 'clip.mp4',
+        mimeType: 'video/mp4',
+        type: 'file',
+      }),
+    ).toBe(false);
+  });
+
+  it('returns false when video popout tab cannot be opened', () => {
+    vi.spyOn(popoutModule, 'openHtmlDocumentInNewTab').mockReturnValue(false);
+    expect(
+      openVideoAttachmentInNewTab({
+        name: 'clip.mp4',
+        mimeType: 'video/mp4',
+        type: 'file',
+        data: 'aGVsbG8=',
+      }),
+    ).toBe(false);
+  });
+
+  it('opens audio attachments in a viewer popout document', () => {
+    const openDoc = vi.spyOn(popoutModule, 'openHtmlDocumentInNewTab').mockReturnValue(true);
+    expect(
+      openAudioAttachmentInNewTab({
+        name: 'song.mp3',
+        mimeType: 'audio/mpeg',
+        type: 'file',
+        data: 'aGVsbG8=',
+      }),
+    ).toBe(true);
+    expect(openDoc).toHaveBeenCalledWith(expect.stringContaining('class="audio-preview"'));
+    expect(openDoc.mock.calls[0]![0]).toContain('data:audio/mpeg;base64,aGVsbG8=');
+  });
+
+  it('returns false when audio popout has no embed URL', () => {
+    expect(
+      openAudioAttachmentInNewTab({
+        name: 'song.mp3',
+        mimeType: 'audio/mpeg',
+        type: 'file',
+      }),
+    ).toBe(false);
+  });
+
+  it('returns false when audio popout tab cannot be opened', () => {
+    vi.spyOn(popoutModule, 'openHtmlDocumentInNewTab').mockReturnValue(false);
+    expect(
+      openAudioAttachmentInNewTab({
+        name: 'song.mp3',
+        mimeType: 'audio/mpeg',
+        type: 'file',
+        data: 'aGVsbG8=',
+      }),
+    ).toBe(false);
+  });
+
   it('returns false when a new tab cannot be opened', () => {
     vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:opened');
     vi.spyOn(window, 'open').mockReturnValue(null);
@@ -650,6 +1064,14 @@ describe('attachments', () => {
         previewUrl: 'blob:preview',
         data: 'aGVsbG8=',
       }),
+    ).toBe('data:image/png;base64,aGVsbG8=');
+    expect(
+      attachmentPreviewUrl({
+        name: 'a.png',
+        mimeType: 'image/png',
+        type: 'image',
+        previewUrl: 'blob:preview',
+      }),
     ).toBe('blob:preview');
     expect(
       attachmentPreviewUrl({
@@ -661,65 +1083,15 @@ describe('attachments', () => {
     ).toBe('data:image/png;base64,aGVsbG8=');
   });
 
-  it('reads raw base64 results without a data URL prefix', async () => {
-    const Original = global.FileReader;
-    class RawReader extends Original {
-      readAsDataURL() {
-        Object.defineProperty(this, 'result', { value: 'rawbase64', configurable: true });
-        this.onload?.({ target: this } as ProgressEvent<FileReader>);
-      }
-    }
-    vi.stubGlobal('FileReader', RawReader);
-    const { attachments } = await readAttachmentFiles([new File(['x'], 'a.txt', { type: 'text/plain' })]);
-    expect(attachments[0]?.data).toBe('rawbase64');
-    URL.revokeObjectURL(attachments[0]!.previewUrl);
-    vi.stubGlobal('FileReader', Original);
-  });
-
-  it('reports FileReader errors per file without failing the batch', async () => {
-    const Original = global.FileReader;
-    class ErrorReader extends Original {
-      readAsDataURL() {
-        this.onerror?.(new ProgressEvent('error'));
-      }
-    }
-    vi.stubGlobal('FileReader', ErrorReader);
-    const good = new File(['x'], 'good.txt', { type: 'text/plain' });
-    const bad = new File(['x'], 'bad.txt', { type: 'text/plain' });
-    const { attachments, rejected } = await readAttachmentFiles([good, bad]);
-    expect(attachments).toHaveLength(0);
-    expect(rejected).toEqual([
-      { name: 'good.txt', reason: 'read_failed' },
-      { name: 'bad.txt', reason: 'read_failed' },
-    ]);
-    vi.stubGlobal('FileReader', Original);
-  });
-
-  it('rejects non-string FileReader results per file', async () => {
-    const Original = global.FileReader;
-    class BadReader extends Original {
-      readAsDataURL() {
-        Object.defineProperty(this, 'result', { value: new ArrayBuffer(8), configurable: true });
-        this.onload?.({ target: this } as ProgressEvent<FileReader>);
-      }
-    }
-    vi.stubGlobal('FileReader', BadReader);
-    const { attachments, rejected } = await readAttachmentFiles([
-      new File(['x'], 'a.txt', { type: 'text/plain' }),
-    ]);
-    expect(attachments).toHaveLength(0);
-    expect(rejected).toEqual([{ name: 'a.txt', reason: 'read_failed' }]);
-    vi.stubGlobal('FileReader', Original);
-  });
-
   it('removes pending attachments by index', () => {
-    const pending = [
+    const pending: PendingAttachment[] = [
       {
+        file: new File(['a'], 'a.png', { type: 'image/png' }),
         name: 'a.png',
         mimeType: 'image/png',
-        type: 'image' as const,
+        type: 'image',
+        size: 1,
         previewUrl: 'blob:a',
-        data: 'a',
       },
     ];
     const revoke = vi.spyOn(URL, 'revokeObjectURL');
@@ -768,6 +1140,40 @@ describe('attachments', () => {
       }, 'secret'),
     ).toBe('from server');
     expect(fetch).toHaveBeenCalledWith('/api/attachments/msg-1/notes.md?token=secret');
+    vi.unstubAllGlobals();
+  });
+
+  it('appends token query param when url already has search params', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, text: async () => 'from server' }) as Response),
+    );
+    expect(
+      await fetchAttachmentText({
+        name: 'notes.md',
+        mimeType: 'text/markdown',
+        type: 'file',
+        url: '/api/attachments/msg-1/notes.md?download=1',
+      }, 'secret'),
+    ).toBe('from server');
+    expect(fetch).toHaveBeenCalledWith('/api/attachments/msg-1/notes.md?download=1&token=secret');
+    vi.unstubAllGlobals();
+  });
+
+  it('uses cookie auth when fetching attachment url without token', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, text: async () => 'cookie auth' }) as Response),
+    );
+    expect(
+      await fetchAttachmentText({
+        name: 'notes.md',
+        mimeType: 'text/markdown',
+        type: 'file',
+        url: '/api/attachments/msg-1/notes.md',
+      }),
+    ).toBe('cookie auth');
+    expect(fetch).toHaveBeenCalledWith('/api/attachments/msg-1/notes.md', { credentials: 'include' });
     vi.unstubAllGlobals();
   });
 
@@ -985,7 +1391,18 @@ describe('attachments', () => {
     });
     expect(fetch).toHaveBeenCalledWith('/api/attachments/msg-1/photo.png?token=stored');
     sessionStorage.removeItem('webchat_token');
-    vi.unstubAllGlobals();
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, blob: async () => new Blob(['x']) }) as Response),
+    );
+    await fetchAttachmentBlob({
+      name: 'photo.png',
+      mimeType: 'image/png',
+      type: 'image',
+      url: '/api/attachments/msg-1/photo.png',
+    });
+    expect(fetch).toHaveBeenCalledWith('/api/attachments/msg-1/photo.png', { credentials: 'include' });
 
     vi.stubGlobal(
       'fetch',
@@ -1084,5 +1501,121 @@ describe('attachments', () => {
     );
     expect(tokenLinkSuccess).toHaveBeenCalled();
     vi.unstubAllGlobals();
+  });
+
+  describe('upload helpers', () => {
+    it('uploads small files via multipart', async () => {
+      vi.spyOn(api, 'uploadAttachmentMultipart').mockResolvedValue({
+        uploadId: 'upload-id',
+        name: 'a.txt',
+        mimeType: 'text/plain',
+        type: 'file',
+        size: 5,
+      });
+      const file = new File(['hello'], 'a.txt', { type: 'text/plain' });
+      const result = await uploadAttachmentFile('tok', 'lobby', 'main', file);
+      expect(result.uploadId).toBe('upload-id');
+      expect(api.uploadAttachmentMultipart).toHaveBeenCalledWith('tok', 'lobby', 'main', file);
+    });
+
+    it('uploads all files via multipart regardless of size', async () => {
+      vi.spyOn(api, 'uploadAttachmentMultipart').mockResolvedValue({
+        uploadId: 'upload-id',
+        name: 'big.bin',
+        mimeType: 'application/octet-stream',
+        type: 'file',
+        size: CHUNK_SIZE + 1,
+      });
+      const file = new File([new Uint8Array(CHUNK_SIZE + 1)], 'big.bin');
+      const result = await uploadAttachmentFile('tok', 'lobby', 'main', file);
+      expect(result.uploadId).toBe('upload-id');
+      expect(api.uploadAttachmentMultipart).toHaveBeenCalledWith('tok', 'lobby', 'main', file);
+    });
+
+    it('collects upload failures from pending attachments', async () => {
+      vi.spyOn(api, 'uploadAttachmentMultipart').mockRejectedValue(new Error('network down'));
+      const pending: PendingAttachment[] = [
+        {
+          name: 'a.txt',
+          mimeType: 'text/plain',
+          type: 'file',
+          size: 1,
+          file: new File(['x'], 'a.txt'),
+          previewUrl: 'blob:preview',
+        },
+      ];
+      const { uploads, failed } = await uploadPendingAttachments('tok', 'lobby', 'main', pending);
+      expect(uploads).toHaveLength(0);
+      expect(failed).toEqual([{ name: 'a.txt', reason: 'upload_failed', detail: 'network down' }]);
+    });
+
+    it('falls back to a generic attachment label when upload failure lacks a name', async () => {
+      vi.spyOn(api, 'uploadAttachmentMultipart').mockRejectedValue(new Error('network down'));
+      const pending = [
+        {
+          name: undefined,
+          mimeType: 'text/plain',
+          type: 'file',
+          size: 1,
+          file: new File(['x'], 'a.txt'),
+          previewUrl: 'blob:preview',
+        },
+      ] as unknown as PendingAttachment[];
+      const { failed } = await uploadPendingAttachments('tok', 'lobby', 'main', pending);
+      expect(failed).toEqual([{ name: 'attachment', reason: 'upload_failed', detail: 'network down' }]);
+    });
+
+    it('records a generic upload failure when rejection is not an Error', async () => {
+      vi.spyOn(api, 'uploadAttachmentMultipart').mockRejectedValue('nope');
+      const pending: PendingAttachment[] = [
+        {
+          name: 'a.txt',
+          mimeType: 'text/plain',
+          type: 'file',
+          size: 1,
+          file: new File(['x'], 'a.txt'),
+          previewUrl: 'blob:preview',
+        },
+      ];
+      const { failed } = await uploadPendingAttachments('tok', 'lobby', 'main', pending);
+      expect(failed).toEqual([{ name: 'a.txt', reason: 'upload_failed', detail: 'Upload failed' }]);
+    });
+
+    it('maps uploaded attachments to send refs', () => {
+      expect(
+        toSendAttachmentsFromUploads([
+          {
+            uploadId: 'upload-id',
+            name: 'a.txt',
+            mimeType: 'text/plain',
+            type: 'file',
+            size: 1,
+          },
+        ]),
+      ).toEqual([
+        {
+          uploadId: 'upload-id',
+          name: 'a.txt',
+          mimeType: 'text/plain',
+          type: 'file',
+          size: 1,
+        },
+      ]);
+    });
+
+    it('revokes preview object URLs', () => {
+      const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+      revokeAttachmentPreviews([
+        {
+          name: 'a.txt',
+          mimeType: 'text/plain',
+          type: 'file',
+          size: 1,
+          file: new File(['x'], 'a.txt'),
+          previewUrl: 'blob:test',
+        },
+      ]);
+      expect(revoke).toHaveBeenCalledWith('blob:test');
+    });
   });
 });

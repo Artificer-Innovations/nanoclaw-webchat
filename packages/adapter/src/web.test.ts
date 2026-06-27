@@ -21,6 +21,12 @@ vi.mock('../webchat-sync.js', () => ({
     user: { id: 'web:local', displayName: 'Local' },
     rooms: [
       {
+        platformId: 'inbox',
+        name: 'Inbox',
+        kind: 'inbox',
+        threads: [{ id: 'main', title: 'Main' }],
+      },
+      {
         platformId: 'lobby',
         name: 'Lobby',
         kind: 'lobby',
@@ -30,6 +36,8 @@ vi.mock('../webchat-sync.js', () => ({
     agents: [{ folder: 'sarah', name: 'Sarah', mention: '@sarah' }],
   }),
   readTeamFolder: () => null,
+  ensureUserWebchatWirings: vi.fn(),
+  WEB_INBOX_PLATFORM_ID: 'inbox',
 }));
 
 vi.mock('../db/agent-groups.js', () => ({
@@ -38,7 +46,27 @@ vi.mock('../db/agent-groups.js', () => ({
     { id: 'ag-diego', folder: 'diego', name: 'Diego', agent_provider: null, created_at: '2020-01-01' },
     { id: 'ag-rahul', folder: 'rahul', name: 'Rahul', agent_provider: null, created_at: '2020-01-01' },
   ],
+  getAgentGroup: vi.fn((id: string) => {
+    if (id === 'ag-sarah') {
+      return { id: 'ag-sarah', folder: 'sarah', name: 'Sarah', agent_provider: null, created_at: '2020-01-01' };
+    }
+    return undefined;
+  }),
 }));
+
+vi.mock('../db/connection.js', () => ({
+  getDb: vi.fn(() => ({})),
+  hasTable: vi.fn((_db: unknown, table: string) => table === 'pending_approvals'),
+}));
+
+vi.mock('../db/sessions.js', async () => {
+  const actual = await vi.importActual<typeof import('../db/sessions.js')>('../db/sessions.js');
+  return {
+    ...actual,
+    getPendingApproval: vi.fn(),
+    getSession: vi.fn(),
+  };
+});
 
 const routeCaptures: Array<{
   platformId: string;
@@ -58,6 +86,7 @@ vi.mock('../webchat-thread-cleanup.js', () => ({
 
 vi.mock('../db/messaging-groups.js', () => ({
   getMessagingGroupByPlatform: vi.fn(() => ({ id: 'mg-lobby' })),
+  getMessagingGroup: vi.fn(),
 }));
 
 vi.mock('../router.js', () => ({
@@ -80,22 +109,96 @@ vi.mock('../router.js', () => ({
   }),
 }));
 
-import { createWebAdapter, clearWebAdapterTestState, flushWebAgentDeliveryChains } from './web.js';
+import { createWebAdapter, clearWebAdapterTestState, flushWebAgentDeliveryChains, resolveWebchatPort } from './web.js';
 import type { ChannelSetup, InboundMessage } from './adapter.js';
 import { routeInbound } from '../router.js';
 import { cleanupAgentSessionsForThread } from '../webchat-thread-cleanup.js';
-import { getMessagingGroupByPlatform } from '../db/messaging-groups.js';
+import { getDb, hasTable } from '../db/connection.js';
+import { getAgentGroup } from '../db/agent-groups.js';
+import { getMessagingGroupByPlatform, getMessagingGroup } from '../db/messaging-groups.js';
+import { getPendingApproval, getSession } from '../db/sessions.js';
 import { getAssetDir } from 'nanoclaw-webchat';
 import * as webchatStore from '../webchat-store.js';
+import { resetUploadStateForTests, getStagedUpload } from '../webchat-uploads.js';
 import * as agentGroups from '../db/agent-groups.js';
+import * as webchatSync from '../webchat-sync.js';
 import * as webchatMentions from '../webchat-mentions.js';
+import { resetWebchatAuthSchemaForTests } from '../webchat-auth-sessions.js';
+import { encodeUserSuffix } from '../webchat-room-scope.js';
 
 const routeInboundMock = vi.mocked(routeInbound);
 const cleanupSessionsMock = vi.mocked(cleanupAgentSessionsForThread);
+const getDbMock = vi.mocked(getDb);
+const hasTableMock = vi.mocked(hasTable);
+const getAgentGroupMock = vi.mocked(getAgentGroup);
 const getMessagingGroupMock = vi.mocked(getMessagingGroupByPlatform);
+const getMessagingGroupByIdMock = vi.mocked(getMessagingGroup);
+const getPendingApprovalMock = vi.mocked(getPendingApproval);
+const getSessionMock = vi.mocked(getSession);
 const getAssetDirMock = vi.mocked(getAssetDir);
 
 const SECRET = 'test-secret';
+const PUBLIC_SESSION_SECRET = 'a'.repeat(32);
+
+function defaultAdapterOptions(port: number) {
+  return {
+    port,
+    bindAddress: '127.0.0.1',
+    authMode: 'local' as const,
+    authToken: SECRET,
+    userId: 'web:local',
+    displayName: 'Local',
+  };
+}
+
+function publicAdapterOptions(port: number) {
+  return {
+    port,
+    bindAddress: '127.0.0.1',
+    authMode: 'public' as const,
+    authToken: SECRET,
+    userId: 'web:local',
+    displayName: 'Local',
+    publicAuth: {
+      sessionSecret: PUBLIC_SESSION_SECRET,
+      sessionTtlSeconds: 3600,
+      redirectUri: 'http://127.0.0.1/callback',
+      oidcEnabled: false,
+      providers: [],
+      allowlist: { emailDomains: [], emails: [], subs: [], requiredGroup: null },
+      basic: {
+        enabled: true,
+        password: 'hunter2',
+        allowedUsernames: ['alice', 'bob'],
+        displayNames: new Map([
+          ['alice', 'Alice'],
+          ['bob', 'Bob'],
+        ]),
+      },
+      secureCookies: false,
+    },
+  };
+}
+
+async function loginBasicSession(username: string, password = 'hunter2'): Promise<string> {
+  const login = await httpPostJsonNoAuth('/api/auth/login/basic', { username, password });
+  expect(login.status).toBe(200);
+  const setCookie = login.headers['set-cookie'];
+  const raw = Array.isArray(setCookie) ? setCookie[0]! : String(setCookie);
+  return raw.split(';')[0]!;
+}
+
+function openWsWithCookie(cookie: string): Promise<{ ws: WebSocket; events: unknown[] }> {
+  return new Promise((resolve, reject) => {
+    const events: unknown[] = [];
+    const ws = new WebSocket(`ws://127.0.0.1:${testPort}/api/ws`, {
+      headers: { Cookie: cookie },
+    });
+    ws.on('open', () => resolve({ ws, events }));
+    ws.on('message', (data) => events.push(JSON.parse(String(data))));
+    ws.on('error', reject);
+  });
+}
 let testPort = 0;
 
 async function reservePort(): Promise<number> {
@@ -109,6 +212,84 @@ async function reservePort(): Promise<number> {
       const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
       probe.close((err) => (err ? reject(err) : resolve(port)));
     });
+  });
+}
+
+function httpPostJson(path: string, body: unknown, port = testPort): Promise<{ status: number; body: Record<string, unknown> }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        hostname: '127.0.0.1',
+        port,
+        path,
+        method: 'POST',
+        agent: false,
+        headers: {
+          Authorization: `Bearer ${SECRET}`,
+          'Content-Type': 'application/json',
+          Connection: 'close',
+        },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk) => (data += chunk));
+        res.on('end', () => {
+          try {
+            resolve({ status: res.statusCode ?? 0, body: JSON.parse(data) as Record<string, unknown> });
+          } catch {
+            resolve({ status: res.statusCode ?? 0, body: {} });
+          }
+        });
+      },
+    );
+    req.on('error', reject);
+    req.write(JSON.stringify(body));
+    req.end();
+  });
+}
+
+function httpMultipartUpload(
+  path: string,
+  filename: string,
+  content: Buffer,
+  port = testPort,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const boundary = '----WebKitFormBoundaryTestUpload';
+  const body = Buffer.concat([
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: application/octet-stream\r\n\r\n`),
+    content,
+    Buffer.from(`\r\n--${boundary}--\r\n`),
+  ]);
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        hostname: '127.0.0.1',
+        port,
+        path,
+        method: 'POST',
+        agent: false,
+        headers: {
+          Authorization: `Bearer ${SECRET}`,
+          'Content-Type': `multipart/form-data; boundary=${boundary}`,
+          'Content-Length': body.length,
+          Connection: 'close',
+        },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk) => (data += chunk));
+        res.on('end', () => {
+          try {
+            resolve({ status: res.statusCode ?? 0, body: JSON.parse(data) as Record<string, unknown> });
+          } catch {
+            resolve({ status: res.statusCode ?? 0, body: {} });
+          }
+        });
+      },
+    );
+    req.on('error', reject);
+    req.write(body);
+    req.end();
   });
 }
 
@@ -188,6 +369,179 @@ function httpGet(path: string, port = testPort): Promise<{ status: number; body:
   });
 }
 
+function httpGetWithHeaders(
+  path: string,
+  headers: Record<string, string>,
+  port = testPort,
+): Promise<{ status: number; body: unknown; headers: http.IncomingHttpHeaders }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        hostname: '127.0.0.1',
+        port,
+        path,
+        method: 'GET',
+        agent: false,
+        headers: { Connection: 'close', ...headers },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk) => (data += chunk));
+        res.on('end', () => {
+          try {
+            resolve({
+              status: res.statusCode ?? 0,
+              body: JSON.parse(data),
+              headers: res.headers,
+            });
+          } catch {
+            resolve({ status: res.statusCode ?? 0, body: data, headers: res.headers });
+          }
+        });
+      },
+    );
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+function httpDeleteWithHeaders(
+  path: string,
+  headers: Record<string, string>,
+  port = testPort,
+): Promise<{ status: number; body: unknown }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        hostname: '127.0.0.1',
+        port,
+        path,
+        method: 'DELETE',
+        agent: false,
+        headers: { Connection: 'close', ...headers },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk) => (data += chunk));
+        res.on('end', () => {
+          try {
+            resolve({ status: res.statusCode ?? 0, body: JSON.parse(data) });
+          } catch {
+            resolve({ status: res.statusCode ?? 0, body: data });
+          }
+        });
+      },
+    );
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+function httpPatchWithHeaders(
+  path: string,
+  body: unknown,
+  headers: Record<string, string>,
+  port = testPort,
+): Promise<{ status: number; body: unknown }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        hostname: '127.0.0.1',
+        port,
+        path,
+        method: 'PATCH',
+        agent: false,
+        headers: { 'Content-Type': 'application/json', Connection: 'close', ...headers },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk) => (data += chunk));
+        res.on('end', () => {
+          try {
+            resolve({ status: res.statusCode ?? 0, body: JSON.parse(data) });
+          } catch {
+            resolve({ status: res.statusCode ?? 0, body: data });
+          }
+        });
+      },
+    );
+    req.on('error', reject);
+    req.write(JSON.stringify(body));
+    req.end();
+  });
+}
+
+function httpPostJsonWithHeaders(
+  path: string,
+  body: unknown,
+  headers: Record<string, string>,
+  port = testPort,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        hostname: '127.0.0.1',
+        port,
+        path,
+        method: 'POST',
+        agent: false,
+        headers: { 'Content-Type': 'application/json', Connection: 'close', ...headers },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk) => (data += chunk));
+        res.on('end', () => {
+          try {
+            resolve({ status: res.statusCode ?? 0, body: JSON.parse(data) as Record<string, unknown> });
+          } catch {
+            resolve({ status: res.statusCode ?? 0, body: {} });
+          }
+        });
+      },
+    );
+    req.on('error', reject);
+    req.write(JSON.stringify(body));
+    req.end();
+  });
+}
+
+function httpPostJsonNoAuth(
+  path: string,
+  body: unknown,
+  port = testPort,
+): Promise<{ status: number; body: Record<string, unknown>; headers: http.IncomingHttpHeaders }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        hostname: '127.0.0.1',
+        port,
+        path,
+        method: 'POST',
+        agent: false,
+        headers: { 'Content-Type': 'application/json', Connection: 'close' },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk) => (data += chunk));
+        res.on('end', () => {
+          try {
+            resolve({
+              status: res.statusCode ?? 0,
+              body: JSON.parse(data) as Record<string, unknown>,
+              headers: res.headers,
+            });
+          } catch {
+            resolve({ status: res.statusCode ?? 0, body: {}, headers: res.headers });
+          }
+        });
+      },
+    );
+    req.on('error', reject);
+    req.write(JSON.stringify(body));
+    req.end();
+  });
+}
+
 const PNG_BASE64 = Buffer.from('fake-png').toString('base64');
 
 async function flushAgentDeliveries(): Promise<void> {
@@ -226,10 +580,27 @@ describe('web channel adapter', () => {
   let adapter: ReturnType<typeof createWebAdapter>;
   const captures = routeCaptures;
   let setup: ChannelSetup;
+  const actionCaptures: Array<{ questionId: string; value: string; userId: string }> = [];
 
   beforeEach(async () => {
     clearWebAdapterTestState();
+    resetUploadStateForTests();
     captures.length = 0;
+    actionCaptures.length = 0;
+    getDbMock.mockReset();
+    getDbMock.mockReturnValue({} as ReturnType<typeof getDb>);
+    hasTableMock.mockReset();
+    hasTableMock.mockImplementation((_db: unknown, table: string) => table === 'pending_approvals');
+    getAgentGroupMock.mockReset();
+    getAgentGroupMock.mockImplementation((id: string) => {
+      if (id === 'ag-sarah') {
+        return { id: 'ag-sarah', folder: 'sarah', name: 'Sarah', agent_provider: null, created_at: '2020-01-01' };
+      }
+      return undefined;
+    });
+    getPendingApprovalMock.mockReset();
+    getSessionMock.mockReset();
+    getMessagingGroupByIdMock.mockReset();
     testPort = await reservePort();
     if (fs.existsSync(TEST_DATA)) {
       fs.rmSync(TEST_DATA, { recursive: true, force: true });
@@ -244,22 +615,32 @@ describe('web channel adapter', () => {
       onInbound() {},
       onInboundEvent() {},
       onMetadata() {},
-      onAction() {},
+      onAction(questionId, value, userId) {
+        actionCaptures.push({ questionId, value, userId });
+      },
     };
-    adapter = createWebAdapter({
-      port: testPort,
-      authToken: SECRET,
-      userId: 'web:local',
-      displayName: 'Local',
-    });
+    adapter = createWebAdapter(defaultAdapterOptions(testPort));
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await flushAgentDeliveries();
     await adapter.teardown();
     if (fs.existsSync(TEST_DATA)) {
       fs.rmSync(TEST_DATA, { recursive: true, force: true });
     }
+  });
+
+  it('binds to loopback when bindAddress is omitted', async () => {
+    adapter = createWebAdapter({
+      port: testPort,
+      authToken: SECRET,
+      authMode: 'local',
+      userId: 'web:local',
+      displayName: 'Local',
+    });
+    await adapter.setup(setup);
+    expect(adapter.isConnected()).toBe(true);
   });
 
   it('routes POST messages to onInbound with threadId', async () => {
@@ -527,12 +908,7 @@ describe('web channel adapter', () => {
     await httpPost('/api/rooms/lobby/threads/main/messages', { text: 'persist me' });
     await adapter.teardown();
 
-    adapter = createWebAdapter({
-      port: testPort,
-      authToken: SECRET,
-      userId: 'web:local',
-      displayName: 'Local',
-    });
+    adapter = createWebAdapter(defaultAdapterOptions(testPort));
     await adapter.setup(setup);
 
     const { status, body } = await httpGet('/api/rooms/lobby/threads/main/messages');
@@ -750,12 +1126,7 @@ describe('web channel adapter', () => {
     await httpPost('/api/rooms/lobby/threads/thread_abc/messages', { text: '@sarah hello' });
     await adapter.teardown();
 
-    adapter = createWebAdapter({
-      port: testPort,
-      authToken: SECRET,
-      userId: 'web:local',
-      displayName: 'Local',
-    });
+    adapter = createWebAdapter(defaultAdapterOptions(testPort));
     await adapter.setup(setup);
 
     const { body } = await httpGet('/api/rooms/lobby/threads/thread_abc/messages');
@@ -1044,7 +1415,7 @@ describe('web channel adapter', () => {
 
   it('returns 404 for unknown attachment', async () => {
     await adapter.setup(setup);
-    const { status } = await httpGet('/api/attachments/missing/file.png');
+    const { status } = await httpGet(`/api/attachments/missing/file.png?token=${SECRET}`);
     expect(status).toBe(404);
   });
 
@@ -1079,13 +1450,607 @@ describe('web channel adapter', () => {
 
   it('returns 400 for too many attachments', async () => {
     await adapter.setup(setup);
-    const attachments = Array.from({ length: 5 }, (_, i) => ({
+    const attachments = Array.from({ length: 11 }, (_, i) => ({
       name: `f${i}.png`,
       mimeType: 'image/png',
       data: PNG_BASE64,
     }));
     const status = await httpPost('/api/rooms/lobby/threads/main/messages', { text: 'x', attachments });
     expect(status).toBe(400);
+  });
+
+  it('accepts multipart upload and message with uploadId reference', async () => {
+    await adapter.setup(setup);
+    const fileBytes = Buffer.from('uploaded-image-bytes');
+    const upload = await httpMultipartUpload(
+      '/api/rooms/lobby/threads/main/uploads',
+      'photo.png',
+      fileBytes,
+    );
+    expect(upload.status).toBe(200);
+    expect(upload.body.uploadId).toBeTruthy();
+
+    const post = await httpPostJson('/api/rooms/lobby/threads/main/messages', {
+      text: 'see attached',
+      attachments: [
+        {
+          uploadId: upload.body.uploadId,
+          name: 'photo.png',
+          mimeType: 'image/png',
+          type: 'image',
+          size: fileBytes.length,
+        },
+      ],
+    });
+    expect(post.status).toBe(200);
+    expect(post.body.messageId).toBeTruthy();
+    expect(
+      (post.body.attachments as Array<{ url?: string; name: string }> | undefined)?.[0]?.url,
+    ).toMatch(/^\/api\/attachments\//);
+
+    const { body } = await httpGet('/api/rooms/lobby/threads/main/messages');
+    const messages = (body as { messages: Array<{ attachments?: Array<{ url?: string; name: string }> }> }).messages;
+    const last = messages.at(-1);
+    expect(last?.attachments?.[0]?.name).toBe('photo.png');
+    expect(last?.attachments?.[0]?.url).toMatch(/^\/api\/attachments\//);
+  });
+
+  it('posts a message referencing a staged upload', async () => {
+    await adapter.setup(setup);
+    const fileBytes = Buffer.from('hello-upload');
+    const upload = await httpMultipartUpload(
+      '/api/rooms/lobby/threads/main/uploads',
+      'note.txt',
+      fileBytes,
+    );
+    expect(upload.status).toBe(200);
+
+    const status = await httpPost('/api/rooms/lobby/threads/main/messages', {
+      text: 'uploaded',
+      attachments: [
+        {
+          uploadId: upload.body.uploadId,
+          name: 'note.txt',
+          mimeType: 'application/octet-stream',
+          type: 'file',
+          size: fileBytes.length,
+        },
+      ],
+    });
+    expect(status).toBe(200);
+    const { body } = await httpGet('/api/rooms/lobby/threads/main/messages');
+    const messages = (body as { messages: Array<{ text: string; attachments?: Array<{ name: string }> }> }).messages;
+    expect(messages.at(-1)?.text).toBe('uploaded');
+    expect(messages.at(-1)?.attachments?.[0]?.name).toBe('note.txt');
+  });
+
+  it('accepts chunked upload and rejects invalid uploadId on message post', async () => {
+    await adapter.setup(setup);
+    const uploadId = '550e8400-e29b-41d4-a716-446655440000';
+    const chunkData = Buffer.from('chunk-bytes').toString('base64');
+    const chunk = await httpPostJson('/api/rooms/lobby/threads/main/uploads/chunk', {
+      uploadId,
+      chunkIndex: 0,
+      totalChunks: 1,
+      filename: 'doc.txt',
+      mimeType: 'text/plain',
+      data: chunkData,
+    });
+    expect(chunk.status).toBe(200);
+    expect(chunk.body.uploadId).toBe(uploadId);
+
+    const badRef = await httpPost('/api/rooms/lobby/threads/main/messages', {
+      text: 'missing upload',
+      attachments: [
+        {
+          uploadId,
+          name: 'doc.txt',
+          mimeType: 'text/plain',
+          type: 'file',
+          size: 999,
+        },
+      ],
+    });
+    expect(badRef).toBe(400);
+  });
+
+  it('reports chunk upload progress before the final chunk', async () => {
+    await adapter.setup(setup);
+    const uploadId = '550e8400-e29b-41d4-a716-446655440002';
+    const first = await httpPostJson('/api/rooms/lobby/threads/main/uploads/chunk', {
+      uploadId,
+      chunkIndex: 0,
+      totalChunks: 2,
+      filename: 'two.bin',
+      mimeType: 'application/octet-stream',
+      data: Buffer.from('aa').toString('base64'),
+    });
+    expect(first.status).toBe(200);
+    expect(first.body.ok).toBe(true);
+    expect(first.body.received).toBe(1);
+
+    const second = await httpPostJson('/api/rooms/lobby/threads/main/uploads/chunk', {
+      uploadId,
+      chunkIndex: 1,
+      totalChunks: 2,
+      filename: 'two.bin',
+      mimeType: 'application/octet-stream',
+      data: Buffer.from('bb').toString('base64'),
+    });
+    expect(second.status).toBe(200);
+    expect(second.body.uploadId).toBe(uploadId);
+  });
+
+  it('returns 400 for invalid chunk upload payloads', async () => {
+    await adapter.setup(setup);
+    const res = await httpPostJson('/api/rooms/lobby/threads/main/uploads/chunk', {
+      uploadId: '550e8400-e29b-41d4-a716-446655440003',
+      filename: 'bad.bin',
+      data: Buffer.from('x').toString('base64'),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects upload references staged for a different thread', async () => {
+    await adapter.setup(setup);
+    const createRes = await new Promise<{ status: number; body: { id: string } }>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port: testPort,
+          path: '/api/rooms/lobby/threads',
+          method: 'POST',
+          headers: { Authorization: `Bearer ${SECRET}`, 'Content-Type': 'application/json', Connection: 'close' },
+        },
+        (res) => {
+          let data = '';
+          res.on('data', (chunk) => (data += chunk));
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, body: JSON.parse(data) }));
+        },
+      );
+      req.on('error', reject);
+      req.write(JSON.stringify({ title: 'Other' }));
+      req.end();
+    });
+    expect(createRes.status).toBe(200);
+    const threadId = createRes.body.id;
+    const fileBytes = Buffer.from('thread-scoped');
+    const upload = await httpMultipartUpload(
+      `/api/rooms/lobby/threads/${threadId}/uploads`,
+      'scoped.txt',
+      fileBytes,
+    );
+    expect(upload.status).toBe(200);
+    const status = await httpPost('/api/rooms/lobby/threads/main/messages', {
+      text: 'wrong thread',
+      attachments: [
+        {
+          uploadId: upload.body.uploadId,
+          name: 'scoped.txt',
+          mimeType: 'application/octet-stream',
+          type: 'file',
+          size: fileBytes.length,
+        },
+      ],
+    });
+    expect(status).toBe(400);
+  });
+
+  it('restores consumed uploads when duplicate uploadId references cannot both be consumed', async () => {
+    await adapter.setup(setup);
+    const fileBytes = Buffer.from('dup-ref');
+    const upload = await httpMultipartUpload(
+      '/api/rooms/lobby/threads/main/uploads',
+      'dup.txt',
+      fileBytes,
+    );
+    expect(upload.status).toBe(200);
+    const uploadId = upload.body.uploadId as string;
+    const dupRef = {
+      uploadId,
+      name: 'dup.txt',
+      mimeType: 'application/octet-stream',
+      type: 'file' as const,
+      size: fileBytes.length,
+    };
+    const failed = await httpPostJson('/api/rooms/lobby/threads/main/messages', {
+      text: 'duplicate refs',
+      attachments: [dupRef, dupRef],
+    });
+    expect(failed.status).toBe(400);
+    expect(failed.body.error).toBe('invalid upload reference');
+
+    const retry = await httpPostJson('/api/rooms/lobby/threads/main/messages', {
+      text: 'retry after restore',
+      attachments: [dupRef],
+    });
+    expect(retry.status).toBe(200);
+  });
+
+  it('rejects upload references with mismatched metadata', async () => {
+    await adapter.setup(setup);
+    const fileBytes = Buffer.from('meta-check');
+    const upload = await httpMultipartUpload(
+      '/api/rooms/lobby/threads/main/uploads',
+      'meta.txt',
+      fileBytes,
+    );
+    expect(upload.status).toBe(200);
+    const status = await httpPost('/api/rooms/lobby/threads/main/messages', {
+      text: 'bad meta',
+      attachments: [
+        {
+          uploadId: upload.body.uploadId,
+          name: 'meta.txt',
+          mimeType: 'application/octet-stream',
+          type: 'file',
+          size: fileBytes.length + 1,
+        },
+      ],
+    });
+    expect(status).toBe(400);
+  });
+
+  it('routes upload-referenced attachments without inline data when disk read fails', async () => {
+    await adapter.setup(setup);
+    const fileBytes = Buffer.from('route-me');
+    const upload = await httpMultipartUpload(
+      '/api/rooms/lobby/threads/thread_abc/uploads',
+      'route.txt',
+      fileBytes,
+    );
+    expect(upload.status).toBe(200);
+    const originalRead = fs.readFileSync.bind(fs);
+    vi.spyOn(fs, 'readFileSync').mockImplementation((filePath, ...args) => {
+      if (typeof filePath === 'string' && filePath.includes(`${path.sep}webchat${path.sep}files${path.sep}`)) {
+        throw new Error('disk read failed');
+      }
+      return originalRead(filePath, ...args) as ReturnType<typeof fs.readFileSync>;
+    });
+    captures.length = 0;
+    const status = await httpPost('/api/rooms/lobby/threads/thread_abc/messages', {
+      text: '@sarah see file',
+      attachments: [
+        {
+          uploadId: upload.body.uploadId,
+          name: 'route.txt',
+          mimeType: 'application/octet-stream',
+          type: 'file',
+          size: fileBytes.length,
+        },
+      ],
+    });
+    expect(status).toBe(200);
+    await flushAgentDeliveries();
+    const liveCaptures = captures.filter((c) => c.message.id.includes('-route-'));
+    expect(liveCaptures.length).toBeGreaterThan(0);
+    const attachments = (liveCaptures[0]!.message.content as { attachments?: Array<{ data?: string; name: string }> })
+      .attachments;
+    expect(attachments?.[0]?.name).toBe('route.txt');
+    expect(attachments?.[0]?.data).toBeUndefined();
+  });
+
+  it('routes large uploaded attachments without inline agent data', async () => {
+    await adapter.setup(setup);
+    const fileBytes = Buffer.alloc(5 * 1024 * 1024 + 1, 1);
+    const upload = await httpMultipartUpload(
+      '/api/rooms/lobby/threads/thread_abc/uploads',
+      'big.bin',
+      fileBytes,
+    );
+    expect(upload.status).toBe(200);
+    captures.length = 0;
+    const status = await httpPost('/api/rooms/lobby/threads/thread_abc/messages', {
+      text: '@sarah big file',
+      attachments: [
+        {
+          uploadId: upload.body.uploadId,
+          name: 'big.bin',
+          mimeType: 'application/octet-stream',
+          type: 'file',
+          size: fileBytes.length,
+        },
+      ],
+    });
+    expect(status).toBe(200);
+    await flushAgentDeliveries();
+    const live = captures.find((c) => c.message.id.includes('-route-'));
+    expect(live).toBeDefined();
+    const attachments = (live!.message.content as { attachments?: Array<{ data?: string; size: number }> })
+      .attachments;
+    expect(attachments?.[0]?.size).toBeGreaterThan(5 * 1024 * 1024);
+    expect(attachments?.[0]?.data).toBeUndefined();
+  });
+
+  it('returns 500 when message history loading throws unexpectedly', async () => {
+    await adapter.setup(setup);
+    vi.spyOn(webchatStore, 'getMessages').mockImplementationOnce(() => {
+      throw new Error('database unavailable');
+    });
+    const { status, body } = await httpGet('/api/rooms/lobby/threads/main/messages');
+    expect(status).toBe(500);
+    expect(body).toMatchObject({ error: 'Internal server error' });
+  });
+
+  it('returns 500 for malformed multipart uploads', async () => {
+    await adapter.setup(setup);
+    const boundary = '----BrokenBoundary';
+    const body = Buffer.from('this is not valid multipart content');
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port: testPort,
+          path: '/api/rooms/lobby/threads/main/uploads',
+          method: 'POST',
+          agent: false,
+          headers: {
+            Authorization: `Bearer ${SECRET}`,
+            'Content-Type': `multipart/form-data; boundary=${boundary}`,
+            'Content-Length': body.length,
+            Connection: 'close',
+          },
+        },
+        (res) => {
+          res.resume();
+          res.on('end', () => resolve(res.statusCode ?? 0));
+        },
+      );
+      req.on('error', reject);
+      req.write(body);
+      req.end();
+    });
+    expect(status).toBe(500);
+  });
+
+  it('returns 400 for invalid chunk upload JSON', async () => {
+    await adapter.setup(setup);
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port: testPort,
+          path: '/api/rooms/lobby/threads/main/uploads/chunk',
+          method: 'POST',
+          agent: false,
+          headers: {
+            Authorization: `Bearer ${SECRET}`,
+            'Content-Type': 'application/json',
+            Connection: 'close',
+          },
+        },
+        (res) => {
+          res.resume();
+          res.on('end', () => resolve(res.statusCode ?? 0));
+        },
+      );
+      req.on('error', reject);
+      req.write('{not json');
+      req.end();
+    });
+    expect(status).toBe(400);
+  });
+
+  it('returns 400 for malformed uploadId in chunk upload', async () => {
+    await adapter.setup(setup);
+    const res = await httpPostJson('/api/rooms/lobby/threads/main/uploads/chunk', {
+      uploadId: '../escape',
+      chunkIndex: 0,
+      totalChunks: 1,
+      filename: 'x.bin',
+      mimeType: 'application/octet-stream',
+      data: Buffer.from('x').toString('base64'),
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('Invalid uploadId format');
+  });
+
+  it('returns 400 when chunk upload body is unreadable', async () => {
+    await adapter.setup(setup);
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port: testPort,
+          path: '/api/rooms/lobby/threads/main/uploads/chunk',
+          method: 'POST',
+          agent: false,
+          headers: {
+            Authorization: `Bearer ${SECRET}`,
+            'Content-Type': 'application/json',
+            'Content-Length': 50,
+            Connection: 'close',
+          },
+        },
+        (res) => {
+          res.resume();
+          res.on('end', () => resolve(res.statusCode ?? 0));
+        },
+      );
+      req.on('error', reject);
+      req.write('{"uploadId":"550e8400-e29b-41d4-a716-446655440006"');
+      req.end();
+    });
+    expect(status).toBe(400);
+  });
+
+  it('returns 413 when chunk upload body exceeds limit', async () => {
+    await adapter.setup(setup);
+    const { CHUNK_SIZE } = await import('../webchat-uploads.js');
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port: testPort,
+          path: '/api/rooms/lobby/threads/main/uploads/chunk',
+          method: 'POST',
+          agent: false,
+          headers: {
+            Authorization: `Bearer ${SECRET}`,
+            'Content-Type': 'application/json',
+            'Content-Length': CHUNK_SIZE * 2 + 1,
+            Connection: 'close',
+          },
+        },
+        (res) => {
+          res.resume();
+          res.on('end', () => resolve(res.statusCode ?? 0));
+        },
+      );
+      req.on('error', reject);
+      req.end('{}');
+    });
+    expect(status).toBe(413);
+  });
+
+  it('returns 500 and restores staged upload when attachment move fails', async () => {
+    await adapter.setup(setup);
+    const store = await import('../webchat-store.js');
+    const fileBytes = Buffer.from('rollback-me');
+    const upload = await httpMultipartUpload(
+      '/api/rooms/lobby/threads/main/uploads',
+      'rollback.txt',
+      fileBytes,
+    );
+    expect(upload.status).toBe(200);
+    const moveSpy = vi.spyOn(store, 'moveAttachmentIntoMessage').mockImplementation(() => {
+      throw new Error('move failed');
+    });
+    const post = await httpPostJson('/api/rooms/lobby/threads/main/messages', {
+      text: 'rollback',
+      attachments: [
+        {
+          uploadId: upload.body.uploadId as string,
+          name: 'rollback.txt',
+          mimeType: 'application/octet-stream',
+          type: 'file',
+          size: fileBytes.length,
+        },
+      ],
+    });
+    moveSpy.mockRestore();
+    expect(post.status).toBe(500);
+    expect(post.body.error).toBe('attachment processing failed');
+
+    const retry = await httpPostJson('/api/rooms/lobby/threads/main/messages', {
+      text: 'retry',
+      attachments: [
+        {
+          uploadId: upload.body.uploadId as string,
+          name: 'rollback.txt',
+          mimeType: 'application/octet-stream',
+          type: 'file',
+          size: fileBytes.length,
+        },
+      ],
+    });
+    expect(retry.status).toBe(200);
+  });
+
+  it('does not restore moved upload when inline attachment processing fails after upload move', async () => {
+    await adapter.setup(setup);
+    const store = await import('../webchat-store.js');
+    const fileBytes = Buffer.from('moved-first');
+    const upload = await httpMultipartUpload(
+      '/api/rooms/lobby/threads/main/uploads',
+      'moved-first.txt',
+      fileBytes,
+    );
+    expect(upload.status).toBe(200);
+    const uploadId = upload.body.uploadId as string;
+    const writeSpy = vi.spyOn(store, 'writeAttachmentFiles').mockImplementation(() => {
+      throw new Error('inline write failed');
+    });
+    const post = await httpPostJson('/api/rooms/lobby/threads/main/messages', {
+      text: 'mixed kinds',
+      attachments: [
+        {
+          uploadId,
+          name: 'moved-first.txt',
+          mimeType: 'application/octet-stream',
+          type: 'file',
+          size: fileBytes.length,
+        },
+        {
+          name: 'inline.txt',
+          mimeType: 'text/plain',
+          type: 'file',
+          data: Buffer.from('inline').toString('base64'),
+        },
+      ],
+    });
+    writeSpy.mockRestore();
+    expect(post.status).toBe(500);
+    expect(post.body.error).toBe('attachment processing failed');
+    expect(getStagedUpload(uploadId)).toBeUndefined();
+  });
+
+  it('restores only not-yet-moved uploads when a later upload move fails', async () => {
+    await adapter.setup(setup);
+    const store = await import('../webchat-store.js');
+    const firstBytes = Buffer.from('first-upload');
+    const secondBytes = Buffer.from('second-upload');
+    const first = await httpMultipartUpload(
+      '/api/rooms/lobby/threads/main/uploads',
+      'first.txt',
+      firstBytes,
+    );
+    const second = await httpMultipartUpload(
+      '/api/rooms/lobby/threads/main/uploads',
+      'second.txt',
+      secondBytes,
+    );
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    const firstId = first.body.uploadId as string;
+    const secondId = second.body.uploadId as string;
+    let moveCalls = 0;
+    const originalMove = store.moveAttachmentIntoMessage.bind(store);
+    const moveSpy = vi.spyOn(store, 'moveAttachmentIntoMessage').mockImplementation((...args) => {
+      moveCalls += 1;
+      if (moveCalls === 2) {
+        throw new Error('second move failed');
+      }
+      return originalMove(...args);
+    });
+    const post = await httpPostJson('/api/rooms/lobby/threads/main/messages', {
+      text: 'two uploads',
+      attachments: [
+        {
+          uploadId: firstId,
+          name: 'first.txt',
+          mimeType: 'application/octet-stream',
+          type: 'file',
+          size: firstBytes.length,
+        },
+        {
+          uploadId: secondId,
+          name: 'second.txt',
+          mimeType: 'application/octet-stream',
+          type: 'file',
+          size: secondBytes.length,
+        },
+      ],
+    });
+    moveSpy.mockRestore();
+    expect(post.status).toBe(500);
+    expect(post.body.error).toBe('attachment processing failed');
+    expect(getStagedUpload(firstId)).toBeUndefined();
+    expect(getStagedUpload(secondId)?.uploadId).toBe(secondId);
+
+    const retry = await httpPostJson('/api/rooms/lobby/threads/main/messages', {
+      text: 'retry second only',
+      attachments: [
+        {
+          uploadId: secondId,
+          name: 'second.txt',
+          mimeType: 'application/octet-stream',
+          type: 'file',
+          size: secondBytes.length,
+        },
+      ],
+    });
+    expect(retry.status).toBe(200);
   });
 
   it('returns 404 for unknown API routes', async () => {
@@ -1312,6 +2277,27 @@ describe('web channel adapter', () => {
     const { status, body } = await httpGet(url, testPort);
     expect(status).toBe(200);
     expect(String(body).length).toBeGreaterThan(0);
+  });
+
+  it('serves attachment bytes when auth is only a query token', async () => {
+    await adapter.setup(setup);
+    await httpPost('/api/rooms/lobby/threads/thread_abc/messages', {
+      text: 'pic',
+      attachments: [{ name: 'photo.png', mimeType: 'image/png', type: 'image', data: PNG_BASE64 }],
+    });
+    const msgs = (await httpGet('/api/rooms/lobby/threads/thread_abc/messages')).body as {
+      messages: Array<{ attachments?: Array<{ url: string }> }>;
+    };
+    const path = `${msgs.messages[0]!.attachments![0]!.url}?token=${SECRET}`;
+    const { status, body } = await httpGetText(path, testPort);
+    expect(status).toBe(200);
+    expect(String(body).length).toBeGreaterThan(0);
+  });
+
+  it('returns 401 for attachment GET without auth', async () => {
+    await adapter.setup(setup);
+    const { status } = await httpGetText('/api/attachments/missing/file.png', testPort);
+    expect(status).toBe(401);
   });
 
   it('deliver extracts text from object content', async () => {
@@ -2082,28 +3068,6 @@ describe('web channel adapter', () => {
     expect(status).toBe(404);
   });
 
-  it('uses folder name in join stub when mentioned agent is absent from roster', async () => {
-    const mentionSpy = vi.spyOn(webchatMentions, 'mentionedAgentFolders');
-    try {
-      await adapter.setup(setup);
-      await httpPost('/api/rooms/lobby/threads/thread_abc/messages', { text: '@sarah first' });
-      await flushAgentDeliveries();
-      captures.length = 0;
-      mentionSpy.mockReturnValue(['ghost']);
-      await httpPost('/api/rooms/lobby/threads/thread_abc/messages', { text: '@ghost hello' });
-      await flushAgentDeliveries();
-      const sarahLive = captures.find(
-        (c) =>
-          c.message.id.includes('-route-') &&
-          (c.message.content as { webchatReceiver?: string }).webchatReceiver === 'sarah',
-      );
-      expect(sarahLive).toBeDefined();
-      expect((sarahLive!.message.content as { rosterStub?: string }).rosterStub).toBe('ghost has joined this thread.');
-    } finally {
-      mentionSpy.mockRestore();
-    }
-  });
-
   it('counts string request body chunks toward the max body size', async () => {
     await adapter.setup(setup);
     const status = await new Promise<number>((resolve, reject) => {
@@ -2130,5 +3094,1157 @@ describe('web channel adapter', () => {
       req.end();
     });
     expect(status).toBe(200);
+  });
+
+  it('uses folder name in join stub when mentioned agent is absent from roster', async () => {
+    const mentionSpy = vi.spyOn(webchatMentions, 'mentionedAgentFolders');
+    try {
+      await adapter.setup(setup);
+      await httpPost('/api/rooms/lobby/threads/thread_abc/messages', { text: '@sarah first' });
+      await flushAgentDeliveries();
+      captures.length = 0;
+      mentionSpy.mockReturnValue(['ghost']);
+      await httpPost('/api/rooms/lobby/threads/thread_abc/messages', { text: '@ghost hello' });
+      await flushAgentDeliveries();
+      const sarahLive = captures.find(
+        (c) =>
+          c.message.id.includes('-route-') &&
+          (c.message.content as { webchatReceiver?: string }).webchatReceiver === 'sarah',
+      );
+      expect(sarahLive).toBeDefined();
+      expect((sarahLive!.message.content as { rosterStub?: string }).rosterStub).toBe('ghost has joined this thread.');
+    } finally {
+      mentionSpy.mockRestore();
+    }
+  });
+
+  it('delivers ask_question cards with card metadata over WebSocket', async () => {
+    await adapter.setup(setup);
+
+    const received: unknown[] = [];
+    await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${testPort}/api/ws?token=${SECRET}`);
+      ws.on('open', async () => {
+        await adapter.deliver('inbox', null, {
+          kind: 'chat-sdk',
+          content: {
+            type: 'ask_question',
+            questionId: 'approval-1',
+            title: 'Install MCP server',
+            question: 'Add memory server?',
+            options: [
+              { label: 'Approve', selectedLabel: '✅ Approved', value: 'approve' },
+              { label: 'Reject', selectedLabel: '❌ Rejected', value: 'reject' },
+            ],
+          },
+        });
+      });
+      ws.on('message', (data) => {
+        received.push(JSON.parse(data.toString()));
+        ws.close();
+        resolve();
+      });
+      ws.on('error', reject);
+    });
+
+    expect(received[0]).toMatchObject({
+      type: 'message',
+      message: {
+        platformId: 'inbox',
+        threadId: 'main',
+        direction: 'outbound',
+        card: {
+          type: 'ask_question',
+          questionId: 'approval-1',
+          title: 'Install MCP server',
+          status: 'pending',
+        },
+      },
+    });
+  });
+
+  it('POST actions invokes onAction and broadcasts message_update', async () => {
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-2',
+        title: 'Restart container',
+        question: 'Allow restart?',
+        options: [
+          { label: 'Approve', value: 'approve' },
+          { label: 'Reject', value: 'reject' },
+        ],
+      },
+    });
+
+    const events: unknown[] = [];
+    await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${testPort}/api/ws?token=${SECRET}`);
+      ws.on('open', () => {
+        void httpPost('/api/rooms/inbox/threads/main/actions', {
+          questionId: 'approval-2',
+          value: 'approve',
+        }).then((status) => {
+          expect(status).toBe(200);
+        });
+      });
+      ws.on('message', (data) => {
+        events.push(JSON.parse(data.toString()));
+        if (events.some((e) => (e as { type?: string }).type === 'message_update')) {
+          ws.close();
+          resolve();
+        }
+      });
+      ws.on('error', reject);
+    });
+
+    expect(actionCaptures).toEqual([
+      { questionId: 'approval-2', value: 'approve', userId: 'web:local' },
+    ]);
+    expect(events.some((e) => (e as { type?: string }).type === 'message_update')).toBe(true);
+  });
+
+  it('rejects duplicate action submissions with 409', async () => {
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-dup',
+        title: 'Duplicate test',
+        question: 'Pick one',
+        options: [{ label: 'Yes', value: 'yes' }],
+      },
+    });
+
+    const first = await httpPost('/api/rooms/inbox/threads/main/actions', {
+      questionId: 'approval-dup',
+      value: 'yes',
+    });
+    expect(first).toBe(200);
+
+    const second = await httpPost('/api/rooms/inbox/threads/main/actions', {
+      questionId: 'approval-dup',
+      value: 'yes',
+    });
+    expect(second).toBe(409);
+  });
+
+  it('openDM returns inbox platform id', async () => {
+    await adapter.setup(setup);
+    await expect(adapter.openDM!('web:local')).resolves.toBe('inbox');
+  });
+
+  it('serves public auth config without bearer token', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const { status, body } = await httpGetWithHeaders('/api/auth/config', {}, testPort);
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ basic: { enabled: true } });
+  });
+
+  it('returns 401 for unknown auth endpoints without session', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const res = await httpGetWithHeaders('/api/auth/unknown', {}, testPort);
+    expect(res.status).toBe(401);
+  });
+
+  it('returns the current session user from /api/auth/me', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const cookie = await loginBasicSession('alice');
+    const me = await httpGetWithHeaders('/api/auth/me', { Cookie: cookie }, testPort);
+    expect(me.status).toBe(200);
+    expect(me.body).toMatchObject({ userId: 'web:basic:alice', displayName: 'Alice' });
+  });
+
+  it('rejects WebSocket upgrade without session in public mode', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${testPort}/api/ws`);
+      ws.on('open', () => reject(new Error('should not open')));
+      ws.on('error', () => resolve());
+      ws.on('close', () => resolve());
+    });
+  });
+
+  it('basic login syncs user wirings and omits token meta from index.html', async () => {
+    const ensureWirings = vi.mocked(webchatSync.ensureUserWebchatWirings);
+    ensureWirings.mockClear();
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const login = await httpPostJsonNoAuth('/api/auth/login/basic', {
+      username: 'alice',
+      password: 'hunter2',
+    });
+    expect(login.status).toBe(200);
+    expect(ensureWirings).toHaveBeenCalledWith('web:basic:alice', 'Alice');
+
+    const cookie = login.headers['set-cookie'];
+    expect(cookie).toBeDefined();
+    const cookieHeader = Array.isArray(cookie) ? cookie.join('; ') : String(cookie);
+
+    const { status, body } = await httpGetWithHeaders(
+      '/api/bootstrap',
+      { Cookie: cookieHeader.split(';')[0]! },
+      testPort,
+    );
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ authMode: 'public' });
+
+    const index = await httpGetText('/', testPort);
+    expect(index.status).toBe(200);
+    expect(index.body).not.toContain('name="webchat-token"');
+  });
+
+  it('openDM returns per-user inbox in public mode', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+    const userId = 'web:basic:alice';
+    await expect(adapter.openDM!(userId)).resolves.toBe(`inbox:${encodeUserSuffix(userId)}`);
+  });
+
+  it('returns 401 for protected API routes without session in public mode', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const bootstrap = await httpGetWithHeaders('/api/bootstrap', {}, testPort);
+    expect(bootstrap.status).toBe(401);
+
+    const messages = await httpGetWithHeaders('/api/rooms/lobby/threads/main/messages', {}, testPort);
+    expect(messages.status).toBe(401);
+  });
+
+  it('accepts WebSocket upgrade with session cookie in public mode', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const cookie = await loginBasicSession('alice');
+    const { ws } = await openWsWithCookie(cookie);
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+    ws.close();
+  });
+
+  it('returns logical platform ids and scopes WebSocket delivery in public mode', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const aliceCookie = await loginBasicSession('alice');
+    const bobCookie = await loginBasicSession('bob');
+    const aliceClient = await openWsWithCookie(aliceCookie);
+    const bobClient = await openWsWithCookie(bobCookie);
+
+    const aliceInbox = `inbox:${encodeUserSuffix('web:basic:alice')}`;
+    await adapter.deliver(aliceInbox, null, { kind: 'chat', content: 'private for alice' });
+
+    await vi.waitFor(() => {
+      expect(
+        aliceClient.events.some((event) => (event as { type?: string }).type === 'message'),
+      ).toBe(true);
+    });
+    expect(
+      bobClient.events.some((event) => (event as { type?: string }).type === 'message'),
+    ).toBe(false);
+
+    const privateEvent = aliceClient.events.find(
+      (event) => (event as { type?: string }).type === 'message',
+    ) as { forUserId?: string; message?: { platformId?: string } };
+    expect(privateEvent.forUserId).toBe('web:basic:alice');
+    expect(privateEvent.message?.platformId).toBe('inbox');
+
+    await adapter.deliver('lobby', null, { kind: 'chat', content: 'hello lobby' });
+    await vi.waitFor(() => {
+      expect(
+        aliceClient.events.filter((event) => (event as { type?: string }).type === 'message').length,
+      ).toBeGreaterThan(1);
+      expect(
+        bobClient.events.filter((event) => (event as { type?: string }).type === 'message').length,
+      ).toBeGreaterThan(0);
+    });
+
+    const messages = await httpGetWithHeaders('/api/rooms/inbox/threads/main/messages', {
+      Cookie: aliceCookie,
+    });
+    expect(messages.status).toBe(200);
+    const stored = (messages.body as { messages: Array<{ platformId: string; text: string }> }).messages;
+    expect(stored.some((msg) => msg.platformId === 'inbox' && msg.text === 'private for alice')).toBe(true);
+
+    aliceClient.ws.close();
+    bobClient.ws.close();
+  });
+
+  it('returns 403 when session user accesses another users scoped room', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const bobCookie = await loginBasicSession('bob');
+    const aliceInboxPhysical = encodeURIComponent(`inbox:${encodeUserSuffix('web:basic:alice')}`);
+    const forbidden = await httpGetWithHeaders(
+      `/api/rooms/${aliceInboxPhysical}/threads/main/messages`,
+      { Cookie: bobCookie },
+    );
+    expect(forbidden.status).toBe(403);
+
+    const forbiddenAction = await httpPostJsonWithHeaders(
+      `/api/rooms/${aliceInboxPhysical}/threads/main/actions`,
+      { questionId: 'approval-public', value: 'approve' },
+      { Cookie: bobCookie },
+    );
+    expect(forbiddenAction.status).toBe(403);
+
+    const forbiddenDelete = await httpDeleteWithHeaders(
+      `/api/rooms/${aliceInboxPhysical}/threads/main`,
+      { Cookie: bobCookie },
+    );
+    expect(forbiddenDelete.status).toBe(403);
+
+    const forbiddenPatch = await httpPatchWithHeaders(
+      `/api/rooms/${aliceInboxPhysical}/threads/main`,
+      { title: 'nope' },
+      { Cookie: bobCookie },
+    );
+    expect(forbiddenPatch.status).toBe(403);
+
+    const forbiddenUpload = await httpPostJsonWithHeaders(
+      `/api/rooms/${aliceInboxPhysical}/threads/main/uploads/chunk`,
+      {
+        uploadId: '550e8400-e29b-41d4-a716-446655440099',
+        chunkIndex: 0,
+        totalChunks: 1,
+        filename: 'x.png',
+        mimeType: 'image/png',
+        data: PNG_BASE64,
+      },
+      { Cookie: bobCookie },
+    );
+    expect(forbiddenUpload.status).toBe(403);
+  });
+
+  it('returns 500 when room id is invalid in public mode', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const cookie = await loginBasicSession('alice');
+    const res = await httpGetWithHeaders('/api/rooms/not-a-room/threads/main/messages', {
+      Cookie: cookie,
+    });
+    expect(res.status).toBe(500);
+  });
+
+  it('logs out and invalidates the session cookie in public mode', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const cookie = await loginBasicSession('alice');
+    const logout = await httpPostJsonWithHeaders('/api/auth/logout', {}, { Cookie: cookie });
+    expect(logout.status).toBe(200);
+
+    const bootstrap = await httpGetWithHeaders('/api/bootstrap', { Cookie: cookie });
+    expect(bootstrap.status).toBe(401);
+  });
+
+  it('openDM returns shared inbox for non-web handles in public mode', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+    await expect(adapter.openDM!('telegram:123')).resolves.toBe('inbox');
+  });
+
+  it('manages lobby threads and uploads with session cookie in public mode', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const cookie = await loginBasicSession('alice');
+    const created = await httpPostJsonWithHeaders(
+      '/api/rooms/lobby/threads',
+      { title: 'Team sync' },
+      { Cookie: cookie },
+    );
+    expect(created.status).toBe(200);
+    const threadId = (created.body as { id: string }).id;
+
+    const patched = await httpPatchWithHeaders(
+      `/api/rooms/lobby/threads/${encodeURIComponent(threadId)}`,
+      { title: 'Renamed sync' },
+      { Cookie: cookie },
+    );
+    expect(patched.status).toBe(200);
+
+    await httpPostJsonWithHeaders(
+      `/api/rooms/lobby/threads/${encodeURIComponent(threadId)}/messages`,
+      { text: '@sarah kickoff' },
+      { Cookie: cookie },
+    );
+    const removed = await httpDeleteWithHeaders(
+      `/api/rooms/lobby/threads/${encodeURIComponent(threadId)}/engaged/sarah`,
+      { Cookie: cookie },
+    );
+    expect(removed.status).toBe(200);
+
+    const uploadId = '550e8400-e29b-41d4-a716-446655440001';
+    const chunk = await httpPostJsonWithHeaders(
+      `/api/rooms/lobby/threads/${encodeURIComponent(threadId)}/uploads/chunk`,
+      {
+        uploadId,
+        chunkIndex: 0,
+        totalChunks: 1,
+        filename: 'note.png',
+        mimeType: 'image/png',
+        data: PNG_BASE64,
+      },
+      { Cookie: cookie },
+    );
+    expect(chunk.status).toBe(200);
+
+    const badEngaged = await httpDeleteWithHeaders('/api/rooms/inbox/threads/main/engaged/sarah', {
+      Cookie: cookie,
+    });
+    expect(badEngaged.status).toBe(400);
+  });
+
+  it('resolveWebchatPort prefers process env over env file values', () => {
+    process.env.WEBCHAT_PORT = '4500';
+    expect(resolveWebchatPort({ WEBCHAT_PORT: '3200' })).toBe(4500);
+    delete process.env.WEBCHAT_PORT;
+  });
+
+  it('accepts bearer token for bootstrap when session is absent in public mode', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const bootstrap = await httpGetWithHeaders('/api/bootstrap', {
+      Authorization: `Bearer ${SECRET}`,
+    });
+    expect(bootstrap.status).toBe(200);
+    expect(bootstrap.body).toMatchObject({
+      authMode: 'public',
+      user: { id: 'web:local', displayName: 'Local' },
+    });
+  });
+
+  it('broadcasts message_update over session-scoped WebSocket in public mode', async () => {
+    actionCaptures.length = 0;
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const aliceInbox = `inbox:${encodeUserSuffix('web:basic:alice')}`;
+    await adapter.deliver(aliceInbox, null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-public-ws',
+        title: 'Restart container',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', value: 'approve' }],
+      },
+    });
+
+    const cookie = await loginBasicSession('alice');
+    const events: unknown[] = [];
+    await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${testPort}/api/ws`, {
+        headers: { Cookie: cookie },
+      });
+      ws.on('open', () => {
+        void httpPostJsonWithHeaders(
+          '/api/rooms/inbox/threads/main/actions',
+          { questionId: 'approval-public-ws', value: 'approve' },
+          { Cookie: cookie },
+        ).then((action) => {
+          expect(action.status).toBe(200);
+        });
+      });
+      ws.on('message', (data) => {
+        events.push(JSON.parse(String(data)));
+        if (events.some((event) => (event as { type?: string }).type === 'message_update')) {
+          ws.close();
+          resolve();
+        }
+      });
+      ws.on('error', reject);
+    });
+
+    expect(events.some((event) => (event as { type?: string }).type === 'message_update')).toBe(true);
+  });
+
+  it('posts inbound lobby messages with session cookie in public mode', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const cookie = await loginBasicSession('alice');
+    const post = await httpPostJsonWithHeaders(
+      '/api/rooms/lobby/threads/main/messages',
+      { text: 'hello from alice' },
+      { Cookie: cookie },
+    );
+    expect(post.status).toBe(200);
+
+    const listed = await httpGetWithHeaders('/api/rooms/lobby/threads/main/messages', {
+      Cookie: cookie,
+    });
+    expect(listed.status).toBe(200);
+    const messages = (listed.body as { messages: Array<{ text: string }> }).messages;
+    expect(messages.some((msg) => msg.text === 'hello from alice')).toBe(true);
+  });
+
+  it('delivers to bearer-token WebSocket clients without per-user filtering in public mode', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const events: unknown[] = [];
+    await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${testPort}/api/ws?token=${SECRET}`);
+      ws.on('open', async () => {
+        const aliceInbox = `inbox:${encodeUserSuffix('web:basic:alice')}`;
+        await adapter.deliver(aliceInbox, null, { kind: 'chat', content: 'via bearer token' });
+      });
+      ws.on('message', (data) => {
+        events.push(JSON.parse(String(data)));
+        if (events.some((event) => (event as { type?: string }).type === 'message')) {
+          ws.close();
+          resolve();
+        }
+      });
+      ws.on('error', reject);
+    });
+
+    expect(events.some((event) => (event as { type?: string }).type === 'message')).toBe(true);
+  });
+
+  it('POST actions uses session user id in public mode', async () => {
+    actionCaptures.length = 0;
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const aliceInbox = `inbox:${encodeUserSuffix('web:basic:alice')}`;
+    await adapter.deliver(aliceInbox, null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-public',
+        title: 'Restart container',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', value: 'approve' }],
+      },
+    });
+
+    const cookie = await loginBasicSession('alice');
+    const action = await httpPostJsonWithHeaders(
+      '/api/rooms/inbox/threads/main/actions',
+      { questionId: 'approval-public', value: 'approve' },
+      { Cookie: cookie },
+    );
+    expect(action.status).toBe(200);
+    expect(actionCaptures).toEqual([
+      { questionId: 'approval-public', value: 'approve', userId: 'web:basic:alice' },
+    ]);
+  });
+
+  it('creates threads with session cookie in public mode', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const cookie = await loginBasicSession('alice');
+    const created = await httpPostJsonWithHeaders(
+      '/api/rooms/lobby/threads',
+      { title: 'Public topic' },
+      { Cookie: cookie },
+    );
+    expect(created.status).toBe(200);
+    expect(created.body).toMatchObject({ title: 'Public topic' });
+  });
+
+  it('POST actions returns 500 when onAction throws', async () => {
+    setup = {
+      ...setup,
+      onAction() {
+        throw new Error('handler failed');
+      },
+    };
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-fail',
+        title: 'Restart container',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', value: 'approve' }],
+      },
+    });
+
+    const status = await httpPost('/api/rooms/inbox/threads/main/actions', {
+      questionId: 'approval-fail',
+      value: 'approve',
+    });
+    expect(status).toBe(500);
+
+    const { body } = await httpGet('/api/rooms/inbox/threads/main/messages');
+    const msg = (body as { messages: Array<{ card?: { status?: string } }> }).messages.at(-1);
+    expect(msg?.card?.status).toBe('pending');
+  });
+
+  it('POST actions returns 409 when claim loses race before onAction', async () => {
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-race-answered',
+        title: 'Restart container',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', value: 'approve' }],
+      },
+    });
+
+    actionCaptures.length = 0;
+    vi.spyOn(webchatStore, 'answerCardsByQuestionId').mockReturnValue({
+      ok: false,
+      reason: 'already_answered',
+    });
+
+    const status = await httpPost('/api/rooms/inbox/threads/main/actions', {
+      questionId: 'approval-race-answered',
+      value: 'approve',
+    });
+    expect(status).toBe(409);
+    expect(actionCaptures).toHaveLength(0);
+  });
+
+  it('POST actions returns 404 when claim finds no pending card', async () => {
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-race-missing',
+        title: 'Restart container',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', value: 'approve' }],
+      },
+    });
+
+    actionCaptures.length = 0;
+    vi.spyOn(webchatStore, 'answerCardsByQuestionId').mockReturnValue({
+      ok: false,
+      reason: 'not_found',
+    });
+
+    const status = await httpPost('/api/rooms/inbox/threads/main/actions', {
+      questionId: 'approval-race-missing',
+      value: 'approve',
+    });
+    expect(status).toBe(404);
+    expect(actionCaptures).toHaveLength(0);
+  });
+
+  it('POST actions invokes onAction only once for concurrent mirrored clicks', async () => {
+    getPendingApprovalMock.mockReturnValue({
+      approval_id: 'approval-once',
+      session_id: 'sess-sarah',
+    } as never);
+    getSessionMock.mockReturnValue({
+      id: 'sess-sarah',
+      agent_group_id: 'ag-sarah',
+      messaging_group_id: 'mg-dm-sarah',
+      thread_id: null,
+    } as never);
+    getMessagingGroupByIdMock.mockReturnValue({
+      id: 'mg-dm-sarah',
+      channel_type: 'web',
+      platform_id: 'dm:sarah',
+    } as never);
+
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-once',
+        title: 'Restart container',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', selectedLabel: '✅ Approved', value: 'approve' }],
+      },
+    });
+
+    actionCaptures.length = 0;
+    const [inboxStatus, dmStatus] = await Promise.all([
+      httpPost('/api/rooms/inbox/threads/main/actions', {
+        questionId: 'approval-once',
+        value: 'approve',
+      }),
+      httpPost('/api/rooms/dm%3Asarah/threads/main/actions', {
+        questionId: 'approval-once',
+        value: 'approve',
+      }),
+    ]);
+
+    expect(actionCaptures).toHaveLength(1);
+    expect([inboxStatus, dmStatus].sort()).toEqual([200, 409]);
+  });
+
+  it('POST actions returns 404 when card is missing', async () => {
+    await adapter.setup(setup);
+    const status = await httpPost('/api/rooms/inbox/threads/main/actions', {
+      questionId: 'missing',
+      value: 'approve',
+    });
+    expect(status).toBe(404);
+  });
+
+  it('POST actions returns 400 for invalid option value', async () => {
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-invalid',
+        title: 'Pick',
+        question: 'Choose',
+        options: [{ label: 'Yes', value: 'yes' }],
+      },
+    });
+    const status = await httpPost('/api/rooms/inbox/threads/main/actions', {
+      questionId: 'approval-invalid',
+      value: 'nope',
+    });
+    expect(status).toBe(400);
+  });
+
+  it('POST actions returns 400 when questionId or value is missing', async () => {
+    await adapter.setup(setup);
+    expect(await httpPost('/api/rooms/inbox/threads/main/actions', { value: 'yes' })).toBe(400);
+    expect(await httpPost('/api/rooms/inbox/threads/main/actions', { questionId: 'q' })).toBe(400);
+  });
+
+  it('POST actions returns 400 for invalid JSON body', async () => {
+    await adapter.setup(setup);
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port: testPort,
+          path: '/api/rooms/inbox/threads/main/actions',
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${SECRET}`,
+            'Content-Type': 'application/json',
+            Connection: 'close',
+          },
+        },
+        (res) => {
+          res.resume();
+          res.on('end', () => resolve(res.statusCode ?? 0));
+        },
+      );
+      req.on('error', reject);
+      req.end('{bad json');
+    });
+    expect(status).toBe(400);
+  });
+
+  it('POST actions returns 400 when body read fails', async () => {
+    await adapter.setup(setup);
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port: testPort,
+          path: '/api/rooms/inbox/threads/main/actions',
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${SECRET}`,
+            'Content-Type': 'application/json',
+            'Content-Length': String(21 * 1024 * 1024),
+            Connection: 'close',
+          },
+        },
+        (res) => {
+          res.resume();
+          res.on('end', () => resolve(res.statusCode ?? 0));
+        },
+      );
+      req.on('error', reject);
+      req.write('x'.repeat(1024));
+      req.end();
+    });
+    expect(status).toBe(400);
+  });
+
+  it('isConnected is false before setup', () => {
+    expect(adapter.isConnected()).toBe(false);
+  });
+
+  it('includes senderName on ask_question deliver output', async () => {
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'q-name',
+        title: 'Title',
+        question: 'Question?',
+        options: [{ label: 'Yes', selectedLabel: 'Yes picked', value: 'yes' }],
+        senderName: 'Host',
+      },
+    });
+    const { body } = await httpGet('/api/rooms/inbox/threads/main/messages');
+    const msg = (body as { messages: Array<{ senderName?: string }> }).messages.at(-1);
+    expect(msg?.senderName).toBe('Host');
+  });
+
+  it('omits senderName when agent group cannot be resolved for approval cards', async () => {
+    getPendingApprovalMock.mockReturnValue({
+      approval_id: 'approval-no-agent',
+      session_id: 'sess-sarah',
+    } as never);
+    getSessionMock.mockReturnValue({
+      id: 'sess-sarah',
+      agent_group_id: 'ag-missing',
+      messaging_group_id: 'mg-dm-sarah',
+      thread_id: null,
+    } as never);
+    getMessagingGroupByIdMock.mockReturnValue({
+      id: 'mg-dm-sarah',
+      channel_type: 'web',
+      platform_id: 'dm:sarah',
+    } as never);
+    getAgentGroupMock.mockReturnValueOnce(undefined);
+
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-no-agent',
+        title: 'Restart container',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', value: 'approve' }],
+      },
+    });
+
+    const { body } = await httpGet('/api/rooms/inbox/threads/main/messages');
+    const msg = (body as { messages: Array<{ senderName?: string }> }).messages.at(-1);
+    expect(msg?.senderName).toBeUndefined();
+  });
+
+  it('resolves senderName from pending approval session agent when omitted', async () => {
+    getPendingApprovalMock.mockReturnValue({
+      approval_id: 'approval-agent-name',
+      session_id: 'sess-sarah',
+    } as never);
+    getSessionMock.mockReturnValue({
+      id: 'sess-sarah',
+      agent_group_id: 'ag-sarah',
+      messaging_group_id: 'mg-dm-sarah',
+      thread_id: null,
+    } as never);
+    getMessagingGroupByIdMock.mockReturnValue({
+      id: 'mg-dm-sarah',
+      channel_type: 'web',
+      platform_id: 'dm:sarah',
+    } as never);
+
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-agent-name',
+        title: 'Restart container',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', value: 'approve' }],
+      },
+    });
+
+    const { body } = await httpGet('/api/rooms/inbox/threads/main/messages');
+    const msg = (body as { messages: Array<{ senderName?: string }> }).messages.at(-1);
+    expect(msg?.senderName).toBe('Sarah');
+  });
+
+  it('delivers inbox ask_question when approval session lookup throws', async () => {
+    getDbMock.mockImplementationOnce(() => {
+      throw new Error('db unavailable');
+    });
+
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-db-error',
+        title: 'Restart container',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', value: 'approve' }],
+      },
+    });
+
+    const { body } = await httpGet('/api/rooms/inbox/threads/main/messages');
+    expect((body as { messages: unknown[] }).messages).toHaveLength(1);
+    const dm = await httpGet('/api/rooms/dm%3Asarah/threads/main/messages');
+    expect((dm.body as { messages: unknown[] }).messages).toHaveLength(0);
+  });
+
+  it('does not mirror inbox approval cards when session origin is not web', async () => {
+    getPendingApprovalMock.mockReturnValue({
+      approval_id: 'approval-telegram',
+      session_id: 'sess-telegram',
+    } as never);
+    getSessionMock.mockReturnValue({
+      id: 'sess-telegram',
+      agent_group_id: 'ag-sarah',
+      messaging_group_id: 'mg-telegram',
+      thread_id: null,
+    } as never);
+    getMessagingGroupByIdMock.mockReturnValue({
+      id: 'mg-telegram',
+      channel_type: 'telegram',
+      platform_id: '8618579250',
+    } as never);
+
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-telegram',
+        title: 'Restart container',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', value: 'approve' }],
+      },
+    });
+
+    const inbox = await httpGet('/api/rooms/inbox/threads/main/messages');
+    const dm = await httpGet('/api/rooms/dm%3Asarah/threads/main/messages');
+    expect((inbox.body as { messages: unknown[] }).messages).toHaveLength(1);
+    expect((dm.body as { messages: unknown[] }).messages).toHaveLength(0);
+  });
+
+  it('does not mirror when pending approval has no session', async () => {
+    getPendingApprovalMock.mockReturnValue({
+      approval_id: 'approval-no-session',
+    } as never);
+
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-no-session',
+        title: 'Restart container',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', value: 'approve' }],
+      },
+    });
+
+    const dm = await httpGet('/api/rooms/dm%3Asarah/threads/main/messages');
+    expect((dm.body as { messages: unknown[] }).messages).toHaveLength(0);
+  });
+
+  it('does not mirror when session has no messaging group', async () => {
+    getPendingApprovalMock.mockReturnValue({
+      approval_id: 'approval-no-mg',
+      session_id: 'sess-no-mg',
+    } as never);
+    getSessionMock.mockReturnValue({
+      id: 'sess-no-mg',
+      agent_group_id: 'ag-sarah',
+      messaging_group_id: null,
+      thread_id: null,
+    } as never);
+
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-no-mg',
+        title: 'Restart container',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', value: 'approve' }],
+      },
+    });
+
+    const dm = await httpGet('/api/rooms/dm%3Asarah/threads/main/messages');
+    expect((dm.body as { messages: unknown[] }).messages).toHaveLength(0);
+  });
+
+  it('delivers ask_question cards directly to a web room without inbox mirroring', async () => {
+    await adapter.setup(setup);
+    await adapter.deliver('dm:sarah', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-dm-only',
+        title: 'Question',
+        question: 'Pick one?',
+        options: [{ label: 'Yes', value: 'yes' }],
+        senderName: 'Sarah',
+      },
+    });
+
+    expect(getPendingApprovalMock).not.toHaveBeenCalled();
+    const dm = await httpGet('/api/rooms/dm%3Asarah/threads/main/messages');
+    expect((dm.body as { messages: unknown[] }).messages).toHaveLength(1);
+    const inbox = await httpGet('/api/rooms/inbox/threads/main/messages');
+    expect((inbox.body as { messages: unknown[] }).messages).toHaveLength(0);
+  });
+
+  it('mirrors inbox approval cards to the session origin web room', async () => {
+    getPendingApprovalMock.mockReturnValue({
+      approval_id: 'approval-mirror',
+      session_id: 'sess-sarah',
+    } as never);
+    getSessionMock.mockReturnValue({
+      id: 'sess-sarah',
+      agent_group_id: 'ag-sarah',
+      messaging_group_id: 'mg-dm-sarah',
+      thread_id: null,
+    } as never);
+    getMessagingGroupByIdMock.mockReturnValue({
+      id: 'mg-dm-sarah',
+      channel_type: 'web',
+      platform_id: 'dm:sarah',
+    } as never);
+
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-mirror',
+        title: 'Restart container',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', value: 'approve' }],
+      },
+    });
+
+    const inbox = await httpGet('/api/rooms/inbox/threads/main/messages');
+    const dm = await httpGet('/api/rooms/dm%3Asarah/threads/main/messages');
+    expect((inbox.body as { messages: unknown[] }).messages).toHaveLength(1);
+    expect((dm.body as { messages: Array<{ card?: { questionId: string }; senderName?: string }> }).messages).toHaveLength(1);
+    expect(
+      (dm.body as { messages: Array<{ card?: { questionId: string }; senderName?: string }> }).messages[0]?.card?.questionId,
+    ).toBe('approval-mirror');
+    expect(
+      (dm.body as { messages: Array<{ senderName?: string }> }).messages[0]?.senderName,
+    ).toBe('Sarah');
+  });
+
+  it('updates mirrored approval cards together when an action is taken', async () => {
+    getPendingApprovalMock.mockReturnValue({
+      approval_id: 'approval-sync',
+      session_id: 'sess-sarah',
+    } as never);
+    getSessionMock.mockReturnValue({
+      id: 'sess-sarah',
+      agent_group_id: 'ag-sarah',
+      messaging_group_id: 'mg-dm-sarah',
+      thread_id: null,
+    } as never);
+    getMessagingGroupByIdMock.mockReturnValue({
+      id: 'mg-dm-sarah',
+      channel_type: 'web',
+      platform_id: 'dm:sarah',
+    } as never);
+
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-sync',
+        title: 'Restart container',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', selectedLabel: '✅ Approved', value: 'approve' }],
+      },
+    });
+
+    const events: unknown[] = [];
+    await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${testPort}/api/ws?token=${SECRET}`);
+      ws.on('open', async () => {
+        const status = await httpPost('/api/rooms/dm%3Asarah/threads/main/actions', {
+          questionId: 'approval-sync',
+          value: 'approve',
+        });
+        expect(status).toBe(200);
+      });
+      ws.on('message', (data) => {
+        events.push(JSON.parse(data.toString()));
+        if (events.filter((e) => (e as { type?: string }).type === 'message_update').length >= 2) {
+          ws.close();
+          resolve();
+        }
+      });
+      ws.on('error', reject);
+    });
+
+    const updates = events.filter((e) => (e as { type?: string }).type === 'message_update');
+    expect(updates).toHaveLength(2);
+    expect(updates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          message: expect.objectContaining({ platformId: 'inbox', card: expect.objectContaining({ status: 'answered' }) }),
+        }),
+        expect.objectContaining({
+          message: expect.objectContaining({ platformId: 'dm:sarah', card: expect.objectContaining({ status: 'answered' }) }),
+        }),
+      ]),
+    );
+  });
+
+  it('deliver ignores malformed ask_question payloads', async () => {
+    await adapter.setup(setup);
+    const cases = [
+      { type: 'ask_question', title: 't', question: 'q', options: [] },
+      { type: 'ask_question', questionId: 'q1', question: 'q', options: [{ label: 'Yes', value: 'yes' }] },
+      {
+        type: 'ask_question',
+        questionId: 'q2',
+        title: 't',
+        question: 'q',
+        options: [{ label: 1, value: 'yes' }],
+      },
+      {
+        type: 'ask_question',
+        questionId: 'q3',
+        title: 't',
+        question: 'q',
+        options: 'nope',
+      },
+    ] as unknown[];
+    for (const content of cases) {
+      const id = await adapter.deliver('inbox', null, { kind: 'chat-sdk', content });
+      expect(id).toBeUndefined();
+    }
   });
 });

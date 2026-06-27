@@ -4,6 +4,7 @@ import {
   activeUnreadKey,
   appendThreadToRoomMap,
   applyLiveMessage,
+  applyMessageUpdate,
   dedupeMessagesById,
   applyUnreadFromMessages,
   canCreateThread,
@@ -51,29 +52,34 @@ const message: WebChatMessage = {
 
 describe('app-helpers', () => {
   describe('canSendMessage', () => {
-    it('returns false when token is missing', () => {
-      expect(canSendMessage('', room, 'hello', false)).toBe(false);
+    it('returns false when not authenticated', () => {
+      expect(canSendMessage(false, room, 'hello', false)).toBe(false);
     });
 
     it('returns false when room is missing', () => {
-      expect(canSendMessage('token', null, 'hello', false)).toBe(false);
+      expect(canSendMessage(true, null, 'hello', false)).toBe(false);
     });
 
     it('returns false when draft is blank and there are no attachments', () => {
-      expect(canSendMessage('token', room, '   ', false)).toBe(false);
-      expect(canSendMessage('token', room, '   ', false, 0)).toBe(false);
+      expect(canSendMessage(true, room, '   ', false)).toBe(false);
+      expect(canSendMessage(true, room, '   ', false, 0)).toBe(false);
     });
 
     it('returns true when attachments are present without draft text', () => {
-      expect(canSendMessage('token', room, '   ', false, 1)).toBe(true);
+      expect(canSendMessage(true, room, '   ', false, 1)).toBe(true);
     });
 
     it('returns false while a send is in flight', () => {
-      expect(canSendMessage('token', room, 'hello', true)).toBe(false);
+      expect(canSendMessage(true, room, 'hello', true)).toBe(false);
     });
 
     it('returns true when all send preconditions are met', () => {
-      expect(canSendMessage('token', room, 'hello', false)).toBe(true);
+      expect(canSendMessage(true, room, 'hello', false)).toBe(true);
+    });
+
+    it('returns false for inbox room', () => {
+      const inbox: WebChatRoom = { platformId: 'inbox', name: 'Inbox', kind: 'inbox' };
+      expect(canSendMessage('token', inbox, 'hello', false)).toBe(false);
     });
   });
 
@@ -430,6 +436,62 @@ describe('app-helpers', () => {
       const persisted = { ...message, id: 'web-1', direction: 'inbound' as const, text: 'hello' };
       expect(applyLiveMessage([persisted], persisted, room, 'main', 'local-1')).toEqual([persisted]);
     });
+
+    it('replaces an existing row when the websocket echo adds attachment URLs', () => {
+      const reconciled = {
+        ...message,
+        id: 'web-1',
+        direction: 'inbound' as const,
+        text: 'hello',
+        attachments: [{ name: 'photo.png', mimeType: 'image/png', type: 'image' as const }],
+      };
+      const echoed = {
+        ...reconciled,
+        attachments: [
+          {
+            name: 'photo.png',
+            mimeType: 'image/png',
+            type: 'image' as const,
+            url: '/api/attachments/web-1/photo.png',
+          },
+        ],
+      };
+      expect(applyLiveMessage([reconciled], echoed, room, 'main', null)).toEqual([echoed]);
+    });
+  });
+
+  describe('applyMessageUpdate', () => {
+    it('updates an existing message in the active conversation', () => {
+      const original = {
+        ...message,
+        id: 'web-card',
+        card: {
+          type: 'ask_question' as const,
+          questionId: 'q-1',
+          title: 'Approve',
+          question: 'Proceed?',
+          options: [{ label: 'Yes', value: 'yes' }],
+          status: 'pending' as const,
+        },
+      };
+      const updated = {
+        ...original,
+        card: { ...original.card!, status: 'answered' as const, selectedValue: 'yes', selectedLabel: 'Yes' },
+      };
+      expect(applyMessageUpdate([original], updated, room, 'main')).toEqual([updated]);
+    });
+
+    it('ignores updates for other conversations', () => {
+      const original = { ...message, id: 'web-card' };
+      const updated = { ...original, text: 'changed' };
+      expect(applyMessageUpdate([original], updated, null, 'main')).toEqual([original]);
+    });
+
+    it('returns previous messages when the target id is missing', () => {
+      const original = { ...message, id: 'web-card' };
+      const updated = { ...original, id: 'missing' };
+      expect(applyMessageUpdate([original], updated, room, 'main')).toEqual([original]);
+    });
   });
 
   describe('dedupeMessagesById', () => {
@@ -462,6 +524,78 @@ describe('app-helpers', () => {
 
   describe('reconcileOptimisticMessage', () => {
     it('updates the optimistic row when the server message is not already present', () => {
+      const optimistic = {
+        ...message,
+        id: 'local-1',
+        direction: 'inbound' as const,
+        text: 'hello',
+        attachments: [
+          {
+            name: 'photo.png',
+            mimeType: 'image/png',
+            type: 'image' as const,
+            previewUrl: 'blob:preview',
+          },
+        ],
+      };
+      expect(
+        reconcileOptimisticMessage([optimistic], 'local-1', {
+          messageId: 'web-1',
+          timestamp: 2,
+          attachments: [
+            {
+              name: 'photo.png',
+              mimeType: 'image/png',
+              type: 'image',
+              url: '/api/attachments/web-1/0-photo.png',
+            },
+          ],
+        }),
+      ).toEqual([
+        {
+          ...optimistic,
+          id: 'web-1',
+          timestamp: 2,
+          attachments: [
+            {
+              name: 'photo.png',
+              mimeType: 'image/png',
+              type: 'image',
+              url: '/api/attachments/web-1/0-photo.png',
+            },
+          ],
+        },
+      ]);
+    });
+
+    it('strips preview URLs when POST response omits attachments', () => {
+      const optimistic = {
+        ...message,
+        id: 'local-1',
+        direction: 'inbound' as const,
+        text: 'hello',
+        attachments: [
+          {
+            name: 'photo.png',
+            mimeType: 'image/png',
+            type: 'image' as const,
+            previewUrl: 'blob:preview',
+          },
+        ],
+      };
+      expect(
+        reconcileOptimisticMessage([optimistic], 'local-1', { messageId: 'web-1', timestamp: 2 }),
+      ).toEqual([
+        {
+          ...optimistic,
+          id: 'web-1',
+          timestamp: 2,
+          attachments: [{ name: 'photo.png', mimeType: 'image/png', type: 'image' }],
+        },
+      ]);
+    });
+
+    it('omits attachments when the optimistic row had none', () => {
       const optimistic = { ...message, id: 'local-1', direction: 'inbound' as const, text: 'hello' };
       expect(
         reconcileOptimisticMessage([optimistic], 'local-1', { messageId: 'web-1', timestamp: 2 }),
@@ -551,6 +685,24 @@ describe('app-helpers', () => {
       const base = { 'lobby-1': DEFAULT_ROOM_THREADS };
       await expect(migrateLegacyThreads('token', [room], base)).resolves.toEqual(base);
       expect(localStorage.getItem('webchat_threads:lobby-1')).not.toBeNull();
+    });
+  });
+
+  describe('applyMessageUpdate', () => {
+    it('replaces a message in the active conversation', () => {
+      const updated = { ...message, text: 'Updated' };
+      expect(applyMessageUpdate([message], updated, room, 'main')).toEqual([updated]);
+    });
+
+    it('leaves the list unchanged for inactive conversations', () => {
+      const otherRoom = { ...room, platformId: 'lobby-2' };
+      const updated = { ...message, text: 'Updated' };
+      expect(applyMessageUpdate([message], updated, otherRoom, 'main')).toEqual([message]);
+    });
+
+    it('leaves the list unchanged when the message id is missing', () => {
+      const updated = { ...message, id: 'missing', text: 'Updated' };
+      expect(applyMessageUpdate([message], updated, room, 'main')).toEqual([message]);
     });
   });
 });
