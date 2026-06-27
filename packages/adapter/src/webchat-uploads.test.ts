@@ -10,6 +10,32 @@ vi.mock('./config.js', async () => {
   return { ...actual, DATA_DIR: '/tmp/nanoclaw-webchat-uploads-test' };
 });
 
+const busboyMockState = vi.hoisted(() => ({ useCustom: false }));
+
+vi.mock('busboy', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('busboy')>();
+  const { PassThrough } = await import('node:stream');
+  return {
+    default: vi.fn((...args: Parameters<typeof actual.default>) => {
+      if (!busboyMockState.useCustom) {
+        return actual.default(...args);
+      }
+      const busboy = new PassThrough();
+      queueMicrotask(() => {
+        const file = PassThrough.from([Buffer.from('ok')]);
+        busboy.emit('file', 'file', file, {});
+        queueMicrotask(() => {
+          busboy.emit('finish');
+          setTimeout(() => {
+            busboy.emit('error', new Error('late'));
+          }, 50);
+        });
+      });
+      return busboy;
+    }),
+  };
+});
+
 import {
   acceptChunk,
   consumeStagedUpload,
@@ -60,6 +86,22 @@ describe('webchat-uploads', () => {
     expect(result.upload.size).toBe(5);
     expect(fs.existsSync(result.upload.filePath)).toBe(true);
     expect(fs.existsSync(uploadsStagingRoot())).toBe(true);
+  });
+
+  it('covers multipart metadata fallbacks and duplicate settle guard', async () => {
+    busboyMockState.useCustom = true;
+    try {
+      const req = Readable.from([Buffer.from('ignored')]) as http.IncomingMessage;
+      req.headers = { 'content-type': 'multipart/form-data; boundary=x' };
+      const result = await parseMultipartUpload(req, 'lobby', 'main');
+      expect('upload' in result).toBe(true);
+      if (!('upload' in result)) return;
+      expect(result.upload.name).toBe('upload');
+      expect(result.upload.mimeType).toBe('application/octet-stream');
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    } finally {
+      busboyMockState.useCustom = false;
+    }
   });
 
   it('infers mp3 mime types from filename on multipart upload', async () => {

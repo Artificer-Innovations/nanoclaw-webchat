@@ -316,10 +316,11 @@ function decodeChunkBase64(data: string): Buffer | null {
   if (!normalized || normalized.length % 4 !== 0) return null;
   if (!/^[A-Za-z0-9+/]+={0,2}$/.test(normalized)) return null;
   const buf = Buffer.from(normalized, 'base64');
-  /* v8 ignore next 3 -- Node accepts only canonical base64 in practice */
+  /* v8 ignore start -- Node accepts only canonical base64 in practice */
   if (buf.length === 0) return null;
   const reencoded = buf.toString('base64').replace(/=+$/, '');
   if (reencoded !== normalized.replace(/=+$/, '')) return null;
+  /* v8 ignore stop */
   return buf;
 }
 
