@@ -3,7 +3,7 @@
  */
 import fs from 'fs';
 
-import { readEnvFile } from '../env.js';
+import { readEnvFile } from './env.js';
 
 export type WebchatAuthMode = 'local' | 'public';
 

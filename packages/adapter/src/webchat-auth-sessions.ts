@@ -5,7 +5,7 @@ import crypto from 'crypto';
 
 import Database from 'better-sqlite3';
 
-import { webchatDbPath } from '../webchat-store.js';
+import { webchatDbPath } from './webchat-store.js';
 
 export const WEBCHAT_SESSION_COOKIE = 'webchat_session';
 
