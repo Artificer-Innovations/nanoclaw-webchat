@@ -36,6 +36,7 @@ vi.mock('../webchat-sync.js', () => ({
     agents: [{ folder: 'sarah', name: 'Sarah', mention: '@sarah' }],
   }),
   readTeamFolder: () => null,
+  ensureUserWebchatWirings: vi.fn(),
   WEB_INBOX_PLATFORM_ID: 'inbox',
 }));
 
@@ -108,7 +109,7 @@ vi.mock('../router.js', () => ({
   }),
 }));
 
-import { createWebAdapter, clearWebAdapterTestState, flushWebAgentDeliveryChains } from './web.js';
+import { createWebAdapter, clearWebAdapterTestState, flushWebAgentDeliveryChains, resolveWebchatPort } from './web.js';
 import type { ChannelSetup, InboundMessage } from './adapter.js';
 import { routeInbound } from '../router.js';
 import { cleanupAgentSessionsForThread } from '../webchat-thread-cleanup.js';
@@ -120,7 +121,10 @@ import { getAssetDir } from 'nanoclaw-webchat';
 import * as webchatStore from '../webchat-store.js';
 import { resetUploadStateForTests, getStagedUpload } from '../webchat-uploads.js';
 import * as agentGroups from '../db/agent-groups.js';
+import * as webchatSync from '../webchat-sync.js';
 import * as webchatMentions from '../webchat-mentions.js';
+import { resetWebchatAuthSchemaForTests } from '../webchat-auth-sessions.js';
+import { encodeUserSuffix } from '../webchat-room-scope.js';
 
 const routeInboundMock = vi.mocked(routeInbound);
 const cleanupSessionsMock = vi.mocked(cleanupAgentSessionsForThread);
@@ -134,6 +138,67 @@ const getSessionMock = vi.mocked(getSession);
 const getAssetDirMock = vi.mocked(getAssetDir);
 
 const SECRET = 'test-secret';
+const PUBLIC_SESSION_SECRET = 'a'.repeat(32);
+
+function defaultAdapterOptions(port: number) {
+  return {
+    port,
+    bindAddress: '127.0.0.1',
+    authMode: 'local' as const,
+    authToken: SECRET,
+    userId: 'web:local',
+    displayName: 'Local',
+  };
+}
+
+function publicAdapterOptions(port: number) {
+  return {
+    port,
+    bindAddress: '127.0.0.1',
+    authMode: 'public' as const,
+    authToken: SECRET,
+    userId: 'web:local',
+    displayName: 'Local',
+    publicAuth: {
+      sessionSecret: PUBLIC_SESSION_SECRET,
+      sessionTtlSeconds: 3600,
+      redirectUri: 'http://127.0.0.1/callback',
+      oidcEnabled: false,
+      providers: [],
+      allowlist: { emailDomains: [], emails: [], subs: [], requiredGroup: null },
+      basic: {
+        enabled: true,
+        password: 'hunter2',
+        allowedUsernames: ['alice', 'bob'],
+        displayNames: new Map([
+          ['alice', 'Alice'],
+          ['bob', 'Bob'],
+        ]),
+      },
+      secureCookies: false,
+    },
+  };
+}
+
+async function loginBasicSession(username: string, password = 'hunter2'): Promise<string> {
+  const login = await httpPostJsonNoAuth('/api/auth/login/basic', { username, password });
+  expect(login.status).toBe(200);
+  const setCookie = login.headers['set-cookie'];
+  const raw = Array.isArray(setCookie) ? setCookie[0]! : String(setCookie);
+  return raw.split(';')[0]!;
+}
+
+function openWsWithCookie(cookie: string): Promise<{ ws: WebSocket; events: unknown[] }> {
+  return new Promise((resolve, reject) => {
+    const events: unknown[] = [];
+    const ws = new WebSocket(`ws://127.0.0.1:${testPort}/api/ws`, {
+      headers: { Cookie: cookie },
+    });
+    ws.on('open', () => resolve({ ws, events }));
+    ws.on('message', (data) => events.push(JSON.parse(String(data))));
+    ws.on('error', reject);
+  });
+}
 let testPort = 0;
 
 async function reservePort(): Promise<number> {
@@ -304,6 +369,179 @@ function httpGet(path: string, port = testPort): Promise<{ status: number; body:
   });
 }
 
+function httpGetWithHeaders(
+  path: string,
+  headers: Record<string, string>,
+  port = testPort,
+): Promise<{ status: number; body: unknown; headers: http.IncomingHttpHeaders }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        hostname: '127.0.0.1',
+        port,
+        path,
+        method: 'GET',
+        agent: false,
+        headers: { Connection: 'close', ...headers },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk) => (data += chunk));
+        res.on('end', () => {
+          try {
+            resolve({
+              status: res.statusCode ?? 0,
+              body: JSON.parse(data),
+              headers: res.headers,
+            });
+          } catch {
+            resolve({ status: res.statusCode ?? 0, body: data, headers: res.headers });
+          }
+        });
+      },
+    );
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+function httpDeleteWithHeaders(
+  path: string,
+  headers: Record<string, string>,
+  port = testPort,
+): Promise<{ status: number; body: unknown }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        hostname: '127.0.0.1',
+        port,
+        path,
+        method: 'DELETE',
+        agent: false,
+        headers: { Connection: 'close', ...headers },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk) => (data += chunk));
+        res.on('end', () => {
+          try {
+            resolve({ status: res.statusCode ?? 0, body: JSON.parse(data) });
+          } catch {
+            resolve({ status: res.statusCode ?? 0, body: data });
+          }
+        });
+      },
+    );
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+function httpPatchWithHeaders(
+  path: string,
+  body: unknown,
+  headers: Record<string, string>,
+  port = testPort,
+): Promise<{ status: number; body: unknown }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        hostname: '127.0.0.1',
+        port,
+        path,
+        method: 'PATCH',
+        agent: false,
+        headers: { 'Content-Type': 'application/json', Connection: 'close', ...headers },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk) => (data += chunk));
+        res.on('end', () => {
+          try {
+            resolve({ status: res.statusCode ?? 0, body: JSON.parse(data) });
+          } catch {
+            resolve({ status: res.statusCode ?? 0, body: data });
+          }
+        });
+      },
+    );
+    req.on('error', reject);
+    req.write(JSON.stringify(body));
+    req.end();
+  });
+}
+
+function httpPostJsonWithHeaders(
+  path: string,
+  body: unknown,
+  headers: Record<string, string>,
+  port = testPort,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        hostname: '127.0.0.1',
+        port,
+        path,
+        method: 'POST',
+        agent: false,
+        headers: { 'Content-Type': 'application/json', Connection: 'close', ...headers },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk) => (data += chunk));
+        res.on('end', () => {
+          try {
+            resolve({ status: res.statusCode ?? 0, body: JSON.parse(data) as Record<string, unknown> });
+          } catch {
+            resolve({ status: res.statusCode ?? 0, body: {} });
+          }
+        });
+      },
+    );
+    req.on('error', reject);
+    req.write(JSON.stringify(body));
+    req.end();
+  });
+}
+
+function httpPostJsonNoAuth(
+  path: string,
+  body: unknown,
+  port = testPort,
+): Promise<{ status: number; body: Record<string, unknown>; headers: http.IncomingHttpHeaders }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        hostname: '127.0.0.1',
+        port,
+        path,
+        method: 'POST',
+        agent: false,
+        headers: { 'Content-Type': 'application/json', Connection: 'close' },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk) => (data += chunk));
+        res.on('end', () => {
+          try {
+            resolve({
+              status: res.statusCode ?? 0,
+              body: JSON.parse(data) as Record<string, unknown>,
+              headers: res.headers,
+            });
+          } catch {
+            resolve({ status: res.statusCode ?? 0, body: {}, headers: res.headers });
+          }
+        });
+      },
+    );
+    req.on('error', reject);
+    req.write(JSON.stringify(body));
+    req.end();
+  });
+}
+
 const PNG_BASE64 = Buffer.from('fake-png').toString('base64');
 
 async function flushAgentDeliveries(): Promise<void> {
@@ -381,12 +619,7 @@ describe('web channel adapter', () => {
         actionCaptures.push({ questionId, value, userId });
       },
     };
-    adapter = createWebAdapter({
-      port: testPort,
-      authToken: SECRET,
-      userId: 'web:local',
-      displayName: 'Local',
-    });
+    adapter = createWebAdapter(defaultAdapterOptions(testPort));
   });
 
   afterEach(async () => {
@@ -396,6 +629,18 @@ describe('web channel adapter', () => {
     if (fs.existsSync(TEST_DATA)) {
       fs.rmSync(TEST_DATA, { recursive: true, force: true });
     }
+  });
+
+  it('binds to loopback when bindAddress is omitted', async () => {
+    adapter = createWebAdapter({
+      port: testPort,
+      authToken: SECRET,
+      authMode: 'local',
+      userId: 'web:local',
+      displayName: 'Local',
+    });
+    await adapter.setup(setup);
+    expect(adapter.isConnected()).toBe(true);
   });
 
   it('routes POST messages to onInbound with threadId', async () => {
@@ -663,12 +908,7 @@ describe('web channel adapter', () => {
     await httpPost('/api/rooms/lobby/threads/main/messages', { text: 'persist me' });
     await adapter.teardown();
 
-    adapter = createWebAdapter({
-      port: testPort,
-      authToken: SECRET,
-      userId: 'web:local',
-      displayName: 'Local',
-    });
+    adapter = createWebAdapter(defaultAdapterOptions(testPort));
     await adapter.setup(setup);
 
     const { status, body } = await httpGet('/api/rooms/lobby/threads/main/messages');
@@ -886,12 +1126,7 @@ describe('web channel adapter', () => {
     await httpPost('/api/rooms/lobby/threads/thread_abc/messages', { text: '@sarah hello' });
     await adapter.teardown();
 
-    adapter = createWebAdapter({
-      port: testPort,
-      authToken: SECRET,
-      userId: 'web:local',
-      displayName: 'Local',
-    });
+    adapter = createWebAdapter(defaultAdapterOptions(testPort));
     await adapter.setup(setup);
 
     const { body } = await httpGet('/api/rooms/lobby/threads/thread_abc/messages');
@@ -3000,6 +3235,451 @@ describe('web channel adapter', () => {
   it('openDM returns inbox platform id', async () => {
     await adapter.setup(setup);
     await expect(adapter.openDM!('web:local')).resolves.toBe('inbox');
+  });
+
+  it('serves public auth config without bearer token', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const { status, body } = await httpGetWithHeaders('/api/auth/config', {}, testPort);
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ basic: { enabled: true } });
+  });
+
+  it('returns 401 for unknown auth endpoints without session', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const res = await httpGetWithHeaders('/api/auth/unknown', {}, testPort);
+    expect(res.status).toBe(401);
+  });
+
+  it('returns the current session user from /api/auth/me', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const cookie = await loginBasicSession('alice');
+    const me = await httpGetWithHeaders('/api/auth/me', { Cookie: cookie }, testPort);
+    expect(me.status).toBe(200);
+    expect(me.body).toMatchObject({ userId: 'web:basic:alice', displayName: 'Alice' });
+  });
+
+  it('rejects WebSocket upgrade without session in public mode', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${testPort}/api/ws`);
+      ws.on('open', () => reject(new Error('should not open')));
+      ws.on('error', () => resolve());
+      ws.on('close', () => resolve());
+    });
+  });
+
+  it('basic login syncs user wirings and omits token meta from index.html', async () => {
+    const ensureWirings = vi.mocked(webchatSync.ensureUserWebchatWirings);
+    ensureWirings.mockClear();
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const login = await httpPostJsonNoAuth('/api/auth/login/basic', {
+      username: 'alice',
+      password: 'hunter2',
+    });
+    expect(login.status).toBe(200);
+    expect(ensureWirings).toHaveBeenCalledWith('web:basic:alice', 'Alice');
+
+    const cookie = login.headers['set-cookie'];
+    expect(cookie).toBeDefined();
+    const cookieHeader = Array.isArray(cookie) ? cookie.join('; ') : String(cookie);
+
+    const { status, body } = await httpGetWithHeaders(
+      '/api/bootstrap',
+      { Cookie: cookieHeader.split(';')[0]! },
+      testPort,
+    );
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ authMode: 'public' });
+
+    const index = await httpGetText('/', testPort);
+    expect(index.status).toBe(200);
+    expect(index.body).not.toContain('name="webchat-token"');
+  });
+
+  it('openDM returns per-user inbox in public mode', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+    const userId = 'web:basic:alice';
+    await expect(adapter.openDM!(userId)).resolves.toBe(`inbox:${encodeUserSuffix(userId)}`);
+  });
+
+  it('returns 401 for protected API routes without session in public mode', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const bootstrap = await httpGetWithHeaders('/api/bootstrap', {}, testPort);
+    expect(bootstrap.status).toBe(401);
+
+    const messages = await httpGetWithHeaders('/api/rooms/lobby/threads/main/messages', {}, testPort);
+    expect(messages.status).toBe(401);
+  });
+
+  it('accepts WebSocket upgrade with session cookie in public mode', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const cookie = await loginBasicSession('alice');
+    const { ws } = await openWsWithCookie(cookie);
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+    ws.close();
+  });
+
+  it('returns logical platform ids and scopes WebSocket delivery in public mode', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const aliceCookie = await loginBasicSession('alice');
+    const bobCookie = await loginBasicSession('bob');
+    const aliceClient = await openWsWithCookie(aliceCookie);
+    const bobClient = await openWsWithCookie(bobCookie);
+
+    const aliceInbox = `inbox:${encodeUserSuffix('web:basic:alice')}`;
+    await adapter.deliver(aliceInbox, null, { kind: 'chat', content: 'private for alice' });
+
+    await vi.waitFor(() => {
+      expect(
+        aliceClient.events.some((event) => (event as { type?: string }).type === 'message'),
+      ).toBe(true);
+    });
+    expect(
+      bobClient.events.some((event) => (event as { type?: string }).type === 'message'),
+    ).toBe(false);
+
+    const privateEvent = aliceClient.events.find(
+      (event) => (event as { type?: string }).type === 'message',
+    ) as { forUserId?: string; message?: { platformId?: string } };
+    expect(privateEvent.forUserId).toBe('web:basic:alice');
+    expect(privateEvent.message?.platformId).toBe('inbox');
+
+    await adapter.deliver('lobby', null, { kind: 'chat', content: 'hello lobby' });
+    await vi.waitFor(() => {
+      expect(
+        aliceClient.events.filter((event) => (event as { type?: string }).type === 'message').length,
+      ).toBeGreaterThan(1);
+      expect(
+        bobClient.events.filter((event) => (event as { type?: string }).type === 'message').length,
+      ).toBeGreaterThan(0);
+    });
+
+    const messages = await httpGetWithHeaders('/api/rooms/inbox/threads/main/messages', {
+      Cookie: aliceCookie,
+    });
+    expect(messages.status).toBe(200);
+    const stored = (messages.body as { messages: Array<{ platformId: string; text: string }> }).messages;
+    expect(stored.some((msg) => msg.platformId === 'inbox' && msg.text === 'private for alice')).toBe(true);
+
+    aliceClient.ws.close();
+    bobClient.ws.close();
+  });
+
+  it('returns 403 when session user accesses another users scoped room', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const bobCookie = await loginBasicSession('bob');
+    const aliceInboxPhysical = encodeURIComponent(`inbox:${encodeUserSuffix('web:basic:alice')}`);
+    const forbidden = await httpGetWithHeaders(
+      `/api/rooms/${aliceInboxPhysical}/threads/main/messages`,
+      { Cookie: bobCookie },
+    );
+    expect(forbidden.status).toBe(403);
+
+    const forbiddenAction = await httpPostJsonWithHeaders(
+      `/api/rooms/${aliceInboxPhysical}/threads/main/actions`,
+      { questionId: 'approval-public', value: 'approve' },
+      { Cookie: bobCookie },
+    );
+    expect(forbiddenAction.status).toBe(403);
+
+    const forbiddenDelete = await httpDeleteWithHeaders(
+      `/api/rooms/${aliceInboxPhysical}/threads/main`,
+      { Cookie: bobCookie },
+    );
+    expect(forbiddenDelete.status).toBe(403);
+
+    const forbiddenPatch = await httpPatchWithHeaders(
+      `/api/rooms/${aliceInboxPhysical}/threads/main`,
+      { title: 'nope' },
+      { Cookie: bobCookie },
+    );
+    expect(forbiddenPatch.status).toBe(403);
+
+    const forbiddenUpload = await httpPostJsonWithHeaders(
+      `/api/rooms/${aliceInboxPhysical}/threads/main/uploads/chunk`,
+      {
+        uploadId: '550e8400-e29b-41d4-a716-446655440099',
+        chunkIndex: 0,
+        totalChunks: 1,
+        filename: 'x.png',
+        mimeType: 'image/png',
+        data: PNG_BASE64,
+      },
+      { Cookie: bobCookie },
+    );
+    expect(forbiddenUpload.status).toBe(403);
+  });
+
+  it('returns 500 when room id is invalid in public mode', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const cookie = await loginBasicSession('alice');
+    const res = await httpGetWithHeaders('/api/rooms/not-a-room/threads/main/messages', {
+      Cookie: cookie,
+    });
+    expect(res.status).toBe(500);
+  });
+
+  it('logs out and invalidates the session cookie in public mode', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const cookie = await loginBasicSession('alice');
+    const logout = await httpPostJsonWithHeaders('/api/auth/logout', {}, { Cookie: cookie });
+    expect(logout.status).toBe(200);
+
+    const bootstrap = await httpGetWithHeaders('/api/bootstrap', { Cookie: cookie });
+    expect(bootstrap.status).toBe(401);
+  });
+
+  it('openDM returns shared inbox for non-web handles in public mode', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+    await expect(adapter.openDM!('telegram:123')).resolves.toBe('inbox');
+  });
+
+  it('manages lobby threads and uploads with session cookie in public mode', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const cookie = await loginBasicSession('alice');
+    const created = await httpPostJsonWithHeaders(
+      '/api/rooms/lobby/threads',
+      { title: 'Team sync' },
+      { Cookie: cookie },
+    );
+    expect(created.status).toBe(200);
+    const threadId = (created.body as { id: string }).id;
+
+    const patched = await httpPatchWithHeaders(
+      `/api/rooms/lobby/threads/${encodeURIComponent(threadId)}`,
+      { title: 'Renamed sync' },
+      { Cookie: cookie },
+    );
+    expect(patched.status).toBe(200);
+
+    await httpPostJsonWithHeaders(
+      `/api/rooms/lobby/threads/${encodeURIComponent(threadId)}/messages`,
+      { text: '@sarah kickoff' },
+      { Cookie: cookie },
+    );
+    const removed = await httpDeleteWithHeaders(
+      `/api/rooms/lobby/threads/${encodeURIComponent(threadId)}/engaged/sarah`,
+      { Cookie: cookie },
+    );
+    expect(removed.status).toBe(200);
+
+    const uploadId = '550e8400-e29b-41d4-a716-446655440001';
+    const chunk = await httpPostJsonWithHeaders(
+      `/api/rooms/lobby/threads/${encodeURIComponent(threadId)}/uploads/chunk`,
+      {
+        uploadId,
+        chunkIndex: 0,
+        totalChunks: 1,
+        filename: 'note.png',
+        mimeType: 'image/png',
+        data: PNG_BASE64,
+      },
+      { Cookie: cookie },
+    );
+    expect(chunk.status).toBe(200);
+
+    const badEngaged = await httpDeleteWithHeaders('/api/rooms/inbox/threads/main/engaged/sarah', {
+      Cookie: cookie,
+    });
+    expect(badEngaged.status).toBe(400);
+  });
+
+  it('resolveWebchatPort prefers process env over env file values', () => {
+    process.env.WEBCHAT_PORT = '4500';
+    expect(resolveWebchatPort({ WEBCHAT_PORT: '3200' })).toBe(4500);
+    delete process.env.WEBCHAT_PORT;
+  });
+
+  it('accepts bearer token for bootstrap when session is absent in public mode', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const bootstrap = await httpGetWithHeaders('/api/bootstrap', {
+      Authorization: `Bearer ${SECRET}`,
+    });
+    expect(bootstrap.status).toBe(200);
+    expect(bootstrap.body).toMatchObject({
+      authMode: 'public',
+      user: { id: 'web:local', displayName: 'Local' },
+    });
+  });
+
+  it('broadcasts message_update over session-scoped WebSocket in public mode', async () => {
+    actionCaptures.length = 0;
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const aliceInbox = `inbox:${encodeUserSuffix('web:basic:alice')}`;
+    await adapter.deliver(aliceInbox, null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-public-ws',
+        title: 'Restart container',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', value: 'approve' }],
+      },
+    });
+
+    const cookie = await loginBasicSession('alice');
+    const events: unknown[] = [];
+    await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${testPort}/api/ws`, {
+        headers: { Cookie: cookie },
+      });
+      ws.on('open', () => {
+        void httpPostJsonWithHeaders(
+          '/api/rooms/inbox/threads/main/actions',
+          { questionId: 'approval-public-ws', value: 'approve' },
+          { Cookie: cookie },
+        ).then((action) => {
+          expect(action.status).toBe(200);
+        });
+      });
+      ws.on('message', (data) => {
+        events.push(JSON.parse(String(data)));
+        if (events.some((event) => (event as { type?: string }).type === 'message_update')) {
+          ws.close();
+          resolve();
+        }
+      });
+      ws.on('error', reject);
+    });
+
+    expect(events.some((event) => (event as { type?: string }).type === 'message_update')).toBe(true);
+  });
+
+  it('posts inbound lobby messages with session cookie in public mode', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const cookie = await loginBasicSession('alice');
+    const post = await httpPostJsonWithHeaders(
+      '/api/rooms/lobby/threads/main/messages',
+      { text: 'hello from alice' },
+      { Cookie: cookie },
+    );
+    expect(post.status).toBe(200);
+
+    const listed = await httpGetWithHeaders('/api/rooms/lobby/threads/main/messages', {
+      Cookie: cookie,
+    });
+    expect(listed.status).toBe(200);
+    const messages = (listed.body as { messages: Array<{ text: string }> }).messages;
+    expect(messages.some((msg) => msg.text === 'hello from alice')).toBe(true);
+  });
+
+  it('delivers to bearer-token WebSocket clients without per-user filtering in public mode', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const events: unknown[] = [];
+    await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${testPort}/api/ws?token=${SECRET}`);
+      ws.on('open', async () => {
+        const aliceInbox = `inbox:${encodeUserSuffix('web:basic:alice')}`;
+        await adapter.deliver(aliceInbox, null, { kind: 'chat', content: 'via bearer token' });
+      });
+      ws.on('message', (data) => {
+        events.push(JSON.parse(String(data)));
+        if (events.some((event) => (event as { type?: string }).type === 'message')) {
+          ws.close();
+          resolve();
+        }
+      });
+      ws.on('error', reject);
+    });
+
+    expect(events.some((event) => (event as { type?: string }).type === 'message')).toBe(true);
+  });
+
+  it('POST actions uses session user id in public mode', async () => {
+    actionCaptures.length = 0;
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const aliceInbox = `inbox:${encodeUserSuffix('web:basic:alice')}`;
+    await adapter.deliver(aliceInbox, null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-public',
+        title: 'Restart container',
+        question: 'Allow restart?',
+        options: [{ label: 'Approve', value: 'approve' }],
+      },
+    });
+
+    const cookie = await loginBasicSession('alice');
+    const action = await httpPostJsonWithHeaders(
+      '/api/rooms/inbox/threads/main/actions',
+      { questionId: 'approval-public', value: 'approve' },
+      { Cookie: cookie },
+    );
+    expect(action.status).toBe(200);
+    expect(actionCaptures).toEqual([
+      { questionId: 'approval-public', value: 'approve', userId: 'web:basic:alice' },
+    ]);
+  });
+
+  it('creates threads with session cookie in public mode', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const cookie = await loginBasicSession('alice');
+    const created = await httpPostJsonWithHeaders(
+      '/api/rooms/lobby/threads',
+      { title: 'Public topic' },
+      { Cookie: cookie },
+    );
+    expect(created.status).toBe(200);
+    expect(created.body).toMatchObject({ title: 'Public topic' });
   });
 
   it('POST actions returns 500 when onAction throws', async () => {

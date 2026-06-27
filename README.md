@@ -22,7 +22,8 @@ NanoClaw runs multiple AI agents with real tooling and persistent workspaces. Yo
 
 nanoclaw-webchat is an **opinionated channel add-on** for an existing NanoClaw fork:
 
-- **Localhost-only** — binds to `127.0.0.1`, secret injected by the host
+- **Localhost-only** — default binds to `127.0.0.1`, secret injected by the host
+- **Optional public auth** — cookie sessions, login page, GitHub/OIDC, shared-password login for network deployments ([setup guide](./docs/public-auth.md))
 - **Multi-agent lobby** — `@sarah`-style routing with **engaged agents** that keep listening after a mention
 - **Per-agent DMs** — direct 1:1 rooms when you don't want a shared lobby
 - **Threading** — multiple conversation threads per room, persisted in SQLite
@@ -52,6 +53,7 @@ This package ships the browser UI, channel adapter templates, install skill, CLI
 | **Theme** | Light / dark / system |
 | **Persistence** | History in host `data/webchat.db` |
 | **CLI** | `install`, `upgrade`, `sync-skill`, `verify`, `uninstall` |
+| **Auth** | Local token (default) or public mode: basic login, OIDC/OAuth (e.g. GitHub), per-user rooms |
 | **MCP** | Bundled `nanoclaw-webchat-mcp` bin — list channels, read/send messages from Cursor |
 | **Skill** | `/add-webchat` Claude Code install flow |
 
@@ -72,16 +74,24 @@ Full walkthrough: **[QUICKSTART.md](./QUICKSTART.md)**
 
 ## Configuration
 
+### Local mode (default)
+
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `WEBCHAT_ENABLED` | yes | — | Set `true` to start the channel |
 | `WEBCHAT_PORT` | no | `3200` | HTTP/WebSocket port |
-| `WEBCHAT_SECRET` | yes | — | Bearer token (injected into served HTML) |
+| `WEBCHAT_SECRET` | yes | — | Bearer token (injected into served HTML in local mode) |
 | `WEBCHAT_USER_ID` | no | `web:local` | User id for outbound messages |
 | `WEBCHAT_DISPLAY_NAME` | no | `Local` | Display name in the UI |
 | `WEBCHAT_TEAM_FOLDER` | no | — | Agent folder for `@team` mentions |
 
-See [QUICKSTART.md](./QUICKSTART.md) and [api-contract.md](./api-contract.md) for full API and MCP setup.
+### Public auth mode
+
+Set `WEBCHAT_AUTH_MODE=public` for login-protected deployments (VPN, tailnet, or internet with HTTPS). Requires `WEBCHAT_SESSION_SECRET` plus basic and/or OIDC configuration.
+
+**→ [Public authentication setup guide](./docs/public-auth.md)** — env vars, GitHub OAuth, allowlists, production checklist.
+
+See [QUICKSTART.md](./QUICKSTART.md) and [api-contract.md](./api-contract.md) for install steps and the REST/WebSocket API.
 
 ## Architecture
 
@@ -101,11 +111,14 @@ skills/add-webchat → /add-webchat install skill
 
 ## Security
 
-The web channel is designed for **local trusted use**:
+Two authentication models are supported:
 
-- Adapter listens on **`127.0.0.1` only** — do not bind to `0.0.0.0` without replacing auth
-- `WEBCHAT_SECRET` is embedded in the served page; treat it like a session token
-- See [SECURITY.md](./SECURITY.md) for reporting vulnerabilities
+| Mode | Use case | Summary |
+|------|----------|---------|
+| **Local** (default) | Single operator on the same machine | Binds to `127.0.0.1`; `WEBCHAT_SECRET` embedded in served HTML |
+| **Public** | Multiple users over a network | Login page, session cookies, optional OIDC/GitHub or shared password; see [docs/public-auth.md](./docs/public-auth.md) |
+
+Do not bind to `0.0.0.0` or expose the port on the internet without enabling **public auth**, TLS, and an allowlist. Details: [SECURITY.md](./SECURITY.md).
 
 ## Development
 

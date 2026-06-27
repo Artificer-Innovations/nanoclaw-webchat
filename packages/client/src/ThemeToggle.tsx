@@ -81,34 +81,32 @@ export function ThemeToggle() {
   };
 
   return (
-    <div className="sidebar-footer">
-      <div
-        className="theme-toggle"
-        role="radiogroup"
-        aria-label="Theme"
-        style={{ '--active-index': activeIndex } as CSSProperties}
-        onKeyDown={handleKeyDown}
-      >
-        <span className="theme-toggle-thumb" aria-hidden="true" />
-        {OPTIONS.map((option) => {
-          const Icon = ICONS[option.value];
-          const isActive = preference === option.value;
-          return (
-            <button
-              key={option.value}
-              type="button"
-              role="radio"
-              aria-label={option.label}
-              aria-checked={isActive}
-              tabIndex={isActive ? 0 : -1}
-              className={isActive ? 'active' : ''}
-              onClick={() => handleChange(option.value)}
-            >
-              <Icon />
-            </button>
-          );
-        })}
-      </div>
+    <div
+      className="theme-toggle"
+      role="radiogroup"
+      aria-label="Theme"
+      style={{ '--active-index': activeIndex } as CSSProperties}
+      onKeyDown={handleKeyDown}
+    >
+      <span className="theme-toggle-thumb" aria-hidden="true" />
+      {OPTIONS.map((option) => {
+        const Icon = ICONS[option.value];
+        const isActive = preference === option.value;
+        return (
+          <button
+            key={option.value}
+            type="button"
+            role="radio"
+            aria-label={option.label}
+            aria-checked={isActive}
+            tabIndex={isActive ? 0 : -1}
+            className={isActive ? 'active' : ''}
+            onClick={() => handleChange(option.value)}
+          >
+            <Icon />
+          </button>
+        );
+      })}
     </div>
   );
 }

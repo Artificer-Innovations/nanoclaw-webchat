@@ -22,6 +22,7 @@ const threadMocks = vi.hoisted(() => ({
 
 const actualApi = vi.hoisted(() => ({
   sendMessage: null as typeof api.sendMessage | null,
+  detectPublicAuthMode: null as typeof api.detectPublicAuthMode | null,
   createThread: vi.fn(threadMocks.createThreadImpl),
   renameThread: vi.fn(threadMocks.renameThreadImpl),
   deleteThread: vi.fn(threadMocks.deleteThreadImpl),
@@ -30,12 +31,15 @@ const actualApi = vi.hoisted(() => ({
 vi.mock('./api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./api')>();
   actualApi.sendMessage = actual.sendMessage;
+  actualApi.detectPublicAuthMode = actual.detectPublicAuthMode;
   return {
     ...actual,
     createThread: actualApi.createThread,
     renameThread: actualApi.renameThread,
     deleteThread: actualApi.deleteThread,
     sendMessage: vi.fn(actual.sendMessage),
+    detectPublicAuthMode: vi.fn(actual.detectPublicAuthMode),
+    submitAction: vi.fn(actual.submitAction),
   };
 });
 
@@ -124,6 +128,12 @@ function createFetchMock(handlers: {
 }): FetchHandler {
   return async (input, init) => {
     const url = String(input);
+    if (url === '/api/auth/config') {
+      return jsonResponse(null, false, 404);
+    }
+    if (url === '/api/auth/me') {
+      return jsonResponse(null, false, 401);
+    }
     if (url === '/api/bootstrap') {
       if (handlers.bootstrapError) {
         return jsonResponse(null, false, handlers.bootstrapError);
@@ -246,6 +256,8 @@ describe('App', () => {
     localStorage.clear();
     document.head.querySelectorAll('meta[name="webchat-token"]').forEach((node) => node.remove());
     vi.mocked(api.sendMessage).mockImplementation(actualApi.sendMessage!);
+    vi.mocked(api.detectPublicAuthMode).mockImplementation(actualApi.detectPublicAuthMode!);
+    vi.mocked(api.submitAction).mockResolvedValue(undefined);
     vi.mocked(api.createThread).mockImplementation(threadMocks.createThreadImpl);
     vi.mocked(api.renameThread).mockImplementation(threadMocks.renameThreadImpl);
     vi.mocked(api.deleteThread).mockImplementation(threadMocks.deleteThreadImpl);
@@ -270,12 +282,58 @@ describe('App', () => {
     vi.restoreAllMocks();
   });
 
-  it('renders setup hint when no token is available', () => {
+  it('renders setup hint when no token is available', async () => {
     render(<App />);
 
-    expect(screen.getByRole('heading', { name: 'NanoClaw Web Chat' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'NanoClaw Web Chat' })).toBeInTheDocument();
     expect(screen.getByText(/Open this UI from the NanoClaw webchat server/)).toBeInTheDocument();
     expect(screen.queryByLabelText('Bearer token')).not.toBeInTheDocument();
+  });
+
+  it('renders login page when public auth is enabled', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input) => {
+        const url = String(input);
+        if (url === '/api/auth/config') {
+          return jsonResponse({ basic: { enabled: true }, providers: [] });
+        }
+        if (url === '/api/auth/me') {
+          return jsonResponse(null, false, 401);
+        }
+        throw new Error(`Unhandled fetch: ${url}`);
+      }),
+    );
+
+    render(<App />);
+
+    expect(await screen.findByRole('button', { name: 'Sign in' })).toBeInTheDocument();
+  });
+
+  it('falls back to local mode when public auth detection rejects', async () => {
+    vi.mocked(api.detectPublicAuthMode).mockRejectedValue(new Error('network'));
+    render(<App />);
+    expect(await screen.findByText(/Open this UI from the NanoClaw webchat server/)).toBeInTheDocument();
+  });
+
+  it('shows login when public session lookup fails', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input) => {
+        const url = String(input);
+        if (url === '/api/auth/config') {
+          return jsonResponse({ basic: { enabled: true }, providers: [] });
+        }
+        if (url === '/api/auth/me') {
+          return jsonResponse(null, false, 500);
+        }
+        throw new Error(`Unhandled fetch: ${url}`);
+      }),
+    );
+
+    render(<App />);
+
+    expect(await screen.findByRole('button', { name: 'Sign in' })).toBeInTheDocument();
   });
 
   it('connects using injected token meta and loads chat UI', async () => {
@@ -444,6 +502,20 @@ describe('App', () => {
     expect(await screen.findByRole('button', { name: 'Stop Team from listening' })).toBeInTheDocument();
   });
 
+  it('sends without optimistic sender metadata when bootstrap has no user', async () => {
+    const bootstrapWithoutUser = { rooms: bootstrapFixture.rooms, agents: bootstrapFixture.agents } as BootstrapPayload;
+    vi.stubGlobal('fetch', vi.fn(createFetchMock({ messages: [], bootstrap: bootstrapWithoutUser })));
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    await user.type(screen.getByRole('textbox'), 'hello without user');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+
+    expect(await screen.findByText('hello without user')).toBeInTheDocument();
+  });
+
   it('does not track engaged agents when sending in a DM', async () => {
     vi.stubGlobal('fetch', vi.fn(createFetchMock({ messages: [], sendError: 500 })));
     sessionStorage.setItem('webchat_token', 'secret');
@@ -590,6 +662,209 @@ describe('App', () => {
     });
 
     expect(await screen.findByRole('button', { name: 'Stop Sarah from listening' })).toBeInTheDocument();
+  });
+
+  it('applies message_update websocket events in the active thread', async () => {
+    const cardMessage: WebChatMessage = {
+      id: 'card-1',
+      direction: 'inbound',
+      text: '',
+      timestamp: 2,
+      platformId: 'lobby-1',
+      threadId: 'main',
+      card: {
+        type: 'ask_question',
+        questionId: 'q1',
+        title: 'Approve?',
+        question: 'Go live?',
+        status: 'pending',
+        options: [{ label: 'Yes', value: 'yes' }],
+      },
+    };
+    vi.stubGlobal('fetch', vi.fn(createFetchMock({ messages: [cardMessage] })));
+    const MockWebSocket = createWebSocketMock();
+    sessionStorage.setItem('webchat_token', 'secret');
+
+    render(<App />);
+    await screen.findByRole('button', { name: 'Yes' });
+
+    const ws = MockWebSocket.instances[0]!;
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: 'message_update',
+          message: {
+            ...cardMessage,
+            card: {
+              ...cardMessage.card!,
+              status: 'answered',
+              selectedValue: 'yes',
+              selectedLabel: 'Yes',
+            },
+          },
+        }),
+      } as MessageEvent);
+    });
+
+    expect(await screen.findByText('Yes')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Yes' })).not.toBeInTheDocument();
+  });
+
+  it('ignores message_update events for inactive threads', async () => {
+    const cardMessage: WebChatMessage = {
+      id: 'card-1',
+      direction: 'inbound',
+      text: '',
+      timestamp: 2,
+      platformId: 'lobby-1',
+      threadId: 'main',
+      card: {
+        type: 'ask_question',
+        questionId: 'q1',
+        title: 'Approve?',
+        question: 'Go live?',
+        status: 'pending',
+        options: [{ label: 'Yes', value: 'yes' }],
+      },
+    };
+    vi.stubGlobal('fetch', vi.fn(createFetchMock({ messages: [cardMessage] })));
+    const MockWebSocket = createWebSocketMock();
+    sessionStorage.setItem('webchat_token', 'secret');
+
+    render(<App />);
+    await screen.findByRole('button', { name: 'Yes' });
+
+    const ws = MockWebSocket.instances[0]!;
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: 'message_update',
+          message: {
+            ...cardMessage,
+            threadId: 'thread_b',
+            card: { ...cardMessage.card!, status: 'answered', selectedValue: 'yes', selectedLabel: 'Yes' },
+          },
+        }),
+      } as MessageEvent);
+    });
+
+    expect(screen.getByRole('button', { name: 'Yes' })).toBeInTheDocument();
+  });
+
+  it('loads chat after successful public login', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input, init) => {
+        const url = String(input);
+        if (url === '/api/auth/config') {
+          return jsonResponse({ basic: { enabled: true }, providers: [] });
+        }
+        if (url === '/api/auth/me') {
+          return jsonResponse(null, false, 401);
+        }
+        if (url === '/api/auth/login/basic' && init?.method === 'POST') {
+          return jsonResponse({ ok: true });
+        }
+        return createFetchMock({ messages: [] })(input, init);
+      }),
+    );
+
+    render(<App />);
+    await user.type(await screen.findByLabelText(/username/i), 'alice');
+    await user.type(screen.getByLabelText(/password/i), 'secret');
+    await user.click(screen.getByRole('button', { name: 'Sign in' }));
+
+    expect(await screen.findByRole('heading', { name: 'Lobby' })).toBeInTheDocument();
+  });
+
+  it('signs out from public auth and returns to login', async () => {
+    const user = userEvent.setup();
+    let authed = false;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input, init) => {
+        const url = String(input);
+        if (url === '/api/auth/config') {
+          return jsonResponse({ basic: { enabled: true }, providers: [] });
+        }
+        if (url === '/api/auth/me') {
+          return authed
+            ? jsonResponse({ id: 'alice', displayName: 'Alice' })
+            : jsonResponse(null, false, 401);
+        }
+        if (url === '/api/auth/login/basic' && init?.method === 'POST') {
+          authed = true;
+          return jsonResponse({ ok: true });
+        }
+        if (url === '/api/auth/logout' && init?.method === 'POST') {
+          authed = false;
+          return jsonResponse({ ok: true });
+        }
+        return createFetchMock({ messages: [] })(input, init);
+      }),
+    );
+
+    render(<App />);
+    await user.type(await screen.findByLabelText(/username/i), 'alice');
+    await user.type(screen.getByLabelText(/password/i), 'secret');
+    await user.click(screen.getByRole('button', { name: 'Sign in' }));
+
+    expect(await screen.findByRole('heading', { name: 'Lobby' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Sign out' }));
+
+    expect(await screen.findByRole('button', { name: 'Sign in' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Lobby' })).not.toBeInTheDocument();
+  });
+
+  it('updates inbox messages after interactive card selection', async () => {
+    const user = userEvent.setup();
+    const cardMessage: WebChatMessage = {
+      id: 'card-1',
+      direction: 'inbound',
+      text: '',
+      timestamp: 2,
+      platformId: 'inbox',
+      threadId: 'main',
+      card: {
+        type: 'ask_question',
+        questionId: 'q1',
+        title: 'Approve?',
+        question: 'Go live?',
+        status: 'pending',
+        options: [{ label: 'Yes', value: 'yes', selectedLabel: 'Approved' }],
+      },
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input, init) => {
+        const url = String(input);
+        if (url.includes('/actions') && init?.method === 'POST') {
+          return jsonResponse({ ok: true });
+        }
+        if (url.includes('/messages')) {
+          return jsonResponse({ messages: [cardMessage], engagedAgents: [] });
+        }
+        return createFetchMock({
+          bootstrap: {
+            ...bootstrapFixture,
+            rooms: [
+              ...bootstrapFixture.rooms,
+              { platformId: 'inbox', name: 'Inbox', kind: 'inbox', threads: [...defaultThreads] },
+            ],
+          },
+        })(input, init);
+      }),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+    await user.click(screen.getByRole('button', { name: 'Inbox' }));
+    await user.click(await screen.findByRole('button', { name: 'Yes' }));
+
+    expect(await screen.findByText('Approved')).toBeInTheDocument();
+    expect(api.submitAction).toHaveBeenCalledWith('secret', 'inbox', 'main', 'q1', 'yes');
   });
 
   it('renders inline code and fenced blocks in chat messages', async () => {

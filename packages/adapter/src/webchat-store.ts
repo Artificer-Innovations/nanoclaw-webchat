@@ -106,6 +106,7 @@ export interface WebchatStoredMessage {
   threadId: string;
   threadSeq?: number;
   senderName?: string;
+  senderId?: string;
   attachments?: WebchatAttachmentInput[];
   card?: WebchatAskQuestionCard;
 }
@@ -163,6 +164,11 @@ export function ensureWebchatSchema(): void {
     }
     try {
       db.exec('ALTER TABLE web_messages ADD COLUMN card_json TEXT');
+    } catch {
+      // column already exists
+    }
+    try {
+      db.exec('ALTER TABLE web_messages ADD COLUMN sender_id TEXT');
     } catch {
       // column already exists
     }
@@ -325,8 +331,8 @@ export function appendMessageWithAttachmentMeta(
     threadSeq = allocateThreadSeq(db, msg.platformId, msg.threadId);
     db.prepare(
       `INSERT INTO web_messages
-         (id, platform_id, thread_id, thread_seq, direction, text, timestamp_ms, sender_name, attachments_json, card_json)
-       VALUES (@id, @platform_id, @thread_id, @thread_seq, @direction, @text, @timestamp_ms, @sender_name, @attachments_json, @card_json)`,
+         (id, platform_id, thread_id, thread_seq, direction, text, timestamp_ms, sender_name, sender_id, attachments_json, card_json)
+       VALUES (@id, @platform_id, @thread_id, @thread_seq, @direction, @text, @timestamp_ms, @sender_name, @sender_id, @attachments_json, @card_json)`,
     ).run({
       id: msg.id,
       platform_id: msg.platformId,
@@ -336,6 +342,7 @@ export function appendMessageWithAttachmentMeta(
       text: msg.text,
       timestamp_ms: msg.timestamp,
       sender_name: msg.senderName ?? null,
+      sender_id: msg.senderId ?? null,
       attachments_json: attachmentsJson,
       card_json: cardJson,
     });
@@ -434,6 +441,7 @@ function rowToMessage(
     text: string;
     timestamp_ms: number;
     sender_name: string | null;
+    sender_id?: string | null;
     attachments_json: string | null;
     thread_seq: number | null;
     card_json?: string | null;
@@ -453,6 +461,7 @@ function rowToMessage(
     threadId,
     ...(row.thread_seq != null ? { threadSeq: row.thread_seq } : {}),
     ...(row.sender_name ? { senderName: row.sender_name } : {}),
+    ...(row.sender_id ? { senderId: row.sender_id } : {}),
     ...(attachments ? { attachments } : {}),
     ...(card ? { card } : {}),
   };
@@ -469,8 +478,8 @@ export function appendMessage(msg: WebchatStoredMessage): WebchatStoredMessage {
     threadSeq = allocateThreadSeq(db, msg.platformId, msg.threadId);
     db.prepare(
       `INSERT INTO web_messages
-         (id, platform_id, thread_id, thread_seq, direction, text, timestamp_ms, sender_name, attachments_json, card_json)
-       VALUES (@id, @platform_id, @thread_id, @thread_seq, @direction, @text, @timestamp_ms, @sender_name, @attachments_json, @card_json)`,
+         (id, platform_id, thread_id, thread_seq, direction, text, timestamp_ms, sender_name, sender_id, attachments_json, card_json)
+       VALUES (@id, @platform_id, @thread_id, @thread_seq, @direction, @text, @timestamp_ms, @sender_name, @sender_id, @attachments_json, @card_json)`,
     ).run({
       id: msg.id,
       platform_id: msg.platformId,
@@ -480,6 +489,7 @@ export function appendMessage(msg: WebchatStoredMessage): WebchatStoredMessage {
       text: msg.text,
       timestamp_ms: msg.timestamp,
       sender_name: msg.senderName ?? null,
+      sender_id: msg.senderId ?? null,
       attachments_json: attachmentsJson,
       card_json: cardJson,
     });
@@ -501,7 +511,7 @@ export function getMessages(platformId: string, threadId: string, sinceMs = 0): 
   try {
     const rows = db
       .prepare(
-        `SELECT id, direction, text, timestamp_ms, sender_name, attachments_json, thread_seq, card_json
+        `SELECT id, direction, text, timestamp_ms, sender_name, sender_id, attachments_json, thread_seq, card_json
          FROM web_messages
          WHERE platform_id = ? AND thread_id = ? AND timestamp_ms > ?
          ORDER BY timestamp_ms ASC`,
@@ -512,6 +522,7 @@ export function getMessages(platformId: string, threadId: string, sinceMs = 0): 
       text: string;
       timestamp_ms: number;
       sender_name: string | null;
+      sender_id?: string | null;
       attachments_json: string | null;
       thread_seq: number | null;
       card_json: string | null;
@@ -668,7 +679,7 @@ export function getRecentMessages(platformId: string, threadId: string, limit: n
   try {
     const rows = db
       .prepare(
-        `SELECT id, direction, text, timestamp_ms, sender_name, attachments_json, thread_seq, card_json
+        `SELECT id, direction, text, timestamp_ms, sender_name, sender_id, attachments_json, thread_seq, card_json
          FROM web_messages
          WHERE platform_id = ? AND thread_id = ?
          ORDER BY timestamp_ms DESC
@@ -680,6 +691,7 @@ export function getRecentMessages(platformId: string, threadId: string, limit: n
       text: string;
       timestamp_ms: number;
       sender_name: string | null;
+      sender_id?: string | null;
       attachments_json: string | null;
       thread_seq: number | null;
       card_json: string | null;
@@ -724,7 +736,7 @@ export function findMessagesByQuestionId(questionId: string): WebchatStoredMessa
   try {
     const rows = db
       .prepare(
-        `SELECT id, direction, text, timestamp_ms, sender_name, attachments_json, thread_seq, card_json,
+        `SELECT id, direction, text, timestamp_ms, sender_name, sender_id, attachments_json, thread_seq, card_json,
                 platform_id, thread_id
          FROM web_messages
          WHERE card_json IS NOT NULL
@@ -738,6 +750,7 @@ export function findMessagesByQuestionId(questionId: string): WebchatStoredMessa
       text: string;
       timestamp_ms: number;
       sender_name: string | null;
+      sender_id?: string | null;
       attachments_json: string | null;
       thread_seq: number | null;
       card_json: string | null;
@@ -798,7 +811,7 @@ export function answerCardsByQuestionId(
 
     const rows = db
       .prepare(
-        `SELECT id, direction, text, timestamp_ms, sender_name, attachments_json, thread_seq, card_json,
+        `SELECT id, direction, text, timestamp_ms, sender_name, sender_id, attachments_json, thread_seq, card_json,
                 platform_id, thread_id
          FROM web_messages
          WHERE card_json IS NOT NULL
@@ -812,6 +825,7 @@ export function answerCardsByQuestionId(
       text: string;
       timestamp_ms: number;
       sender_name: string | null;
+      sender_id?: string | null;
       attachments_json: string | null;
       thread_seq: number | null;
       card_json: string | null;
@@ -863,7 +877,7 @@ export function findMessageByQuestionId(
   try {
     const row = db
       .prepare(
-        `SELECT id, direction, text, timestamp_ms, sender_name, attachments_json, thread_seq, card_json
+        `SELECT id, direction, text, timestamp_ms, sender_name, sender_id, attachments_json, thread_seq, card_json
          FROM web_messages
          WHERE platform_id = ? AND thread_id = ?
            AND json_valid(card_json)
@@ -878,6 +892,7 @@ export function findMessageByQuestionId(
           text: string;
           timestamp_ms: number;
           sender_name: string | null;
+          sender_id?: string | null;
           attachments_json: string | null;
           thread_seq: number | null;
           card_json: string | null;
@@ -898,7 +913,7 @@ export function updateMessageCard(messageId: string, card: WebchatAskQuestionCar
   try {
     const row = db
       .prepare(
-        `SELECT id, direction, text, timestamp_ms, sender_name, attachments_json, thread_seq, card_json,
+        `SELECT id, direction, text, timestamp_ms, sender_name, sender_id, attachments_json, thread_seq, card_json,
                 platform_id, thread_id
          FROM web_messages WHERE id = ?`,
       )
@@ -909,6 +924,7 @@ export function updateMessageCard(messageId: string, card: WebchatAskQuestionCar
           text: string;
           timestamp_ms: number;
           sender_name: string | null;
+          sender_id?: string | null;
           attachments_json: string | null;
           thread_seq: number | null;
           card_json: string | null;

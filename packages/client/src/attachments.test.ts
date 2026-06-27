@@ -1139,9 +1139,41 @@ describe('attachments', () => {
         url: '/api/attachments/msg-1/notes.md',
       }, 'secret'),
     ).toBe('from server');
-    expect(fetch).toHaveBeenCalledWith('/api/attachments/msg-1/notes.md', {
-      headers: { Authorization: 'Bearer secret' },
-    });
+    expect(fetch).toHaveBeenCalledWith('/api/attachments/msg-1/notes.md?token=secret');
+    vi.unstubAllGlobals();
+  });
+
+  it('appends token query param when url already has search params', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, text: async () => 'from server' }) as Response),
+    );
+    expect(
+      await fetchAttachmentText({
+        name: 'notes.md',
+        mimeType: 'text/markdown',
+        type: 'file',
+        url: '/api/attachments/msg-1/notes.md?download=1',
+      }, 'secret'),
+    ).toBe('from server');
+    expect(fetch).toHaveBeenCalledWith('/api/attachments/msg-1/notes.md?download=1&token=secret');
+    vi.unstubAllGlobals();
+  });
+
+  it('uses cookie auth when fetching attachment url without token', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, text: async () => 'cookie auth' }) as Response),
+    );
+    expect(
+      await fetchAttachmentText({
+        name: 'notes.md',
+        mimeType: 'text/markdown',
+        type: 'file',
+        url: '/api/attachments/msg-1/notes.md',
+      }),
+    ).toBe('cookie auth');
+    expect(fetch).toHaveBeenCalledWith('/api/attachments/msg-1/notes.md', { credentials: 'include' });
     vi.unstubAllGlobals();
   });
 
@@ -1357,11 +1389,20 @@ describe('attachments', () => {
       type: 'image',
       url: '/api/attachments/msg-1/photo.png',
     });
-    expect(fetch).toHaveBeenCalledWith('/api/attachments/msg-1/photo.png', {
-      headers: { Authorization: 'Bearer stored' },
-    });
+    expect(fetch).toHaveBeenCalledWith('/api/attachments/msg-1/photo.png?token=stored');
     sessionStorage.removeItem('webchat_token');
-    vi.unstubAllGlobals();
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, blob: async () => new Blob(['x']) }) as Response),
+    );
+    await fetchAttachmentBlob({
+      name: 'photo.png',
+      mimeType: 'image/png',
+      type: 'image',
+      url: '/api/attachments/msg-1/photo.png',
+    });
+    expect(fetch).toHaveBeenCalledWith('/api/attachments/msg-1/photo.png', { credentials: 'include' });
 
     vi.stubGlobal(
       'fetch',
@@ -1445,9 +1486,7 @@ describe('attachments', () => {
       'explicit',
     );
     expect(tokenSuccess).toHaveBeenCalled();
-    expect(fetch).toHaveBeenCalledWith('/api/attachments/m/notes.md', {
-      headers: { Authorization: 'Bearer explicit' },
-    });
+    expect(fetch).toHaveBeenCalledWith('/api/attachments/m/notes.md?token=explicit');
 
     const tokenLinkSuccess = vi.fn();
     await copyAttachmentForPreview(

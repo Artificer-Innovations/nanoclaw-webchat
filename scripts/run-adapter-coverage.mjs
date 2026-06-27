@@ -24,6 +24,10 @@ const ADAPTER_TESTS = [
   'src/webchat-serve-attachment.test.ts',
   'src/webchat-routing.test.ts',
   'src/webchat-mentions.test.ts',
+  'src/webchat-auth.test.ts',
+  'src/webchat-auth-jwt.test.ts',
+  'src/webchat-auth-config.test.ts',
+  'src/webchat-room-scope.test.ts',
 ];
 
 function run(cmd, args, opts = {}) {

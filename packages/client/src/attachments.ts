@@ -602,10 +602,6 @@ function attachmentUrlWithAuth(path: string, token: string): string {
   return `${path}${sep}token=${encodeURIComponent(token)}`;
 }
 
-function attachmentFetchHeaders(token: string): HeadersInit {
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
 export function attachmentDataUrl(att: WebChatAttachment, token?: string): string | null {
   if (att.data) {
     const mimeType = inferMimeType(att.name, att.mimeType);
@@ -826,6 +822,11 @@ async function readComposerTextSnippet(file: File, mimeType: string): Promise<st
   }
 }
 
+async function fetchAttachmentAuthorized(url: string, token?: string): Promise<Response> {
+  if (token) return fetch(attachmentUrlWithAuth(url, token));
+  return fetch(url, { credentials: 'include' });
+}
+
 export async function fetchAttachmentText(att: WebChatAttachment, token?: string): Promise<string | null> {
   if (att.data) {
     return decodeAttachmentTextFromData(att.data);
@@ -833,7 +834,7 @@ export async function fetchAttachmentText(att: WebChatAttachment, token?: string
   if (att.url && isSafeAttachmentUrl(att.url)) {
     const authToken = token ?? getStoredToken();
     try {
-      const res = await fetch(att.url, { headers: attachmentFetchHeaders(authToken) });
+      const res = await fetchAttachmentAuthorized(att.url, authToken || undefined);
       if (!res.ok) return null;
       return res.text();
     } catch {
@@ -849,7 +850,7 @@ export async function fetchAttachmentBlob(att: WebChatAttachment, token?: string
   if (att.url && isSafeAttachmentUrl(att.url)) {
     const authToken = token ?? getStoredToken();
     try {
-      const res = await fetch(att.url, { headers: attachmentFetchHeaders(authToken) });
+      const res = await fetchAttachmentAuthorized(att.url, authToken || undefined);
       if (!res.ok) return null;
       return res.blob();
     } catch {

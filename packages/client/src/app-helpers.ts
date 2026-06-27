@@ -35,14 +35,14 @@ export function threadsForRoom(
 }
 
 export function canSendMessage(
-  token: string,
+  authed: boolean,
   room: WebChatRoom | null,
   draft: string,
   sending: boolean,
   attachmentCount = 0,
 ): room is WebChatRoom {
   return Boolean(
-    token &&
+    authed &&
       room &&
       room.kind !== 'inbox' &&
       !sending &&
