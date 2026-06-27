@@ -60,7 +60,10 @@ describe('webchat-auth-jwt', () => {
       { iss: 'https://issuer.example', aud: 'client-id', sub: 'user-1', exp: now + 3600 },
       privateKey,
     );
-    const tampered = `${jwt.slice(0, -1)}x`;
+    const parts = jwt.split('.');
+    const sigBytes = Buffer.from(parts[2]!, 'base64url');
+    sigBytes[0]! ^= 0xff;
+    const tampered = `${parts[0]}.${parts[1]}.${sigBytes.toString('base64url')}`;
 
     expect(() =>
       verifyRs256IdToken(tampered, [jwk], {

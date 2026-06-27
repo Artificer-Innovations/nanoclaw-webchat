@@ -424,4 +424,45 @@ describe('ensureUserWebchatWirings', () => {
     const wiring = getMessagingGroupAgents(lobby.id).find((a) => a.agent_group_id === 'ag-team');
     expect(wiring?.engage_pattern).toBe('@(team|team-coord)\\b');
   });
+
+  it('uses default lobby pattern for non-team agents when team folder is set', () => {
+    process.env.WEBCHAT_TEAM_FOLDER = 'team-coord';
+    createAgentGroup({
+      id: 'ag-team',
+      name: 'Coordinator',
+      folder: 'team-coord',
+      agent_provider: null,
+      created_at: now(),
+    });
+    createAgentGroup({
+      id: 'ag-sarah',
+      name: 'Sarah',
+      folder: 'sarah',
+      agent_provider: null,
+      created_at: now(),
+    });
+    syncWebchatWirings();
+
+    ensureUserWebchatWirings('web:basic:alice', 'Alice');
+
+    const lobby = getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, WEB_LOBBY_PLATFORM_ID)!;
+    const sarahWiring = getMessagingGroupAgents(lobby.id).find((a) => a.agent_group_id === 'ag-sarah');
+    expect(sarahWiring?.engage_pattern).toBe('@sarah\\b');
+  });
+
+  it('skips lobby wiring when lobby messaging group has not been bootstrapped', () => {
+    createAgentGroup({
+      id: 'ag-sarah',
+      name: 'Sarah',
+      folder: 'sarah',
+      agent_provider: null,
+      created_at: now(),
+    });
+
+    const userId = 'web:basic:alice';
+    ensureUserWebchatWirings(userId, 'Alice');
+
+    expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, `inbox:${encodeUserSuffix(userId)}`)).toBeDefined();
+    expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, WEB_LOBBY_PLATFORM_ID)).toBeUndefined();
+  });
 });
