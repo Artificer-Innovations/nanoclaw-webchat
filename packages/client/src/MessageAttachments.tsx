@@ -1,6 +1,16 @@
-import { attachmentIsAudio, attachmentIsVideo, attachmentPreviewUrl, normalizeAttachment } from './attachments';
+import {
+  attachmentIsAudio,
+  attachmentIsVideo,
+  attachmentPreviewUrl,
+  normalizeAttachment,
+} from './attachments';
+import { FileAttachmentChip } from './FileAttachmentChip';
 import type { WebChatAttachment } from './types';
-import { MessageVideoAttachment } from './VideoAttachmentPreview';
+import {
+  MessageAudioAttachment,
+  MessageImageAttachment,
+  MessageVideoAttachment,
+} from './VideoAttachmentPreview';
 
 export function MessageAttachments({
   attachments,
@@ -21,15 +31,12 @@ export function MessageAttachments({
         if (att.type === 'image') {
           if (!previewUrl) return null;
           return (
-            <button
+            <MessageImageAttachment
               key={key}
-              type="button"
-              className="msg-attachment-image"
-              aria-label={`View ${att.name}`}
-              onClick={() => onOpenAttachment(att)}
-            >
-              <img src={previewUrl} alt="" loading="lazy" />
-            </button>
+              att={att}
+              previewUrl={previewUrl}
+              onOpenAttachment={onOpenAttachment}
+            />
           );
         }
 
@@ -48,31 +55,24 @@ export function MessageAttachments({
         if (attachmentIsAudio(att.mimeType)) {
           if (!previewUrl) return null;
           return (
-            <div key={key} className="msg-attachment-audio">
-              <button
-                type="button"
-                className="msg-attachment-audio-title"
-                aria-label={`View ${att.name}`}
-                onClick={() => onOpenAttachment(att)}
-              >
-                {att.name}
-              </button>
-              <audio controls preload="metadata" src={previewUrl} aria-label={att.name} />
-            </div>
+            <MessageAudioAttachment
+              key={key}
+              att={att}
+              previewUrl={previewUrl}
+              onOpenAttachment={onOpenAttachment}
+            />
           );
         }
 
         if (!previewUrl && !att.url && !att.data) return null;
 
         return (
-          <button
+          <FileAttachmentChip
             key={key}
-            type="button"
+            att={att}
+            onOpen={onOpenAttachment}
             className="msg-attachment-file"
-            onClick={() => onOpenAttachment(att)}
-          >
-            {att.name}
-          </button>
+          />
         );
       })}
     </div>

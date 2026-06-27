@@ -12,13 +12,21 @@ vi.mock('./config.js', async () => {
 
 const busboyMockState = vi.hoisted(() => ({ useCustom: false }));
 
+type BusboyFactory = typeof import('busboy');
+type BusboyModule = BusboyFactory | { default: BusboyFactory };
+
+function resolveBusboyFactory(mod: BusboyModule): BusboyFactory {
+  return typeof mod === 'function' ? mod : mod.default;
+}
+
 vi.mock('busboy', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('busboy')>();
+  const actual = await importOriginal<BusboyModule>();
+  const createBusboy = resolveBusboyFactory(actual);
   const { PassThrough } = await import('node:stream');
   return {
-    default: vi.fn((...args: Parameters<typeof actual.default>) => {
+    default: vi.fn((...args: Parameters<BusboyFactory>) => {
       if (!busboyMockState.useCustom) {
-        return actual.default(...args);
+        return createBusboy(...args);
       }
       const busboy = new PassThrough();
       queueMicrotask(() => {

@@ -27,7 +27,10 @@ import {
   defaultRoomThreads,
 } from './app-helpers';
 import {
+  attachmentChipKind,
+  attachmentChipLabel,
   attachmentIsAudio,
+  attachmentIsTextPreviewable,
   attachmentIsVideo,
   formatAttachmentRejections,
   MAX_ATTACHMENTS,
@@ -51,7 +54,12 @@ import { SendArrowIcon, PlusIcon, SidebarHideIcon, SidebarShowIcon } from './nav
 import { senderColor } from './sender-color';
 import { SidebarSection } from './SidebarRoom';
 import { ThemeToggle } from './ThemeToggle';
-import { ComposerVideoPreview, composerVideoPreviewUsesFileChip } from './VideoAttachmentPreview';
+import {
+  ComposerAudioPreview,
+  ComposerImagePreview,
+  ComposerVideoPreview,
+  composerPreviewClassName,
+} from './VideoAttachmentPreview';
 import {
   getStoredAttachmentDrawerWidth,
   setStoredAttachmentDrawerWidth,
@@ -966,18 +974,14 @@ export function App() {
                     {pendingAttachments.map((att, index) => (
                       <div
                         key={`${att.name}-${index}`}
-                        className={`composer-preview${
-                          (att.type === 'file' &&
-                            !attachmentIsVideo(att.mimeType) &&
-                            !attachmentIsAudio(att.mimeType)) ||
-                          (attachmentIsVideo(att.mimeType) &&
-                            composerVideoPreviewUsesFileChip(att.mimeType))
-                            ? ' composer-preview-file'
-                            : ''
-                        }${attachmentIsAudio(att.mimeType) ? ' composer-preview-audio' : ''}`}
+                        className={composerPreviewClassName(att)}
                       >
                         {att.type === 'image' ? (
-                          <img src={att.previewUrl} alt={att.name} />
+                          <ComposerImagePreview
+                            previewUrl={att.previewUrl}
+                            mimeType={att.mimeType}
+                            name={att.name}
+                          />
                         ) : attachmentIsVideo(att.mimeType) ? (
                           <ComposerVideoPreview
                             previewUrl={att.previewUrl}
@@ -985,12 +989,25 @@ export function App() {
                             name={att.name}
                           />
                         ) : attachmentIsAudio(att.mimeType) ? (
-                          <audio
-                            src={att.previewUrl}
-                            controls
-                            preload="metadata"
-                            aria-label={att.name}
+                          <ComposerAudioPreview
+                            previewUrl={att.previewUrl}
+                            mimeType={att.mimeType}
+                            name={att.name}
                           />
+                        ) : attachmentIsTextPreviewable(att.mimeType, att.name) ? (
+                          <div className="composer-preview-text-wrap">
+                            <span className="composer-preview-kind">
+                              {attachmentChipLabel(attachmentChipKind(att.mimeType, att.name))}
+                            </span>
+                            <span className="composer-preview-name" title={att.name}>
+                              {att.name}
+                            </span>
+                            {att.textSnippet ? (
+                              <span className="composer-preview-snippet" title={att.textSnippet}>
+                                {att.textSnippet}
+                              </span>
+                            ) : null}
+                          </div>
                         ) : (
                           <span className="composer-preview-name" title={att.name}>
                             {att.name}

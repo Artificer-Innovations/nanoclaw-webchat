@@ -991,6 +991,40 @@ body.sidebar-resizing * {
   min-width: 9rem;
 }
 
+.composer-preview-text {
+  width: auto;
+  min-width: 8rem;
+  max-width: 14rem;
+  height: auto;
+  min-height: 4.5rem;
+  padding: 0.35rem 0.5rem;
+}
+
+.composer-preview-text-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  width: 100%;
+  max-width: 100%;
+}
+
+.composer-preview-kind {
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.composer-preview-snippet {
+  font-size: 0.6875rem;
+  line-height: 1.25;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .composer-preview-remove {
   position: absolute;
   top: -0.35rem;
@@ -1122,6 +1156,7 @@ body.sidebar-resizing * {
   cursor: pointer;
   display: inline-flex;
   align-items: center;
+  gap: 0.45rem;
   padding: 0.35rem 0.6rem;
   border-radius: 6px;
   border: 1px solid var(--border);
@@ -1130,6 +1165,26 @@ body.sidebar-resizing * {
   text-decoration: none;
   font-family: inherit;
   font-size: 0.875rem;
+  max-width: 100%;
+}
+
+.attachment-chip-kind {
+  flex-shrink: 0;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--border) 40%, transparent);
+}
+
+.attachment-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
 }
 
 .msg-attachment-file:hover {
@@ -1356,6 +1411,60 @@ body.attachment-drawer-resizing * {
   margin: 0 0 0.5rem;
   color: var(--muted);
   font-size: 0.8125rem;
+}
+
+.attachment-drawer-json {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+
+.attachment-drawer-json-node {
+  margin-left: 0.25rem;
+}
+
+.attachment-drawer-json-summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+  padding: 0.1rem 0;
+}
+
+.attachment-drawer-json-summary::-webkit-details-marker {
+  display: none;
+}
+
+.attachment-drawer-json-children {
+  margin-left: 1rem;
+  border-left: 1px solid var(--border);
+  padding-left: 0.5rem;
+}
+
+.attachment-drawer-json-leaf {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.1rem 0;
+  flex-wrap: wrap;
+}
+
+.attachment-drawer-json-key {
+  color: var(--accent);
+}
+
+.attachment-drawer-json-meta,
+.attachment-drawer-json-value {
+  color: var(--muted);
+}
+
+.attachment-drawer-mdx-badge {
+  display: inline-block;
+  margin-left: 0.5rem;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  color: var(--muted);
+  vertical-align: middle;
 }
 
 .attachment-drawer-title {

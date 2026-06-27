@@ -284,6 +284,25 @@ describe('AttachmentDrawer', () => {
     expect(screen.getByRole('button', { name: 'Download song.mp3' })).toBeInTheDocument();
   });
 
+  it('switches audio drawer to fallback after a playback error', () => {
+    const { container } = render(
+      <AttachmentDrawer
+        attachment={{
+          name: 'song.mp3',
+          mimeType: 'audio/mpeg',
+          type: 'file',
+          data: 'aGVsbG8=',
+        }}
+        token="secret"
+        onClose={vi.fn()}
+      />,
+    );
+    const audio = container.querySelector('.attachment-drawer-audio') as HTMLAudioElement;
+    Object.defineProperty(audio, 'error', { value: { code: 4 }, configurable: true });
+    fireEvent.error(audio);
+    expect(screen.getByText('Preview unavailable in this browser.')).toBeInTheDocument();
+  });
+
   it('opens audio attachments in a viewer pop-out tab', () => {
     const openSpy = vi.spyOn(attachments, 'openAudioAttachmentInNewTab').mockReturnValue(true);
     render(
@@ -303,6 +322,87 @@ describe('AttachmentDrawer', () => {
       expect.objectContaining({ name: 'song.mp3', mimeType: 'audio/mpeg' }),
       'secret',
     );
+  });
+
+  it('shows audio drawer fallback when playback is unsupported', () => {
+    vi.spyOn(attachments, 'audioMimeTypePlayable').mockReturnValue(false);
+    const { container } = render(
+      <AttachmentDrawer
+        attachment={{
+          name: 'song.flac',
+          mimeType: 'audio/flac',
+          type: 'file',
+          data: 'aGVsbG8=',
+        }}
+        token="secret"
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('Preview unavailable in this browser.')).toBeInTheDocument();
+    expect(container.querySelector('.attachment-drawer-download-fallback')).toHaveTextContent(
+      'Download song.flac',
+    );
+  });
+
+  it('shows HEIC drawer fallback when preview is not supported', () => {
+    vi.spyOn(attachments, 'imageMimeTypeDisplayable').mockReturnValue(false);
+    const { container } = render(
+      <AttachmentDrawer
+        attachment={{
+          name: 'photo.heic',
+          mimeType: 'image/heic',
+          type: 'image',
+          data: 'aGVsbG8=',
+        }}
+        token="secret"
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/HEIC\/HEIF preview is not supported/i)).toBeInTheDocument();
+    expect(container.querySelector('.attachment-drawer-download-fallback')).toHaveTextContent(
+      'Download photo.heic',
+    );
+  });
+
+  it('shows generic image drawer fallback after a load error', () => {
+    vi.spyOn(attachments, 'imageMimeTypeDisplayable').mockReturnValue(true);
+    const { container } = render(
+      <AttachmentDrawer
+        attachment={{
+          name: 'photo.png',
+          mimeType: 'image/png',
+          type: 'image',
+          data: 'aGVsbG8=',
+        }}
+        token="secret"
+        onClose={vi.fn()}
+      />,
+    );
+    const img = container.querySelector('.attachment-drawer-image') as HTMLImageElement;
+    fireEvent.error(img);
+    expect(screen.getByText('Preview unavailable in this browser.')).toBeInTheDocument();
+    expect(container.querySelector('.attachment-drawer-download-fallback')).toHaveTextContent(
+      'Download photo.png',
+    );
+  });
+
+  it('renders svg attachments in a sandboxed iframe', () => {
+    const { container } = render(
+      <AttachmentDrawer
+        attachment={{
+          name: 'icon.svg',
+          mimeType: 'image/svg+xml',
+          type: 'image',
+          data: 'aGVsbG8=',
+        }}
+        token="secret"
+        onClose={vi.fn()}
+      />,
+    );
+    const iframe = container.querySelector('.attachment-drawer-embed');
+    expect(iframe).toHaveAttribute('src', 'data:image/svg+xml;base64,aGVsbG8=');
+    expect(iframe).toHaveAttribute('sandbox', attachments.ATTACHMENT_SVG_IFRAME_SANDBOX);
+    expect(attachments.ATTACHMENT_SVG_IFRAME_SANDBOX).not.toContain('allow-scripts');
   });
 
   it('renders embedded pdfs in an iframe', () => {
@@ -475,6 +575,40 @@ describe('AttachmentDrawer', () => {
     expect(await screen.findByText('hello')).toHaveClass('attachment-drawer-raw');
   });
 
+  it('renders JSON tree preview for json attachments', async () => {
+    vi.spyOn(attachments, 'fetchAttachmentText').mockResolvedValue('{"a":1}');
+    render(
+      <AttachmentDrawer
+        attachment={{
+          name: 'data.json',
+          mimeType: 'application/json',
+          type: 'file',
+          data: btoa('{"a":1}'),
+        }}
+        token="secret"
+        onClose={vi.fn()}
+      />,
+    );
+    expect(await screen.findByText('a')).toBeInTheDocument();
+    expect(screen.getByText('1')).toBeInTheDocument();
+  });
+
+  it('skips text preview when attachment exceeds size guard', () => {
+    render(
+      <AttachmentDrawer
+        attachment={{
+          name: 'huge.log',
+          mimeType: 'text/plain',
+          type: 'file',
+          size: 3 * 1024 * 1024,
+        }}
+        token="secret"
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/too large to preview/i)).toBeInTheDocument();
+  });
+
   it('renders syntax-highlighted code with preview/raw toggle', async () => {
     vi.spyOn(attachments, 'fetchAttachmentText').mockResolvedValue('const x = 1;');
     const openSpy = vi.spyOn(attachments, 'openCodeAttachmentInNewTab').mockResolvedValue(true);
@@ -514,8 +648,43 @@ describe('AttachmentDrawer', () => {
     expect(screen.getByRole('heading', { name: 'archive.zip', level: 3 })).toBeInTheDocument();
     expect(screen.getByText('application/zip')).toBeInTheDocument();
     expect(screen.getByText('2.0 KB')).toBeInTheDocument();
-    expect(screen.getByText('File')).toBeInTheDocument();
+    expect(screen.getByText('ZIP archive')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Open .* in new tab/ })).not.toBeInTheDocument();
+  });
+
+  it('shows pop-out for metadata attachments with a server URL', () => {
+    const openSpy = vi.spyOn(attachments, 'openAttachmentInNewTab').mockReturnValue(true);
+    render(
+      <AttachmentDrawer
+        attachment={{
+          name: 'archive.zip',
+          mimeType: 'application/zip',
+          type: 'file',
+          url: '/api/attachments/msg-1/archive.zip',
+        }}
+        token="secret"
+        onClose={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Open archive.zip in new tab' }));
+    expect(openSpy).toHaveBeenCalled();
+  });
+
+  it('shows mdx badge for mdx markdown attachments', async () => {
+    vi.spyOn(attachments, 'fetchAttachmentText').mockResolvedValue('# Hello');
+    render(
+      <AttachmentDrawer
+        attachment={{
+          name: 'post.mdx',
+          mimeType: 'text/markdown',
+          type: 'file',
+          data: btoa('# Hello'),
+        }}
+        token="secret"
+        onClose={vi.fn()}
+      />,
+    );
+    expect(await screen.findByText('MDX (markdown only)')).toBeInTheDocument();
   });
 
   it('copies markdown content and shows feedback', async () => {
