@@ -4,7 +4,7 @@ import os from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { mimeTypeFromFilename, parseAttachmentByteRange, serveAttachmentFile } from './webchat-serve-attachment.js';
+import { mimeTypeFromFilename, parseAttachmentByteRange, serveAttachmentFile, inferAttachmentMime } from './webchat-serve-attachment.js';
 
 function requestFile(
   filePath: string,
@@ -62,7 +62,17 @@ describe('webchat-serve-attachment', () => {
   it('maps common extensions to mime types', () => {
     expect(mimeTypeFromFilename('photo.png')).toBe('image/png');
     expect(mimeTypeFromFilename('notes.md')).toBe('text/markdown');
+    expect(mimeTypeFromFilename('song.mp3')).toBe('audio/mpeg');
+    expect(mimeTypeFromFilename('24246.MOV')).toBe('video/quicktime');
     expect(mimeTypeFromFilename('unknown')).toBe('application/octet-stream');
+  });
+
+  it('infers attachment mime types from filenames when generic', () => {
+    expect(inferAttachmentMime('song.mp3', 'application/octet-stream')).toBe('audio/mpeg');
+    expect(inferAttachmentMime('song.mp3', 'audio/mpeg')).toBe('audio/mpeg');
+    expect(inferAttachmentMime('song.mp3', 'text/plain')).toBe('audio/mpeg');
+    expect(inferAttachmentMime('clip.mp4', 'text/plain')).toBe('video/mp4');
+    expect(inferAttachmentMime('photo.png', 'text/plain')).toBe('image/png');
   });
 
   it('streams full file with length and accept-ranges headers', async () => {

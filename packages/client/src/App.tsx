@@ -27,6 +27,8 @@ import {
   defaultRoomThreads,
 } from './app-helpers';
 import {
+  attachmentIsAudio,
+  attachmentIsVideo,
   formatAttachmentRejections,
   MAX_ATTACHMENTS,
   mergePendingAttachments,
@@ -963,10 +965,31 @@ export function App() {
                     {pendingAttachments.map((att, index) => (
                       <div
                         key={`${att.name}-${index}`}
-                        className={`composer-preview${att.type === 'file' ? ' composer-preview-file' : ''}`}
+                        className={`composer-preview${
+                          att.type === 'file' &&
+                          !attachmentIsVideo(att.mimeType) &&
+                          !attachmentIsAudio(att.mimeType)
+                            ? ' composer-preview-file'
+                            : ''
+                        }${attachmentIsAudio(att.mimeType) ? ' composer-preview-audio' : ''}`}
                       >
                         {att.type === 'image' ? (
                           <img src={att.previewUrl} alt={att.name} />
+                        ) : attachmentIsVideo(att.mimeType) ? (
+                          <video
+                            src={att.previewUrl}
+                            preload="metadata"
+                            muted
+                            playsInline
+                            aria-label={att.name}
+                          />
+                        ) : attachmentIsAudio(att.mimeType) ? (
+                          <audio
+                            src={att.previewUrl}
+                            controls
+                            preload="metadata"
+                            aria-label={att.name}
+                          />
                         ) : (
                           <span className="composer-preview-name" title={att.name}>
                             {att.name}

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { spawnSyncMock } from './test/spawn-mock.js';
 import { parseArgs, runCommand, main, isCliEntry } from './bin.js';
 import { runVerify } from './install.js';
+import * as install from './install.js';
 import {
   appendBarrelImport,
   copyAdapterFiles,
@@ -16,7 +17,7 @@ import {
   removeWebchatBootBlock,
   scaffoldEnv,
 } from './patch.js';
-import { findNanoclawRoot, packageRoot, resourcesDir } from './paths.js';
+import { findNanoclawRoot, packageRoot, resourcesDir, ADAPTER_COPY_RULES } from './paths.js';
 
 const tempDirs: string[] = [];
 
@@ -242,6 +243,39 @@ describe('runCommand', () => {
     write.mockRestore();
   });
 
+  it('verify success prints optional notice, output, and host reminder', () => {
+    vi.spyOn(install, 'runVerify').mockReturnValue({
+      root: '/tmp/nanoclaw',
+      ok: true,
+      output: 'vitest ok',
+      notice: 'preflight notice',
+      hostReminder: 'nvm use 22',
+    });
+    const verifyLog = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    expect(runCommand(['node', 'bin.js', 'verify', '--path', '/tmp/nanoclaw'])).toBe(0);
+    expect(String(write.mock.calls[0]?.[0])).toContain('vitest ok');
+    expect(verifyLog.mock.calls.map((call) => String(call[0]))).toEqual([
+      'preflight notice',
+      'Verification passed.',
+      'nvm use 22',
+    ]);
+    verifyLog.mockRestore();
+    write.mockRestore();
+  });
+
+  it('verify success skips optional notice and host reminder when unset', () => {
+    vi.spyOn(install, 'runVerify').mockReturnValue({
+      root: '/tmp/nanoclaw',
+      ok: true,
+      output: '',
+    });
+    const verifyLog = vi.spyOn(console, 'log').mockImplementation(() => {});
+    expect(runCommand(['node', 'bin.js', 'verify', '--path', '/tmp/nanoclaw'])).toBe(0);
+    expect(verifyLog.mock.calls.map((call) => String(call[0]))).toEqual(['Verification passed.']);
+    verifyLog.mockRestore();
+  });
+
   it('returns 1 when command throws', () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     expect(runCommand(['node', 'bin.js', 'sync-skill', '--path', '/nonexistent/path'])).toBe(1);
@@ -338,6 +372,25 @@ describe('patch edge cases', () => {
     expect(() => copyAdapterFiles(root, path.join(root, 'missing-resources'))).toThrow(
       'Missing adapter resource',
     );
+  });
+
+  it('throws with plural message when multiple adapter resources are missing', () => {
+    const root = makeNanoclawFixture();
+    const partial = fs.mkdtempSync(path.join(os.tmpdir(), 'partial-resources-'));
+    tempDirs.push(partial);
+    fs.writeFileSync(path.join(partial, 'web.ts'), 'export {};\n');
+    expect(() => copyAdapterFiles(root, partial)).toThrow('Missing adapter resources');
+  });
+
+  it('throws with singular message when one adapter resource is missing', () => {
+    const root = makeNanoclawFixture();
+    const partial = fs.mkdtempSync(path.join(os.tmpdir(), 'partial-resources-one-'));
+    tempDirs.push(partial);
+    for (const rule of ADAPTER_COPY_RULES) {
+      fs.writeFileSync(path.join(partial, rule.source), 'export {};\n');
+    }
+    fs.rmSync(path.join(partial, ADAPTER_COPY_RULES.at(-1)!.source));
+    expect(() => copyAdapterFiles(root, partial)).toThrow(/^Missing adapter resource: /);
   });
 
   it('throws when initChannelAdapters marker is missing', () => {

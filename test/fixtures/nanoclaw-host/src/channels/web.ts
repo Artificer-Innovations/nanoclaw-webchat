@@ -73,7 +73,7 @@ import {
   restoreStagedUpload,
   type StagedUpload,
 } from '../webchat-uploads.js';
-import { serveAttachmentFile } from '../webchat-serve-attachment.js';
+import { inferAttachmentMime, serveAttachmentFile } from '../webchat-serve-attachment.js';
 import { cleanupAgentSessionsForThread } from '../webchat-thread-cleanup.js';
 import { routeInbound } from '../router.js';
 import { registerChannelAdapter } from './channel-registry.js';
@@ -224,34 +224,6 @@ function resolveApprovalSessionOrigin(questionId: string): ApprovalSessionOrigin
   }
 }
 
-const EXT_TO_MIME: Record<string, string> = {
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.png': 'image/png',
-  '.webp': 'image/webp',
-  '.gif': 'image/gif',
-  '.pdf': 'application/pdf',
-  '.txt': 'text/plain',
-  '.md': 'text/markdown',
-  '.markdown': 'text/markdown',
-  '.json': 'application/json',
-  '.zip': 'application/zip',
-  '.csv': 'text/csv',
-  '.html': 'text/html',
-  '.htm': 'text/html',
-};
-
-function mimeTypeFromFilename(filename: string): string {
-  const ext = path.extname(filename).toLowerCase();
-  return EXT_TO_MIME[ext] ?? 'application/octet-stream';
-}
-
-function inferAttachmentMime(name: string, mimeType: string): string {
-  const trimmed = mimeType.trim().toLowerCase();
-  if (trimmed) return trimmed;
-  return mimeTypeFromFilename(name);
-}
-
 function attachmentType(mimeType: string): 'image' | 'file' {
   return mimeType.startsWith('image/') ? 'image' : 'file';
 }
@@ -261,7 +233,7 @@ function outboundFileToAttachment(file: OutboundFile): WebChatAttachment | null 
     log.warn('Skipping oversize outbound attachment', { filename: file.filename, size: file.data.length });
     return null;
   }
-  const mimeType = mimeTypeFromFilename(file.filename);
+  const mimeType = inferAttachmentMime(file.filename, '');
   return {
     name: file.filename,
     mimeType,

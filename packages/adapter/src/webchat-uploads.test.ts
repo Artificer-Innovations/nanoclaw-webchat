@@ -62,6 +62,26 @@ describe('webchat-uploads', () => {
     expect(fs.existsSync(uploadsStagingRoot())).toBe(true);
   });
 
+  it('infers mp3 mime types from filename on multipart upload', async () => {
+    const boundary = '----TestBoundary';
+    const payload = Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="song.mp3"\r\nContent-Type: application/octet-stream\r\n\r\n`),
+      Buffer.from('fake-mp3'),
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ]);
+    const req = Readable.from([payload]) as http.IncomingMessage;
+    req.headers = {
+      'content-type': `multipart/form-data; boundary=${boundary}`,
+      'content-length': String(payload.length),
+    };
+
+    const result = await parseMultipartUpload(req, 'lobby', 'main');
+    expect('upload' in result).toBe(true);
+    if (!('upload' in result)) return;
+    expect(result.upload.name).toBe('song.mp3');
+    expect(result.upload.mimeType).toBe('audio/mpeg');
+  });
+
   it('assembles chunked uploads', async () => {
     const uploadId = '550e8400-e29b-41d4-a716-446655440000';
     const data = Buffer.from('chunked-content').toString('base64');

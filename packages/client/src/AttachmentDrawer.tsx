@@ -13,12 +13,16 @@ import { codeLanguageFromAttachment } from './attachment-code';
 import {
   attachmentDataUrl,
   attachmentIframeSandbox,
+  attachmentIsAudio,
+  attachmentIsVideo,
   attachmentPreviewMode,
   attachmentSupportsPopOut,
   attachmentSupportsPreviewToggle,
   attachmentTextCategory,
+  attachmentUsesAudioPreview,
   attachmentUsesFormattedMessagePreview,
   attachmentUsesIframePreview,
+  attachmentUsesVideoPreview,
   ATTACHMENT_HTML_IFRAME_SANDBOX,
   copyAttachmentForPreview,
   downloadAttachment,
@@ -31,6 +35,8 @@ import {
   openHtmlAttachmentInNewTab,
   openMarkdownAttachmentInNewTab,
   openPlainTextAttachmentInNewTab,
+  openVideoAttachmentInNewTab,
+  openAudioAttachmentInNewTab,
   fetchAttachmentText,
 } from './attachments';
 import { CodePreview } from './CodePreview';
@@ -172,6 +178,14 @@ export function AttachmentDrawer({
     }
     if (category === 'csv') {
       void openCsvAttachmentInNewTab(att, token);
+      return;
+    }
+    if (attachmentIsVideo(att.mimeType)) {
+      openVideoAttachmentInNewTab(att, token);
+      return;
+    }
+    if (attachmentIsAudio(att.mimeType)) {
+      openAudioAttachmentInNewTab(att, token);
       return;
     }
     openAttachmentInNewTab(att, token);
@@ -369,6 +383,15 @@ export function AttachmentDrawer({
               src={embedUrl}
               sandbox={attachmentIframeSandbox(att.mimeType)}
             />
+          ) : attachmentUsesVideoPreview(att.mimeType) ? (
+            <video
+              className="attachment-drawer-video"
+              src={embedUrl}
+              controls
+              playsInline
+            />
+          ) : attachmentUsesAudioPreview(att.mimeType) ? (
+            <audio className="attachment-drawer-audio" src={embedUrl} controls preload="metadata" />
           ) : (
             <img className="attachment-drawer-image" src={embedUrl} alt={att.name} />
           )
@@ -392,7 +415,7 @@ export function AttachmentDrawer({
             </div>
             <div>
               <dt>Type</dt>
-              <dd>{attachmentTypeLabel(att.type)}</dd>
+              <dd>{attachmentTypeLabel(att.type, att.mimeType)}</dd>
             </div>
           </dl>
         ) : null}

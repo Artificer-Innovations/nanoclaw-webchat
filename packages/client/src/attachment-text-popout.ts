@@ -180,6 +180,20 @@ main { padding: 20px; }
 }
 .csv-empty { color: var(--muted); margin: 0; }
 .csv-truncated { color: var(--muted); margin: 0 0 0.75rem; font-size: 0.8125rem; }
+.video-preview {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  max-height: calc(100vh - 96px);
+  margin: 0 auto;
+  border-radius: 8px;
+  background: #000;
+}
+.audio-preview {
+  display: block;
+  width: min(100%, 640px);
+  margin: 0 auto;
+}
 ${CODE_HIGHLIGHT_STYLES}
 `;
 
@@ -248,6 +262,50 @@ export function buildPlainTextPopoutDocument(title: string, text: string): strin
 </header>
 <main>
   <pre class="raw-text">${safeText}</pre>
+</main>
+</body>
+</html>`;
+}
+
+export function buildVideoPopoutDocument(title: string, videoSrc: string): string {
+  const safeTitle = escapeHtml(title);
+  const safeSrc = escapeHtml(videoSrc);
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${safeTitle}</title>
+<style>${POPOUT_STYLES}</style>
+</head>
+<body>
+<header>
+  <h1>${safeTitle}</h1>
+</header>
+<main>
+  <video class="video-preview" src="${safeSrc}" controls playsinline preload="metadata"></video>
+</main>
+</body>
+</html>`;
+}
+
+export function buildAudioPopoutDocument(title: string, audioSrc: string): string {
+  const safeTitle = escapeHtml(title);
+  const safeSrc = escapeHtml(audioSrc);
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${safeTitle}</title>
+<style>${POPOUT_STYLES}</style>
+</head>
+<body>
+<header>
+  <h1>${safeTitle}</h1>
+</header>
+<main>
+  <audio class="audio-preview" src="${safeSrc}" controls preload="metadata"></audio>
 </main>
 </body>
 </html>`;

@@ -967,6 +967,30 @@ body.sidebar-resizing * {
   border: 1px solid var(--border);
 }
 
+.composer-preview video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
+.composer-preview-audio {
+  width: auto;
+  min-width: 10rem;
+  max-width: 14rem;
+  height: auto;
+  min-height: 4.5rem;
+  padding: 0.35rem;
+  display: flex;
+  align-items: center;
+}
+
+.composer-preview-audio audio {
+  width: 100%;
+  min-width: 9rem;
+}
+
 .composer-preview-remove {
   position: absolute;
   top: -0.35rem;
@@ -1039,6 +1063,59 @@ body.sidebar-resizing * {
   border-radius: 8px;
   border: 1px solid var(--border);
   object-fit: contain;
+}
+
+.msg-attachment-video {
+  cursor: pointer;
+  text-decoration: none;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+}
+
+.msg-attachment-video video {
+  display: block;
+  max-width: min(100%, 320px);
+  max-height: 240px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  object-fit: contain;
+}
+
+.msg-attachment-audio {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  max-width: min(100%, 320px);
+  padding: 0.5rem 0.65rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.msg-attachment-audio-title {
+  cursor: pointer;
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 0.875rem;
+  color: var(--accent);
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.msg-attachment-audio-title:hover {
+  text-decoration: underline;
+}
+
+.msg-attachment-audio audio {
+  display: block;
+  width: 100%;
+  min-width: 12rem;
 }
 
 .msg-attachment-file {
@@ -1356,6 +1433,23 @@ body.attachment-drawer-resizing * {
   margin: 0;
   object-fit: contain;
   border-radius: 6px;
+}
+
+.attachment-drawer-video {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  margin: 0;
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.attachment-drawer-audio {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
 }
 
 .attachment-drawer-meta {

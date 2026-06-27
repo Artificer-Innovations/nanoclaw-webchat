@@ -21,6 +21,8 @@ const EXT_TO_MIME: Record<string, string> = {
   '.svg': 'image/svg+xml',
   '.mp4': 'video/mp4',
   '.webm': 'video/webm',
+  '.mov': 'video/quicktime',
+  '.m4v': 'video/quicktime',
   '.mp3': 'audio/mpeg',
   '.wav': 'audio/wav',
   '.zip': 'application/zip',
@@ -29,6 +31,25 @@ const EXT_TO_MIME: Record<string, string> = {
 export function mimeTypeFromFilename(filename: string): string {
   const ext = filename.includes('.') ? `.${filename.split('.').pop()!.toLowerCase()}` : '';
   return EXT_TO_MIME[ext] ?? 'application/octet-stream';
+}
+
+/** Prefer filename inference when upload/browser MIME is missing or generic. */
+export function inferAttachmentMime(name: string, mimeType = ''): string {
+  const trimmed = mimeType.trim().toLowerCase();
+  const fromFilename = mimeTypeFromFilename(name);
+  if (!trimmed || trimmed === 'application/octet-stream') {
+    return fromFilename;
+  }
+  if (fromFilename.startsWith('audio/') && !trimmed.startsWith('audio/')) {
+    return fromFilename;
+  }
+  if (fromFilename.startsWith('video/') && !trimmed.startsWith('video/')) {
+    return fromFilename;
+  }
+  if (fromFilename.startsWith('image/') && !trimmed.startsWith('image/')) {
+    return fromFilename;
+  }
+  return trimmed;
 }
 
 export type ParsedAttachmentByteRange =

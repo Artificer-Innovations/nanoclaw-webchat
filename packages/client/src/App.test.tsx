@@ -1795,6 +1795,46 @@ describe('App', () => {
     clickSpy.mockRestore();
   });
 
+  it('shows video preview in composer pending attachments', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const video = new File(['hello'], 'clip.mp4', { type: 'video/mp4' });
+    fireEvent.change(document.querySelector('input[type="file"]') as HTMLInputElement, {
+      target: { files: [video] },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('clip.mp4')).toBeInTheDocument();
+    });
+    expect(document.querySelector('.composer-preview video')).toHaveAttribute(
+      'src',
+      expect.stringMatching(/^blob:/),
+    );
+    expect(document.querySelector('.composer-preview')).not.toHaveClass('composer-preview-file');
+  });
+
+  it('shows audio preview in composer pending attachments', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const audio = new File(['hello'], 'song.mp3', { type: 'audio/mpeg' });
+    fireEvent.change(document.querySelector('input[type="file"]') as HTMLInputElement, {
+      target: { files: [audio] },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('song.mp3')).toBeInTheDocument();
+    });
+    expect(document.querySelector('.composer-preview-audio audio')).toHaveAttribute(
+      'src',
+      expect.stringMatching(/^blob:/),
+    );
+    expect(document.querySelector('.composer-preview-audio')).not.toHaveClass('composer-preview-file');
+  });
+
   it('caps pending attachments when files are added concurrently', async () => {
     sessionStorage.setItem('webchat_token', 'secret');
     const pending = (name: string) => ({
@@ -2003,6 +2043,114 @@ describe('App', () => {
     );
     fireEvent.click(button);
     expect(screen.getByLabelText('Attachment preview: chart.png')).toBeInTheDocument();
+  });
+
+  it('renders video attachments in message history and opens drawer', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/messages')) {
+        return {
+          ok: true,
+          json: async () => ({
+            messages: [
+              {
+                id: 'msg-vid',
+                direction: 'outbound',
+                text: '',
+                timestamp: 1_700_000_000_000,
+                platformId: 'lobby-1',
+                threadId: 'main',
+                attachments: [
+                  {
+                    name: 'clip.mp4',
+                    mimeType: 'video/mp4',
+                    type: 'file',
+                    data: 'aGVsbG8=',
+                  },
+                ],
+              },
+            ],
+          }),
+        } as Response;
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          user: { id: 'u1', displayName: 'Test User' },
+          rooms: [{ platformId: 'lobby-1', name: 'Lobby', kind: 'lobby' }],
+          agents: [{ folder: 'sarah', name: 'Sarah', mention: '@sarah' }],
+        }),
+      } as Response;
+    });
+
+    const { container } = render(<App />);
+    const button = await screen.findByRole('button', { name: 'View clip.mp4' });
+    expect(button).toHaveClass('msg-attachment-video');
+    expect(container.querySelector('.msg-attachment-video video')).toHaveAttribute(
+      'src',
+      'data:video/mp4;base64,aGVsbG8=',
+    );
+    fireEvent.click(button);
+    expect(screen.getByLabelText('Attachment preview: clip.mp4')).toBeInTheDocument();
+    expect(container.querySelector('.attachment-drawer-video')).toHaveAttribute(
+      'src',
+      'data:video/mp4;base64,aGVsbG8=',
+    );
+  });
+
+  it('renders audio attachments in message history and opens drawer', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/messages')) {
+        return {
+          ok: true,
+          json: async () => ({
+            messages: [
+              {
+                id: 'msg-aud',
+                direction: 'outbound',
+                text: '',
+                timestamp: 1_700_000_000_000,
+                platformId: 'lobby-1',
+                threadId: 'main',
+                attachments: [
+                  {
+                    name: 'song.mp3',
+                    mimeType: 'audio/mpeg',
+                    type: 'file',
+                    data: 'aGVsbG8=',
+                  },
+                ],
+              },
+            ],
+          }),
+        } as Response;
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          user: { id: 'u1', displayName: 'Test User' },
+          rooms: [{ platformId: 'lobby-1', name: 'Lobby', kind: 'lobby' }],
+          agents: [{ folder: 'sarah', name: 'Sarah', mention: '@sarah' }],
+        }),
+      } as Response;
+    });
+
+    const { container } = render(<App />);
+    const button = await screen.findByRole('button', { name: 'View song.mp3' });
+    expect(button).toHaveClass('msg-attachment-audio-title');
+    expect(container.querySelector('.msg-attachment-audio audio')).toHaveAttribute(
+      'src',
+      'data:audio/mpeg;base64,aGVsbG8=',
+    );
+    fireEvent.click(button);
+    expect(screen.getByLabelText('Attachment preview: song.mp3')).toBeInTheDocument();
+    expect(container.querySelector('.attachment-drawer-audio')).toHaveAttribute(
+      'src',
+      'data:audio/mpeg;base64,aGVsbG8=',
+    );
   });
 
   it('deletes a thread from the sidebar and returns to main', async () => {
