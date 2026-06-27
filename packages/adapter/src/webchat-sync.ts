@@ -17,20 +17,28 @@ import {
 } from './db/messaging-groups.js';
 import { log } from './log.js';
 import { listThreads, type WebchatThreadMeta } from './webchat-store.js';
+import {
+  inboxPlatformForUser,
+  toPhysicalPlatformId,
+  WEB_INBOX_PLATFORM_ID,
+  WEB_LOBBY_PLATFORM_ID,
+} from './webchat-room-scope.js';
 import { upsertUser } from './modules/permissions/db/users.js';
 import { addMember } from './modules/permissions/db/agent-group-members.js';
 import type { AgentGroup } from './types.js';
 
+export { WEB_LOBBY_PLATFORM_ID, WEB_INBOX_PLATFORM_ID };
+
 export const WEB_CHANNEL_TYPE = 'web';
-export const WEB_LOBBY_PLATFORM_ID = 'lobby';
-export const WEB_INBOX_PLATFORM_ID = 'inbox';
+
+function readAuthMode(): 'local' | 'public' {
+  const env = readEnvFile(['WEBCHAT_AUTH_MODE']);
+  const raw = process.env.WEBCHAT_AUTH_MODE || env.WEBCHAT_AUTH_MODE || 'local';
+  return raw === 'public' ? 'public' : 'local';
+}
 
 function generateId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function now(): string {
-  return new Date().toISOString();
 }
 
 function dmPlatformId(folder: string): string {
@@ -52,7 +60,7 @@ function ensureLobbyMessagingGroup(): string {
       name: 'Lobby',
       is_group: 1,
       unknown_sender_policy: 'strict',
-      created_at: now(),
+      created_at: new Date().toISOString(),
     });
     mg = getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, WEB_LOBBY_PLATFORM_ID)!;
     log.info('Webchat sync: created lobby messaging group', { id: mg.id });
@@ -60,30 +68,7 @@ function ensureLobbyMessagingGroup(): string {
   return mg.id;
 }
 
-function ensureInboxMessagingGroup(): string {
-  let mg = getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, WEB_INBOX_PLATFORM_ID);
-  if (!mg) {
-    const id = generateId('mg');
-    createMessagingGroup({
-      id,
-      channel_type: WEB_CHANNEL_TYPE,
-      platform_id: WEB_INBOX_PLATFORM_ID,
-      name: 'Inbox',
-      is_group: 0,
-      unknown_sender_policy: 'strict',
-      created_at: now(),
-    });
-    mg = getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, WEB_INBOX_PLATFORM_ID)!;
-    log.info('Webchat sync: created inbox messaging group', { id: mg.id });
-  } else if (mg.is_group !== 0) {
-    updateMessagingGroup(mg.id, { is_group: 0 });
-    mg = getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, WEB_INBOX_PLATFORM_ID)!;
-  }
-  return mg.id;
-}
-
-function ensureDmMessagingGroup(agent: AgentGroup): string {
-  const platformId = dmPlatformId(agent.folder);
+function ensureDmMessagingGroupForPlatform(platformId: string, name: string): string {
   let mg = getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, platformId);
   if (!mg) {
     const id = generateId('mg');
@@ -91,13 +76,40 @@ function ensureDmMessagingGroup(agent: AgentGroup): string {
       id,
       channel_type: WEB_CHANNEL_TYPE,
       platform_id: platformId,
-      name: agent.name,
+      name,
       is_group: 0,
       unknown_sender_policy: 'strict',
-      created_at: now(),
+      created_at: new Date().toISOString(),
     });
     mg = getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, platformId)!;
     log.info('Webchat sync: created DM messaging group', { platformId, id: mg.id });
+  } else if (mg.is_group !== 0) {
+    updateMessagingGroup(mg.id, { is_group: 0 });
+    mg = getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, platformId)!;
+  }
+  return mg.id;
+}
+
+function ensureDmMessagingGroup(agent: AgentGroup): string {
+  const platformId = dmPlatformId(agent.folder);
+  return ensureDmMessagingGroupForPlatform(platformId, agent.name);
+}
+
+function ensureInboxMessagingGroupForPlatform(platformId: string): string {
+  let mg = getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, platformId);
+  if (!mg) {
+    const id = generateId('mg');
+    createMessagingGroup({
+      id,
+      channel_type: WEB_CHANNEL_TYPE,
+      platform_id: platformId,
+      name: 'Inbox',
+      is_group: 0,
+      unknown_sender_policy: 'strict',
+      created_at: new Date().toISOString(),
+    });
+    mg = getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, platformId)!;
+    log.info('Webchat sync: created inbox messaging group', { platformId, id: mg.id });
   } else if (mg.is_group !== 0) {
     updateMessagingGroup(mg.id, { is_group: 0 });
     mg = getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, platformId)!;
@@ -171,6 +183,34 @@ function ensureMemberAccess(userId: string, agentGroupId: string): void {
   });
 }
 
+/** Per-user inbox + DM messaging groups and permissions (public mode). Idempotent. */
+export function ensureUserWebchatWirings(userId: string, displayName: string): void {
+  const teamFolder = readTeamFolder();
+  ensureWebUser(userId, displayName);
+
+  const inboxPhysical = inboxPlatformForUser(userId);
+  ensureInboxMessagingGroupForPlatform(inboxPhysical);
+
+  const lobbyMgId = getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, WEB_LOBBY_PLATFORM_ID)?.id;
+  const agents = getAllAgentGroups();
+
+  for (const agent of agents) {
+    ensureMemberAccess(userId, agent.id);
+
+    const dmPhysical = toPhysicalPlatformId(`dm:${agent.folder}`, userId);
+    const dmMgId = ensureDmMessagingGroupForPlatform(dmPhysical, agent.name);
+    upsertDmWiring(dmMgId, agent.id);
+
+    if (lobbyMgId) {
+      const pattern =
+        teamFolder && agent.folder === teamFolder ? `@(team|${agent.folder})\\b` : lobbyPattern(agent.folder);
+      upsertLobbyWiring(lobbyMgId, agent.id, pattern);
+    }
+  }
+
+  log.info('Webchat user wirings synced', { userId, agentCount: agents.length });
+}
+
 export interface WebchatBootstrapRoom {
   platformId: string;
   name: string;
@@ -194,13 +234,16 @@ export interface WebchatBootstrapPayload {
 export function buildWebchatBootstrap(userId: string, displayName: string): WebchatBootstrapPayload {
   const agents = getAllAgentGroups();
   const teamFolder = readTeamFolder();
+  const publicMode = readAuthMode() === 'public';
+
+  const inboxPhysical = publicMode ? inboxPlatformForUser(userId) : WEB_INBOX_PLATFORM_ID;
 
   const rooms: WebchatBootstrapRoom[] = [
     {
       platformId: WEB_INBOX_PLATFORM_ID,
       name: 'Inbox',
       kind: 'inbox',
-      threads: listThreads(WEB_INBOX_PLATFORM_ID),
+      threads: listThreads(inboxPhysical),
     },
     {
       platformId: WEB_LOBBY_PLATFORM_ID,
@@ -209,13 +252,14 @@ export function buildWebchatBootstrap(userId: string, displayName: string): Webc
       threads: listThreads(WEB_LOBBY_PLATFORM_ID),
     },
     ...agents.map((a) => {
-      const platformId = dmPlatformId(a.folder);
+      const logical = dmPlatformId(a.folder);
+      const storageId = publicMode ? toPhysicalPlatformId(logical, userId) : logical;
       return {
-        platformId,
+        platformId: logical,
         name: a.name,
         kind: 'dm' as const,
         folder: a.folder,
-        threads: listThreads(platformId),
+        threads: listThreads(storageId),
       };
     }),
   ];
@@ -241,27 +285,34 @@ export function readTeamFolder(): string | null {
 
 /** Sync lobby + DM wirings for all agent groups. Idempotent. */
 export function syncWebchatWirings(): void {
-  const env = readEnvFile(['WEBCHAT_ENABLED', 'WEBCHAT_USER_ID', 'WEBCHAT_DISPLAY_NAME']);
+  const env = readEnvFile(['WEBCHAT_ENABLED', 'WEBCHAT_USER_ID', 'WEBCHAT_DISPLAY_NAME', 'WEBCHAT_AUTH_MODE']);
   const enabled = process.env.WEBCHAT_ENABLED || env.WEBCHAT_ENABLED;
   if (!enabled || enabled === 'false') return;
 
+  const publicMode = readAuthMode() === 'public';
   const userId = process.env.WEBCHAT_USER_ID || env.WEBCHAT_USER_ID || 'web:local';
   const displayName = process.env.WEBCHAT_DISPLAY_NAME || env.WEBCHAT_DISPLAY_NAME || 'Local';
   const teamFolder = readTeamFolder();
 
-  ensureWebUser(userId, displayName);
-
-  ensureInboxMessagingGroup();
   const lobbyMgId = ensureLobbyMessagingGroup();
   const agents = getAllAgentGroups();
 
   for (const agent of agents) {
-    ensureMemberAccess(userId, agent.id);
-
     const pattern =
       teamFolder && agent.folder === teamFolder ? `@(team|${agent.folder})\\b` : lobbyPattern(agent.folder);
     upsertLobbyWiring(lobbyMgId, agent.id, pattern);
+  }
 
+  if (publicMode) {
+    log.info('Webchat wirings synced (public mode — lobby only at boot)', { agentCount: agents.length, lobbyMgId });
+    return;
+  }
+
+  ensureWebUser(userId, displayName);
+  ensureInboxMessagingGroupForPlatform(WEB_INBOX_PLATFORM_ID);
+
+  for (const agent of agents) {
+    ensureMemberAccess(userId, agent.id);
     const dmMgId = ensureDmMessagingGroup(agent);
     upsertDmWiring(dmMgId, agent.id);
   }

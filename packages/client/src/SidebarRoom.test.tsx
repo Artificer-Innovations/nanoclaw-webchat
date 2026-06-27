@@ -126,6 +126,27 @@ describe('SidebarRoom', () => {
     expect(onRenameThread).not.toHaveBeenCalled();
   });
 
+  it('uses the inbox icon for inbox rooms', () => {
+    render(
+      <SidebarRoom
+        room={inbox}
+        threads={[{ id: 'main', title: 'Main' }]}
+        isActiveRoom
+        activeThreadId="main"
+        expanded={false}
+        unreadCounts={{}}
+        onToggleExpand={vi.fn()}
+        onSelectMain={vi.fn()}
+        onSelectThread={vi.fn()}
+        onNewThread={vi.fn()}
+        onRenameThread={vi.fn()}
+        onDeleteThread={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: 'Inbox' })).toBeInTheDocument();
+  });
+
   it('uses the bot icon for direct-message rooms', () => {
     const { container } = render(
       <SidebarRoom

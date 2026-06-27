@@ -80,14 +80,19 @@ import {
 } from './sidebar-layout';
 import { defaultThreadTitle, isAutoThreadTitle, titleFromMessage } from './thread-names';
 import type { BootstrapPayload, ThreadMeta, WebChatAttachment, WebChatMessage, WebChatRoom } from './types';
+import { Login } from './Login';
 import {
   connectWebSocket,
   createThread,
   deleteThread,
+  detectPublicAuthMode,
   disengageAgent,
+  fetchAuthMe,
   fetchBootstrap,
   fetchMessages,
   getStoredToken,
+  isLocalTokenMode,
+  logoutSession,
   renameThread,
   sendMessage,
   storeToken,
@@ -102,7 +107,12 @@ function threadsMapFromRooms(rooms: WebChatRoom[]): Record<string, ThreadMeta[]>
 }
 
 export function App() {
-  const [token] = useState(getStoredToken);
+  const localToken = getStoredToken();
+  const hasMetaToken = isLocalTokenMode();
+  const [authMode, setAuthMode] = useState<'loading' | 'local' | 'public'>(hasMetaToken ? 'local' : 'loading');
+  const [publicAuthed, setPublicAuthed] = useState<boolean | null>(hasMetaToken ? true : null);
+  const authToken = authMode === 'local' ? localToken : '';
+  const sessionReady = authMode === 'local' ? Boolean(localToken) : publicAuthed === true;
   const [bootstrap, setBootstrap] = useState<BootstrapPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [room, setRoom] = useState<WebChatRoom | null>(null);
@@ -171,7 +181,7 @@ export function App() {
     syncInFlightRef.current = true;
     try {
       const result = await syncInactiveUnread(
-        token,
+        authToken,
         bootstrap!,
         threadsByRoomRef.current,
         roomRef.current,
@@ -188,13 +198,30 @@ export function App() {
     } finally {
       syncInFlightRef.current = false;
     }
-  }, [token, bootstrap]);
+  }, [authToken, bootstrap]);
 
   useEffect(() => {
-    if (!token) return;
-    storeToken(token);
-    loadBootstrap(token).catch((err: Error) => setError(err.message));
-  }, [token, loadBootstrap]);
+    if (hasMetaToken) return;
+    void detectPublicAuthMode()
+      .then((isPublic) => {
+        setAuthMode(isPublic ? 'public' : 'local');
+        if (!isPublic) setPublicAuthed(null);
+      })
+      .catch(() => setAuthMode('local'));
+  }, [hasMetaToken]);
+
+  useEffect(() => {
+    if (authMode !== 'public') return;
+    void fetchAuthMe()
+      .then((me) => setPublicAuthed(me != null))
+      .catch(() => setPublicAuthed(false));
+  }, [authMode]);
+
+  useEffect(() => {
+    if (!sessionReady) return;
+    if (authMode === 'local' && localToken) storeToken(localToken);
+    loadBootstrap(authToken).catch((err: Error) => setError(err.message));
+  }, [sessionReady, authToken, authMode, localToken, loadBootstrap]);
 
   useEffect(() => {
     if (!room) return;
@@ -202,9 +229,9 @@ export function App() {
   }, [room?.platformId]);
 
   useEffect(() => {
-    if (!token || !room) return;
+    if (!sessionReady || !room) return;
     let cancelled = false;
-    fetchMessages(token, room.platformId, threadId)
+    fetchMessages(authToken, room.platformId, threadId)
       .then(({ messages: msgs, engagedAgents }) => {
         if (!cancelled) {
           setMessages(msgs);
@@ -228,12 +255,12 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [token, room, threadId]);
+  }, [authToken, room, threadId, sessionReady]);
 
   useEffect(() => {
-    if (!token || !bootstrap) return;
+    if (!sessionReady || !bootstrap) return;
     const connection = connectWebSocket(
-      token,
+      authToken,
       (event) => {
         if (event.type === 'engaged') {
           setEngagedAgentsByThread((prev) => ({
@@ -297,10 +324,10 @@ export function App() {
       },
     );
     return () => connection.close();
-  }, [token, bootstrap, syncInactiveRooms]);
+  }, [authToken, bootstrap, syncInactiveRooms, sessionReady]);
 
   useEffect(() => {
-    if (!token || !bootstrap) return;
+    if (!sessionReady || !bootstrap) return;
     void syncInactiveRooms();
     const id = setInterval(() => {
       if (skipNextIntervalSyncRef.current) {
@@ -310,7 +337,7 @@ export function App() {
       void syncInactiveRooms();
     }, 5000);
     return () => clearInterval(id);
-  }, [token, bootstrap, syncInactiveRooms]);
+  }, [authToken, bootstrap, syncInactiveRooms, sessionReady]);
 
   const drawerOpen = selectedAttachment != null;
 
@@ -537,7 +564,7 @@ export function App() {
       [key]: prior.filter((folder) => folder !== agentFolder),
     }));
     try {
-      const agents = await disengageAgent(token, activeRoom.platformId, threadId, agentFolder);
+      const agents = await disengageAgent(authToken, activeRoom.platformId, threadId, agentFolder);
       setEngagedAgentsByThread((prev) => ({ ...prev, [key]: agents }));
     } catch (err) {
       setEngagedAgentsByThread((prev) => ({ ...prev, [key]: prior }));
@@ -548,7 +575,7 @@ export function App() {
   };
 
   const handleSend = async () => {
-    if (!canSendMessage(token, room, draft, sending, pendingAttachments.length)) return;
+    if (!canSendMessage(sessionReady, room, draft, sending, pendingAttachments.length)) return;
     setSending(true);
     setError(null);
     const text = draft.trim();
@@ -561,7 +588,7 @@ export function App() {
     let sendAttachments: ReturnType<typeof toSendAttachmentsFromUploads> = [];
     if (pending.length > 0) {
       const { uploads, failed } = await uploadPendingAttachments(
-        token,
+        authToken,
         activeRoom.platformId,
         activeThread,
         pending,
@@ -585,6 +612,9 @@ export function App() {
       timestamp: Date.now(),
       platformId: activeRoom.platformId,
       threadId: activeThread,
+      ...(bootstrap?.user
+        ? { senderName: bootstrap.user.displayName, senderId: bootstrap.user.id }
+        : {}),
       ...(pending.length > 0 ? { attachments: optimisticAttachmentsFromPending(pending) } : {}),
     };
     setMessages((prev) => [...prev, optimistic]);
@@ -605,7 +635,7 @@ export function App() {
     ];
     try {
       const sent = await sendMessage(
-        token,
+        authToken,
         activeRoom.platformId,
         activeThread,
         text,
@@ -632,7 +662,7 @@ export function App() {
         if (thread && isAutoThreadTitle(thread.title)) {
           const autoTitle = titleFromMessage(text);
           try {
-            await renameThread(token, activeRoom.platformId, activeThread, autoTitle);
+            await renameThread(authToken, activeRoom.platformId, activeThread, autoTitle);
             updateThreadsForRoom(activeRoom.platformId, (list) =>
               list.map((t) => (t.id === activeThread ? { ...t, title: autoTitle } : t)),
             );
@@ -741,7 +771,7 @@ export function App() {
     const childCount = current.filter((t) => t.id !== 'main').length;
     const title = defaultThreadTitle(childCount);
     try {
-      const created = await createThread(token, targetRoom.platformId, title);
+      const created = await createThread(authToken, targetRoom.platformId, title);
       setThreadsByRoom((prev) => appendThreadToRoomMap(prev, targetRoom.platformId, created));
       setExpandedRooms((prev) => new Set(prev).add(targetRoom.platformId));
       syncCursorRef.current = updateSyncCursor(
@@ -763,7 +793,7 @@ export function App() {
   const handleRenameThread = async (targetRoom: WebChatRoom, thread: ThreadMeta, title: string) => {
     const trimmed = title.trim();
     try {
-      await renameThread(token, targetRoom.platformId, thread.id, trimmed);
+      await renameThread(authToken, targetRoom.platformId, thread.id, trimmed);
       updateThreadsForRoom(targetRoom.platformId, (list) =>
         list.map((t) => (t.id === thread.id ? { ...t, title: trimmed } : t)),
       );
@@ -774,7 +804,7 @@ export function App() {
 
   const handleDeleteThread = async (targetRoom: WebChatRoom, thread: ThreadMeta) => {
     try {
-      await deleteThread(token, targetRoom.platformId, thread.id);
+      await deleteThread(authToken, targetRoom.platformId, thread.id);
       updateThreadsForRoom(targetRoom.platformId, (list) => list.filter((t) => t.id !== thread.id));
       setUnreadCounts((counts) => clearUnread(counts, targetRoom.platformId, thread.id));
       if (room && room.platformId === targetRoom.platformId && threadId === thread.id) {
@@ -786,6 +816,22 @@ export function App() {
       setError(err instanceof Error ? err.message : 'delete thread failed');
     }
   };
+
+  const handleLogout = useCallback(async () => {
+    try {
+      await logoutSession();
+    } catch {
+      // still return to login if the network call fails
+    }
+    setBootstrap(null);
+    setRoom(null);
+    setMessages([]);
+    setThreadsByRoom({});
+    setUnreadCounts({});
+    setEngagedAgentsByThread({});
+    setError(null);
+    setPublicAuthed(false);
+  }, []);
 
   const sidebarSectionProps = {
     activeRoomId: room?.platformId,
@@ -801,7 +847,25 @@ export function App() {
     onDeleteThread: handleDeleteThread,
   };
 
-  if (!token) {
+  if (authMode === 'loading') {
+    return (
+      <div className="auth-screen">
+        <p className="hint">Connecting…</p>
+      </div>
+    );
+  }
+
+  if (authMode === 'public' && !publicAuthed) {
+    return (
+      <Login
+        onSuccess={() => {
+          setPublicAuthed(true);
+        }}
+      />
+    );
+  }
+
+  if (authMode === 'local' && !localToken) {
     return (
       <div className="auth-screen">
         <h1>NanoClaw Web Chat</h1>
@@ -863,7 +927,14 @@ export function App() {
             </p>
           )}
         </nav>
-        <ThemeToggle />
+        <div className="sidebar-footer">
+          <ThemeToggle />
+          {authMode === 'public' ? (
+            <button type="button" className="sidebar-logout-btn" onClick={() => void handleLogout()}>
+              Sign out
+            </button>
+          ) : null}
+        </div>
         {!sidebarCollapsed ? (
           <div
             className="sidebar-resize-handle"
@@ -902,7 +973,7 @@ export function App() {
 
             <div className="messages" ref={messagesRef} onScroll={handleMessagesScroll}>
               {messages.map((m) => {
-                const sender = messageSenderLabel(m, messages, room, bootstrap.agents);
+                const sender = messageSenderLabel(m, messages, room, bootstrap.agents, bootstrap.user);
                 return (
                   <div key={m.id} className="msg">
                     <time className="msg-time" dateTime={new Date(m.timestamp).toISOString()}>
@@ -921,7 +992,7 @@ export function App() {
                       {messageHasInteractiveCard(m) ? (
                         <InteractiveCard
                           message={m}
-                          token={token}
+                          token={authToken}
                           onUpdated={(updated) => {
                             setMessages((prev) =>
                               applyMessageUpdate(prev, updated, room, threadId),
@@ -1068,7 +1139,7 @@ export function App() {
                     type="button"
                     className="composer-send"
                     aria-label="Send message"
-                    disabled={!canSendMessage(token, room, draft, sending, pendingAttachments.length)}
+                    disabled={!canSendMessage(sessionReady, room, draft, sending, pendingAttachments.length)}
                     onClick={() => void handleSend()}
                   >
                     <SendArrowIcon />
@@ -1082,7 +1153,7 @@ export function App() {
           {selectedAttachment ? (
             <AttachmentDrawer
               attachment={selectedAttachment}
-              token={token}
+              token={authToken}
               width={drawerWidth}
               maxWidth={drawerMaxWidth}
               onWidthChange={persistDrawerWidth}

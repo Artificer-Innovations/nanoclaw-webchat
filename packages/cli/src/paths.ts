@@ -93,6 +93,12 @@ export const ADAPTER_COPY_RULES: AdapterCopyRule[] = [
   { source: 'webchat-routing.test.ts', dest: 'src/webchat-routing.test.ts' },
   { source: 'webchat-mentions.ts', dest: 'src/webchat-mentions.ts' },
   { source: 'webchat-mentions.test.ts', dest: 'src/webchat-mentions.test.ts' },
+  { source: 'webchat-auth-config.ts', dest: 'src/webchat-auth-config.ts' },
+  { source: 'webchat-auth-sessions.ts', dest: 'src/webchat-auth-sessions.ts' },
+  { source: 'webchat-auth.ts', dest: 'src/webchat-auth.ts' },
+  { source: 'webchat-auth.test.ts', dest: 'src/webchat-auth.test.ts' },
+  { source: 'webchat-room-scope.ts', dest: 'src/webchat-room-scope.ts' },
+  { source: 'webchat-room-scope.test.ts', dest: 'src/webchat-room-scope.test.ts' },
 ];
 
 export const WEBCHAT_BARREL_IMPORT = "import './web.js';";
@@ -105,6 +111,8 @@ export const VERIFY_TESTS = [
   'src/channels/web.test.ts',
   'src/webchat-sync.test.ts',
   'src/webchat-wiring.test.ts',
+  'src/webchat-auth.test.ts',
+  'src/webchat-room-scope.test.ts',
 ];
 
 export function findNanoclawRoot(start = process.cwd()): string {

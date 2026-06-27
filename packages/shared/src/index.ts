@@ -1,4 +1,5 @@
 export type {
+  AuthConfigResponse,
   BootstrapPayload,
   SendMessageResult,
   ThreadMeta,

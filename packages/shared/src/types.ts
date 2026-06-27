@@ -21,6 +21,12 @@ export interface BootstrapPayload {
   user: WebChatUser;
   rooms: WebChatRoom[];
   agents: WebChatAgent[];
+  authMode?: 'local' | 'public';
+}
+
+export interface AuthConfigResponse {
+  basic: { enabled: boolean };
+  providers: Array<{ id: string; label: string }>;
 }
 
 export interface ThreadMeta {
@@ -81,6 +87,8 @@ export interface WebChatMessage {
   threadId: string;
   /** Agent display name when provided by the host adapter. */
   senderName?: string;
+  /** Web user id for inbound messages in shared rooms (public auth). */
+  senderId?: string;
   attachments?: WebChatAttachment[];
   /** Interactive ask_question card (approvals, agent questions, etc.). */
   card?: WebChatAskQuestionCard;

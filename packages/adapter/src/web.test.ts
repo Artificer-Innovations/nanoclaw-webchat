@@ -134,6 +134,17 @@ const getSessionMock = vi.mocked(getSession);
 const getAssetDirMock = vi.mocked(getAssetDir);
 
 const SECRET = 'test-secret';
+
+function defaultAdapterOptions(port: number) {
+  return {
+    port,
+    bindAddress: '127.0.0.1',
+    authMode: 'local' as const,
+    authToken: SECRET,
+    userId: 'web:local',
+    displayName: 'Local',
+  };
+}
 let testPort = 0;
 
 async function reservePort(): Promise<number> {
@@ -381,12 +392,7 @@ describe('web channel adapter', () => {
         actionCaptures.push({ questionId, value, userId });
       },
     };
-    adapter = createWebAdapter({
-      port: testPort,
-      authToken: SECRET,
-      userId: 'web:local',
-      displayName: 'Local',
-    });
+    adapter = createWebAdapter(defaultAdapterOptions(testPort));
   });
 
   afterEach(async () => {
@@ -663,12 +669,7 @@ describe('web channel adapter', () => {
     await httpPost('/api/rooms/lobby/threads/main/messages', { text: 'persist me' });
     await adapter.teardown();
 
-    adapter = createWebAdapter({
-      port: testPort,
-      authToken: SECRET,
-      userId: 'web:local',
-      displayName: 'Local',
-    });
+    adapter = createWebAdapter(defaultAdapterOptions(testPort));
     await adapter.setup(setup);
 
     const { status, body } = await httpGet('/api/rooms/lobby/threads/main/messages');
@@ -886,12 +887,7 @@ describe('web channel adapter', () => {
     await httpPost('/api/rooms/lobby/threads/thread_abc/messages', { text: '@sarah hello' });
     await adapter.teardown();
 
-    adapter = createWebAdapter({
-      port: testPort,
-      authToken: SECRET,
-      userId: 'web:local',
-      displayName: 'Local',
-    });
+    adapter = createWebAdapter(defaultAdapterOptions(testPort));
     await adapter.setup(setup);
 
     const { body } = await httpGet('/api/rooms/lobby/threads/thread_abc/messages');

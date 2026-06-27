@@ -52,29 +52,29 @@ const message: WebChatMessage = {
 
 describe('app-helpers', () => {
   describe('canSendMessage', () => {
-    it('returns false when token is missing', () => {
-      expect(canSendMessage('', room, 'hello', false)).toBe(false);
+    it('returns false when not authenticated', () => {
+      expect(canSendMessage(false, room, 'hello', false)).toBe(false);
     });
 
     it('returns false when room is missing', () => {
-      expect(canSendMessage('token', null, 'hello', false)).toBe(false);
+      expect(canSendMessage(true, null, 'hello', false)).toBe(false);
     });
 
     it('returns false when draft is blank and there are no attachments', () => {
-      expect(canSendMessage('token', room, '   ', false)).toBe(false);
-      expect(canSendMessage('token', room, '   ', false, 0)).toBe(false);
+      expect(canSendMessage(true, room, '   ', false)).toBe(false);
+      expect(canSendMessage(true, room, '   ', false, 0)).toBe(false);
     });
 
     it('returns true when attachments are present without draft text', () => {
-      expect(canSendMessage('token', room, '   ', false, 1)).toBe(true);
+      expect(canSendMessage(true, room, '   ', false, 1)).toBe(true);
     });
 
     it('returns false while a send is in flight', () => {
-      expect(canSendMessage('token', room, 'hello', true)).toBe(false);
+      expect(canSendMessage(true, room, 'hello', true)).toBe(false);
     });
 
     it('returns true when all send preconditions are met', () => {
-      expect(canSendMessage('token', room, 'hello', false)).toBe(true);
+      expect(canSendMessage(true, room, 'hello', false)).toBe(true);
     });
 
     it('returns false for inbox room', () => {
@@ -685,6 +685,24 @@ describe('app-helpers', () => {
       const base = { 'lobby-1': DEFAULT_ROOM_THREADS };
       await expect(migrateLegacyThreads('token', [room], base)).resolves.toEqual(base);
       expect(localStorage.getItem('webchat_threads:lobby-1')).not.toBeNull();
+    });
+  });
+
+  describe('applyMessageUpdate', () => {
+    it('replaces a message in the active conversation', () => {
+      const updated = { ...message, text: 'Updated' };
+      expect(applyMessageUpdate([message], updated, room, 'main')).toEqual([updated]);
+    });
+
+    it('leaves the list unchanged for inactive conversations', () => {
+      const otherRoom = { ...room, platformId: 'lobby-2' };
+      const updated = { ...message, text: 'Updated' };
+      expect(applyMessageUpdate([message], updated, otherRoom, 'main')).toEqual([message]);
+    });
+
+    it('leaves the list unchanged when the message id is missing', () => {
+      const updated = { ...message, id: 'missing', text: 'Updated' };
+      expect(applyMessageUpdate([message], updated, room, 'main')).toEqual([message]);
     });
   });
 });

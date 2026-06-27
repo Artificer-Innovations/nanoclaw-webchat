@@ -25,6 +25,49 @@ describe('message-sender', () => {
     expect(messageSenderLabel(msg, [msg], lobby, agents)).toBe('You');
   });
 
+  it('shows other lobby users by senderName and labels own messages You', () => {
+    const alice = { id: 'web:basic:alice', displayName: 'Alice' };
+    const bob = { id: 'web:basic:bob', displayName: 'Bob' };
+    const fromAlice: WebChatMessage = {
+      id: 'a1',
+      direction: 'inbound',
+      text: 'hello team',
+      timestamp: 1,
+      platformId: 'lobby',
+      threadId: 'main',
+      senderName: 'Alice',
+      senderId: 'web:basic:alice',
+    };
+    const fromBob: WebChatMessage = {
+      id: 'b1',
+      direction: 'inbound',
+      text: 'hey',
+      timestamp: 2,
+      platformId: 'lobby',
+      threadId: 'main',
+      senderName: 'Bob',
+      senderId: 'web:basic:bob',
+    };
+    expect(messageSenderLabel(fromAlice, [fromAlice], lobby, agents, alice)).toBe('You');
+    expect(messageSenderLabel(fromBob, [fromBob], lobby, agents, alice)).toBe('Bob');
+    expect(messageSenderLabel(fromBob, [fromBob], lobby, agents, bob)).toBe('You');
+    expect(messageSenderLabel(fromAlice, [fromAlice], lobby, agents, bob)).toBe('Alice');
+  });
+
+  it('labels You in lobby when senderName matches current user without senderId', () => {
+    const alice = { id: 'web:basic:alice', displayName: 'Alice' };
+    const msg: WebChatMessage = {
+      id: 'legacy',
+      direction: 'inbound',
+      text: 'hello',
+      timestamp: 1,
+      platformId: 'lobby',
+      threadId: 'main',
+      senderName: 'Alice',
+    };
+    expect(messageSenderLabel(msg, [msg], lobby, agents, alice)).toBe('You');
+  });
+
   it('uses the DM room name for outbound messages', () => {
     const msg: WebChatMessage = {
       id: '2',
