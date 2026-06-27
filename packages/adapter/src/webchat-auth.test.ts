@@ -154,6 +154,7 @@ describe('webchat-auth', () => {
         issuer,
         clientId: 'client-id',
         clientSecret: 'secret',
+        scopes: 'openid profile email',
       });
 
       expect(claims.sub).toBe('user-1');
