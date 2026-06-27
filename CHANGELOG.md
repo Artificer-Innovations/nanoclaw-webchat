@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1
+
+### Patch Changes
+
+- [#35](https://github.com/Artificer-Innovations/nanoclaw-webchat/pull/35) [`d73b1e1`](https://github.com/Artificer-Innovations/nanoclaw-webchat/commit/d73b1e18b20c2849a6d2d0f460b17d7f67fbb28d) Thanks [@ZappoMan](https://github.com/ZappoMan)! - Fix OIDC provider test fixture missing required `scopes` field so host `tsc` builds succeed after adapter install.
+
 ## 0.2.0
 
 ### Added
