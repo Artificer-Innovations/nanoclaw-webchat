@@ -35,7 +35,7 @@ export function mimeTypeFromFilename(filename: string): string {
 
 /** Prefer filename inference when upload/browser MIME is missing or generic. */
 export function inferAttachmentMime(name: string, mimeType = ''): string {
-  const trimmed = mimeType.trim().toLowerCase();
+  const trimmed = mimeType.trim().split(';', 1)[0].trim().toLowerCase();
   const fromFilename = mimeTypeFromFilename(name);
   if (!trimmed || trimmed === 'application/octet-stream') {
     return fromFilename;

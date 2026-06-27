@@ -80,6 +80,7 @@ describe('attachments', () => {
     expect(inferMimeType('lib.cpp')).toBe('text/x-c++');
     expect(inferMimeType('types.hpp')).toBe('text/x-c++');
     expect(inferMimeType('doc.pdf', 'application/pdf')).toBe('application/pdf');
+    expect(inferMimeType('page.html', 'text/html; charset=utf-8')).toBe('text/html');
     expect(inferMimeType('clip.mp4')).toBe('video/mp4');
     expect(inferMimeType('clip.webm')).toBe('video/webm');
     expect(inferMimeType('24246.MOV')).toBe('video/quicktime');

@@ -165,7 +165,7 @@ export interface ReadAttachmentFilesResult {
 }
 
 export function inferMimeType(name: string, mimeType = ''): string {
-  const trimmed = mimeType.trim();
+  const trimmed = mimeType.trim().split(';', 1)[0].trim().toLowerCase();
   const ext = name.includes('.') ? `.${name.split('.').pop()!.toLowerCase()}` : '';
   const fromExt = EXT_TO_MIME[ext];
   if (!trimmed || trimmed === 'application/octet-stream') {

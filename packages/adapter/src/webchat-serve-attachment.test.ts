@@ -73,6 +73,7 @@ describe('webchat-serve-attachment', () => {
     expect(inferAttachmentMime('song.mp3', 'text/plain')).toBe('audio/mpeg');
     expect(inferAttachmentMime('clip.mp4', 'text/plain')).toBe('video/mp4');
     expect(inferAttachmentMime('photo.png', 'text/plain')).toBe('image/png');
+    expect(inferAttachmentMime('page.html', 'text/html; charset=utf-8')).toBe('text/html');
   });
 
   it('streams full file with length and accept-ranges headers', async () => {
