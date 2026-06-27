@@ -15,7 +15,7 @@ Choose patch / minor / major and write a short summary. Commit the generated fil
 ## Release flow
 
 1. Feature PRs merge into **`develop`**
-2. Run `pnpm version` on `develop` to apply pending changesets (bumps `package.json` + `CHANGELOG.md`)
+2. Run `pnpm run version` on `develop` to apply pending changesets (bumps `package.json` + `CHANGELOG.md`). Requires `GITHUB_TOKEN` (e.g. `GITHUB_TOKEN=$(gh auth token) pnpm run version`) for changelog PR links.
 3. Open a release PR: **`develop` → `main`**
 4. Merge to **`main`** — CI publishes to npm and creates a GitHub Release
 
