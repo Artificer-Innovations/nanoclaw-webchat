@@ -5,7 +5,7 @@ import crypto from 'crypto';
 import http from 'http';
 
 import type { OidcAllowlistConfig, OidcProviderConfig, PublicAuthConfig } from './webchat-auth-config.js';
-import { verifyRs256IdToken, type JsonWebKey } from './webchat-auth-jwt.js';
+import { verifyIdToken, isJwksRetryableVerificationError, type JsonWebKey } from './webchat-auth-jwt.js';
 import {
   clearSessionCookieHeader,
   consumeOAuthState,
@@ -112,11 +112,31 @@ async function verifyOidcIdToken(idToken: string, provider: OidcProviderConfig):
   }
   const discovery = await getOidcDiscovery(provider.issuer);
   if (!discovery.jwks_uri) throw new Error('OIDC discovery missing jwks_uri');
-  const keys = await fetchJwks(discovery.jwks_uri);
-  return verifyRs256IdToken(idToken, keys, {
+  const jwksUri = discovery.jwks_uri;
+  const verifyOpts = {
     audience: provider.clientId,
     issuer: provider.issuer,
-  });
+  };
+
+  const verifyWithKeys = (keys: JsonWebKey[]) => verifyIdToken(idToken, keys, verifyOpts);
+
+  let keys = await fetchJwks(jwksUri);
+  try {
+    return verifyWithKeys(keys);
+  } catch (err) {
+    if (!isJwksRetryableVerificationError(err)) throw err;
+    jwksCache.delete(jwksUri);
+    keys = await fetchJwks(jwksUri);
+    return verifyWithKeys(keys);
+  }
+}
+
+/** @internal test helper */
+export async function verifyOidcIdTokenForTests(
+  idToken: string,
+  provider: OidcProviderConfig,
+): Promise<Record<string, unknown>> {
+  return verifyOidcIdToken(idToken, provider);
 }
 
 /** @internal test helper */
@@ -229,6 +249,14 @@ function constantTimeEqual(a: string, b: string): boolean {
   return crypto.timingSafeEqual(ba, bb);
 }
 
+function isAllowedUsername(allowedUsernames: string[], normalized: string): boolean {
+  let allowed = false;
+  for (const candidate of allowedUsernames) {
+    if (constantTimeEqual(normalized, candidate)) allowed = true;
+  }
+  return allowed;
+}
+
 export function validateBasicLogin(
   config: PublicAuthConfig,
   username: string,
@@ -236,7 +264,7 @@ export function validateBasicLogin(
 ): WebchatSessionUser | null {
   if (!config.basic.enabled) return null;
   const normalized = username.trim().toLowerCase();
-  if (!normalized || !config.basic.allowedUsernames.includes(normalized)) return null;
+  if (!normalized || !isAllowedUsername(config.basic.allowedUsernames, normalized)) return null;
   if (!constantTimeEqual(password, config.basic.password)) return null;
   const displayName = config.basic.displayNames.get(normalized) ?? username.trim();
   return {

@@ -153,6 +153,15 @@ Use `"protocol": "oidc"` and set `"issuer"` to the provider's issuer URL (discov
 
 Register the same `WEBCHAT_OIDC_REDIRECT_URI` as the authorized redirect URI in your IdP.
 
+### id_token verification
+
+OIDC providers return an `id_token` JWT after login. The adapter verifies it against the provider's JWKS (`jwks_uri` from OpenID discovery):
+
+- **Algorithms:** RS256 (RSA) and ES256 (EC P-256), matching common IdP defaults (GitHub uses RS256; Auth0 and others may use ES256).
+- **Key rotation:** JWKS are cached in memory. If signature verification fails (e.g. after the IdP rotates signing keys), the cache entry is cleared and keys are fetched once more before rejecting the login.
+
+Unsupported signing algorithms fail closed with an error rather than accepting an unverified token.
+
 ## Example: basic + GitHub together
 
 Enable both `WEBCHAT_AUTH_BASIC_ENABLED=true` and `WEBCHAT_AUTH_OIDC_ENABLED=true`. The login page shows the password form and provider buttons separated by “or”.
