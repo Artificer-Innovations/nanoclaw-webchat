@@ -13,17 +13,22 @@ import { codeLanguageFromAttachment } from './attachment-code';
 import {
   attachmentDataUrl,
   attachmentIframeSandbox,
+  attachmentIsAudio,
+  attachmentIsVideo,
   attachmentPreviewMode,
   attachmentSupportsPopOut,
   attachmentSupportsPreviewToggle,
   attachmentTextCategory,
+  attachmentUsesAudioPreview,
   attachmentUsesFormattedMessagePreview,
   attachmentUsesIframePreview,
+  attachmentUsesVideoPreview,
   ATTACHMENT_HTML_IFRAME_SANDBOX,
   copyAttachmentForPreview,
   downloadAttachment,
   formatAttachmentSize,
   attachmentTypeLabel,
+  handleVideoPreviewError,
   normalizeAttachment,
   openAttachmentInNewTab,
   openCodeAttachmentInNewTab,
@@ -31,7 +36,10 @@ import {
   openHtmlAttachmentInNewTab,
   openMarkdownAttachmentInNewTab,
   openPlainTextAttachmentInNewTab,
+  openVideoAttachmentInNewTab,
+  openAudioAttachmentInNewTab,
   fetchAttachmentText,
+  videoMimeTypePlayable,
 } from './attachments';
 import { CodePreview } from './CodePreview';
 import { CsvPreview } from './CsvPreview';
@@ -72,6 +80,7 @@ export function AttachmentDrawer({
   const [loading, setLoading] = useState(mode === 'text');
   const [copied, setCopied] = useState(false);
   const [textView, setTextView] = useState<TextAttachmentView>('preview');
+  const [videoFailed, setVideoFailed] = useState(false);
   const supportsPreviewToggle = attachmentSupportsPreviewToggle(att.mimeType, att.name);
   const supportsPopOut = attachmentSupportsPopOut(att.mimeType, att.name);
   const codeLanguage = category === 'code' ? codeLanguageFromAttachment(att.name, att.mimeType) : null;
@@ -79,6 +88,7 @@ export function AttachmentDrawer({
   useEffect(() => {
     resetDrawerBodyScroll(bodyRef.current);
     setTextView('preview');
+    setVideoFailed(false);
   }, [att.name, att.mimeType, att.data, att.url]);
 
   useEffect(() => {
@@ -172,6 +182,14 @@ export function AttachmentDrawer({
     }
     if (category === 'csv') {
       void openCsvAttachmentInNewTab(att, token);
+      return;
+    }
+    if (attachmentIsVideo(att.mimeType)) {
+      openVideoAttachmentInNewTab(att, token);
+      return;
+    }
+    if (attachmentIsAudio(att.mimeType)) {
+      openAudioAttachmentInNewTab(att, token);
       return;
     }
     openAttachmentInNewTab(att, token);
@@ -369,6 +387,30 @@ export function AttachmentDrawer({
               src={embedUrl}
               sandbox={attachmentIframeSandbox(att.mimeType)}
             />
+          ) : attachmentUsesVideoPreview(att.mimeType) ? (
+            videoFailed || !videoMimeTypePlayable(att.mimeType) ? (
+              <div className="attachment-drawer-video-fallback">
+                <p className="attachment-drawer-status">Preview unavailable in this browser.</p>
+                <button
+                  type="button"
+                  className="attachment-drawer-download-fallback"
+                  onClick={handleDownload}
+                >
+                  Download {att.name}
+                </button>
+              </div>
+            ) : (
+              <video
+                className="attachment-drawer-video"
+                src={embedUrl}
+                controls
+                playsInline
+                preload="metadata"
+                onError={(event) => handleVideoPreviewError(event, () => setVideoFailed(true))}
+              />
+            )
+          ) : attachmentUsesAudioPreview(att.mimeType) ? (
+            <audio className="attachment-drawer-audio" src={embedUrl} controls preload="metadata" />
           ) : (
             <img className="attachment-drawer-image" src={embedUrl} alt={att.name} />
           )
@@ -392,7 +434,7 @@ export function AttachmentDrawer({
             </div>
             <div>
               <dt>Type</dt>
-              <dd>{attachmentTypeLabel(att.type)}</dd>
+              <dd>{attachmentTypeLabel(att.type, att.mimeType)}</dd>
             </div>
           </dl>
         ) : null}

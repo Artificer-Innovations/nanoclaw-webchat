@@ -49,14 +49,26 @@ export function ensureHostAdapterDependencies(nanoclawRoot: string): string[] {
   return added;
 }
 
-export function copyAdapterFiles(nanoclawRoot: string, resources = resourcesDir()): string[] {
+export function copyAdapterFiles(nanoclawRoot: string, resources?: string): string[] {
+  const resolvedResources = resources ?? resourcesDir(undefined, nanoclawRoot);
+  const missing: string[] = [];
+  for (const rule of ADAPTER_COPY_RULES) {
+    const from = path.join(resolvedResources, rule.source);
+    if (!fs.existsSync(from)) {
+      missing.push(rule.source);
+    }
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `Missing adapter resource${missing.length > 1 ? 's' : ''}: ${missing.join(', ')}. ` +
+        'Run `pnpm run build` in nanoclaw-webchat to sync skills/add-webchat/resources.',
+    );
+  }
+
   const copied: string[] = [];
   for (const rule of ADAPTER_COPY_RULES) {
-    const from = path.join(resources, rule.source);
+    const from = path.join(resolvedResources, rule.source);
     const to = path.join(nanoclawRoot, rule.dest);
-    if (!fs.existsSync(from)) {
-      throw new Error(`Missing adapter resource: ${rule.source}`);
-    }
     fs.mkdirSync(path.dirname(to), { recursive: true });
     fs.copyFileSync(from, to);
     copied.push(rule.dest);

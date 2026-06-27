@@ -3,10 +3,13 @@ import * as attachmentsModule from './attachments';
 import * as popoutModule from './attachment-text-popout';
 import {
   attachmentDataUrl,
+  attachmentEmbedUrl,
   ATTACHMENT_HTML_IFRAME_SANDBOX,
   attachmentIframeSandbox,
   attachmentPreviewMode,
   attachmentPreviewUrl,
+  attachmentIsVideo,
+  attachmentIsAudio,
   attachmentToBlob,
   attachmentTypeFromMime,
   attachmentTypeLabel,
@@ -18,6 +21,8 @@ import {
   attachmentUsesFormattedMessagePreview,
   attachmentUsesHtmlPreview,
   attachmentUsesIframePreview,
+  attachmentUsesVideoPreview,
+  attachmentUsesAudioPreview,
   copyAttachmentContent,
   copyAttachmentForPreview,
   copyAttachmentLink,
@@ -29,8 +34,10 @@ import {
   formatMaxUploadLabel,
   formatUploadBytesLabel,
   formatAttachmentSize,
+  handleVideoPreviewError,
   inferMimeType,
   isSafeAttachmentUrl,
+  isVideoSrcNotSupportedError,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENTS,
   mergePendingAttachments,
@@ -41,12 +48,15 @@ import {
   openCsvAttachmentInNewTab,
   openHtmlAttachmentInNewTab,
   openPlainTextAttachmentInNewTab,
+  openVideoAttachmentInNewTab,
+  openAudioAttachmentInNewTab,
   readAttachmentFiles,
   removePendingAtIndex,
   revokeAttachmentPreviews,
   toSendAttachmentsFromUploads,
   uploadAttachmentFile,
   uploadPendingAttachments,
+  videoMimeTypePlayable,
   CHUNK_SIZE,
   type PendingAttachment,
 } from './attachments';
@@ -70,6 +80,17 @@ describe('attachments', () => {
     expect(inferMimeType('lib.cpp')).toBe('text/x-c++');
     expect(inferMimeType('types.hpp')).toBe('text/x-c++');
     expect(inferMimeType('doc.pdf', 'application/pdf')).toBe('application/pdf');
+    expect(inferMimeType('page.html', 'text/html; charset=utf-8')).toBe('text/html');
+    expect(inferMimeType('clip.mp4')).toBe('video/mp4');
+    expect(inferMimeType('clip.webm')).toBe('video/webm');
+    expect(inferMimeType('24246.MOV')).toBe('video/quicktime');
+    expect(inferMimeType('song.mp3')).toBe('audio/mpeg');
+    expect(inferMimeType('tone.wav')).toBe('audio/wav');
+    expect(inferMimeType('song.mp3', 'application/octet-stream')).toBe('audio/mpeg');
+    expect(inferMimeType('song.mp3', 'audio/mp3')).toBe('audio/mp3');
+    expect(inferMimeType('song.mp3', 'text/plain')).toBe('audio/mpeg');
+    expect(inferMimeType('clip.mp4', 'text/plain')).toBe('video/mp4');
+    expect(inferMimeType('photo.png', 'text/plain')).toBe('image/png');
     expect(inferMimeType('unknown.xyz')).toBe('application/octet-stream');
     expect(inferMimeType('README')).toBe('application/octet-stream');
   });
@@ -82,6 +103,41 @@ describe('attachments', () => {
   it('labels attachment types for metadata display', () => {
     expect(attachmentTypeLabel('image')).toBe('Image');
     expect(attachmentTypeLabel('file')).toBe('File');
+    expect(attachmentTypeLabel('file', 'video/mp4')).toBe('Video');
+    expect(attachmentTypeLabel('file', 'audio/mpeg')).toBe('Audio');
+  });
+
+  it('classifies video attachments', () => {
+    expect(attachmentIsVideo('video/mp4')).toBe(true);
+    expect(attachmentIsVideo('video/webm')).toBe(true);
+    expect(attachmentIsVideo('image/png')).toBe(false);
+    expect(attachmentUsesVideoPreview('video/mp4')).toBe(true);
+    expect(attachmentUsesVideoPreview('application/pdf')).toBe(false);
+    expect(videoMimeTypePlayable('video/mp4')).toBe(true);
+    expect(isVideoSrcNotSupportedError({ code: 4 } as MediaError)).toBe(true);
+    expect(isVideoSrcNotSupportedError({ code: 1 } as MediaError)).toBe(false);
+    expect(isVideoSrcNotSupportedError(undefined)).toBe(false);
+    expect(isVideoSrcNotSupportedError(null)).toBe(false);
+    const onUnsupported = vi.fn();
+    handleVideoPreviewError({ currentTarget: { error: { code: 4 } as MediaError } as HTMLVideoElement }, onUnsupported);
+    expect(onUnsupported).toHaveBeenCalledOnce();
+    onUnsupported.mockClear();
+    handleVideoPreviewError({ currentTarget: { error: { code: 1 } as MediaError } as HTMLVideoElement }, onUnsupported);
+    expect(onUnsupported).not.toHaveBeenCalled();
+  });
+
+  it('assumes video is playable during SSR', () => {
+    vi.stubGlobal('document', undefined);
+    expect(videoMimeTypePlayable('video/quicktime')).toBe(true);
+    vi.unstubAllGlobals();
+  });
+
+  it('classifies audio attachments', () => {
+    expect(attachmentIsAudio('audio/mpeg')).toBe(true);
+    expect(attachmentIsAudio('audio/wav')).toBe(true);
+    expect(attachmentIsAudio('video/mp4')).toBe(false);
+    expect(attachmentUsesAudioPreview('audio/mpeg')).toBe(true);
+    expect(attachmentUsesAudioPreview('audio/wav')).toBe(true);
   });
 
   it('classifies attachment preview modes', () => {
@@ -90,6 +146,8 @@ describe('attachments', () => {
     expect(attachmentPreviewMode('text/javascript', 'app.js')).toBe('text');
     expect(attachmentPreviewMode('application/octet-stream', 'app.js')).toBe('text');
     expect(attachmentPreviewMode('image/png')).toBe('embed');
+    expect(attachmentPreviewMode('video/mp4')).toBe('embed');
+    expect(attachmentPreviewMode('audio/mpeg')).toBe('embed');
     expect(attachmentPreviewMode('application/pdf')).toBe('embed');
     expect(attachmentPreviewMode('text/html')).toBe('text');
     expect(attachmentPreviewMode('text/csv')).toBe('text');
@@ -118,6 +176,8 @@ describe('attachments', () => {
 
   it('classifies pop-out and preview toggle support', () => {
     expect(attachmentSupportsPopOut('text/plain')).toBe(true);
+    expect(attachmentSupportsPopOut('video/mp4')).toBe(true);
+    expect(attachmentSupportsPopOut('audio/mpeg')).toBe(true);
     expect(attachmentSupportsPopOut('text/markdown')).toBe(true);
     expect(attachmentSupportsPopOut('text/javascript', 'app.js')).toBe(true);
     expect(attachmentSupportsPopOut('text/html', 'page.html')).toBe(true);
@@ -162,6 +222,20 @@ describe('attachments', () => {
     ).toMatchObject({ type: 'image' });
   });
 
+  it('normalizes generic mime types from filename', () => {
+    expect(
+      normalizeAttachment({
+        name: 'song.mp3',
+        mimeType: 'application/octet-stream',
+        type: 'file',
+      }),
+    ).toMatchObject({ mimeType: 'audio/mpeg', type: 'file' });
+  });
+
+  it('classifies preview mode for generic mp3 mime types', () => {
+    expect(attachmentPreviewMode('application/octet-stream', 'song.mp3')).toBe('embed');
+  });
+
   it('formats rejection messages', () => {
     expect(formatUploadBytesLabel(50 * 1024 * 1024)).toBe('50 MB');
     expect(formatMaxUploadLabel()).toBe('1 GB');
@@ -183,6 +257,16 @@ describe('attachments', () => {
   it('leaves matching attachment types unchanged', () => {
     const att = { name: 'a.png', mimeType: 'image/png', type: 'image' as const };
     expect(normalizeAttachment(att)).toBe(att);
+  });
+
+  it('returns a new object when mimeType is corrected from filename', () => {
+    const att = {
+      name: 'song.mp3',
+      mimeType: 'application/octet-stream',
+      type: 'file' as const,
+    };
+    expect(normalizeAttachment(att)).not.toBe(att);
+    expect(normalizeAttachment(att)).toMatchObject({ mimeType: 'audio/mpeg' });
   });
 
   it('merges pending attachments without exceeding the cap', () => {
@@ -335,6 +419,31 @@ describe('attachments', () => {
         url: '/api/attachments/msg-1/a.png',
       }),
     ).toBe('data:image/png;base64,aGVsbG8=');
+  });
+
+  it('infers mime types in data URLs from filenames', () => {
+    expect(
+      attachmentDataUrl({
+        name: 'song.mp3',
+        mimeType: 'application/octet-stream',
+        type: 'file',
+        data: 'aGVsbG8=',
+      }),
+    ).toBe('data:audio/mpeg;base64,aGVsbG8=');
+  });
+
+  it('builds absolute embed URLs for persisted attachments', () => {
+    expect(
+      attachmentEmbedUrl(
+        {
+          name: 'clip.mov',
+          mimeType: 'video/quicktime',
+          type: 'file',
+          url: '/api/attachments/msg-1/clip.mov',
+        },
+        'secret',
+      ),
+    ).toBe(`${window.location.origin}/api/attachments/msg-1/clip.mov?token=secret`);
   });
 
   it('rejects unsafe attachment urls', () => {
@@ -620,6 +729,99 @@ describe('attachments', () => {
         mimeType: 'text/markdown',
         type: 'file',
         data: 'IyBQb3BvdXQ=',
+      }),
+    ).toBe(false);
+  });
+
+  it('opens video attachments in a viewer popout document', () => {
+    const openDoc = vi.spyOn(popoutModule, 'openHtmlDocumentInNewTab').mockReturnValue(true);
+    expect(
+      openVideoAttachmentInNewTab({
+        name: 'clip.mp4',
+        mimeType: 'video/mp4',
+        type: 'file',
+        data: 'aGVsbG8=',
+      }),
+    ).toBe(true);
+    expect(openDoc).toHaveBeenCalledWith(
+      expect.stringContaining('class="video-preview"'),
+    );
+    expect(openDoc.mock.calls[0]![0]).toContain('data:video/mp4;base64,aGVsbG8=');
+    expect(openDoc.mock.calls[0]![0]).toContain('video.canPlayType("video/mp4")');
+  });
+
+  it('uses absolute urls in video popouts for persisted attachments', () => {
+    const openDoc = vi.spyOn(popoutModule, 'openHtmlDocumentInNewTab').mockReturnValue(true);
+    expect(
+      openVideoAttachmentInNewTab(
+        {
+          name: '24246.MOV',
+          mimeType: 'application/octet-stream',
+          type: 'file',
+          url: '/api/attachments/msg-1/24246.MOV',
+        },
+        'secret',
+      ),
+    ).toBe(true);
+    expect(openDoc.mock.calls[0]![0]).toContain(
+      `${window.location.origin}/api/attachments/msg-1/24246.MOV?token=secret`,
+    );
+  });
+
+  it('returns false when video popout has no embed URL', () => {
+    expect(
+      openVideoAttachmentInNewTab({
+        name: 'clip.mp4',
+        mimeType: 'video/mp4',
+        type: 'file',
+      }),
+    ).toBe(false);
+  });
+
+  it('returns false when video popout tab cannot be opened', () => {
+    vi.spyOn(popoutModule, 'openHtmlDocumentInNewTab').mockReturnValue(false);
+    expect(
+      openVideoAttachmentInNewTab({
+        name: 'clip.mp4',
+        mimeType: 'video/mp4',
+        type: 'file',
+        data: 'aGVsbG8=',
+      }),
+    ).toBe(false);
+  });
+
+  it('opens audio attachments in a viewer popout document', () => {
+    const openDoc = vi.spyOn(popoutModule, 'openHtmlDocumentInNewTab').mockReturnValue(true);
+    expect(
+      openAudioAttachmentInNewTab({
+        name: 'song.mp3',
+        mimeType: 'audio/mpeg',
+        type: 'file',
+        data: 'aGVsbG8=',
+      }),
+    ).toBe(true);
+    expect(openDoc).toHaveBeenCalledWith(expect.stringContaining('class="audio-preview"'));
+    expect(openDoc.mock.calls[0]![0]).toContain('data:audio/mpeg;base64,aGVsbG8=');
+  });
+
+  it('returns false when audio popout has no embed URL', () => {
+    expect(
+      openAudioAttachmentInNewTab({
+        name: 'song.mp3',
+        mimeType: 'audio/mpeg',
+        type: 'file',
+      }),
+    ).toBe(false);
+  });
+
+  it('returns false when audio popout tab cannot be opened', () => {
+    vi.spyOn(popoutModule, 'openHtmlDocumentInNewTab').mockReturnValue(false);
+    expect(
+      openAudioAttachmentInNewTab({
+        name: 'song.mp3',
+        mimeType: 'audio/mpeg',
+        type: 'file',
+        data: 'aGVsbG8=',
       }),
     ).toBe(false);
   });

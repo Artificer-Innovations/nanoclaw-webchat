@@ -11,6 +11,7 @@ import { pipeline as pipelineCallback } from 'stream';
 import { pipeline as pipelinePromise } from 'stream/promises';
 
 import { DATA_DIR } from './config.js';
+import { inferAttachmentMime } from './webchat-serve-attachment.js';
 
 export const DEFAULT_MAX_UPLOAD_BYTES = 1024 * 1024 * 1024;
 export const MAX_UPLOAD_BYTES =
@@ -190,7 +191,7 @@ export async function parseMultipartUpload(
       partialPath = finalPath;
       fileMeta = {
         name: info.filename || 'upload',
-        mimeType: info.mimeType || 'application/octet-stream',
+        mimeType: inferAttachmentMime(info.filename || 'upload', info.mimeType || ''),
       };
       const ws = fs.createWriteStream(finalPath);
       fileWriteStream = ws;
@@ -315,10 +316,11 @@ function decodeChunkBase64(data: string): Buffer | null {
   if (!normalized || normalized.length % 4 !== 0) return null;
   if (!/^[A-Za-z0-9+/]+={0,2}$/.test(normalized)) return null;
   const buf = Buffer.from(normalized, 'base64');
-  /* v8 ignore next 3 -- Node accepts only canonical base64 in practice */
+  /* v8 ignore start -- Node accepts only canonical base64 in practice */
   if (buf.length === 0) return null;
   const reencoded = buf.toString('base64').replace(/=+$/, '');
   if (reencoded !== normalized.replace(/=+$/, '')) return null;
+  /* v8 ignore stop */
   return buf;
 }
 
@@ -333,7 +335,7 @@ export async function acceptChunk(
   threadId: string,
 ): Promise<AcceptChunkResult> {
   const { uploadId, chunkIndex, totalChunks, filename, data } = body;
-  const mimeType = body.mimeType?.trim() || 'application/octet-stream';
+  const mimeType = inferAttachmentMime(filename, body.mimeType ?? '');
 
   if (
     !uploadId ||

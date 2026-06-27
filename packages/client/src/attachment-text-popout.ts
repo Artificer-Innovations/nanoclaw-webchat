@@ -180,6 +180,28 @@ main { padding: 20px; }
 }
 .csv-empty { color: var(--muted); margin: 0; }
 .csv-truncated { color: var(--muted); margin: 0 0 0.75rem; font-size: 0.8125rem; }
+.video-preview {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  max-height: calc(100vh - 96px);
+  margin: 0 auto;
+  border-radius: 8px;
+  background: #000;
+}
+.video-fallback {
+  text-align: center;
+  padding: 2rem 1rem;
+  color: var(--muted);
+}
+.video-fallback a {
+  color: var(--accent);
+}
+.audio-preview {
+  display: block;
+  width: min(100%, 640px);
+  margin: 0 auto;
+}
 ${CODE_HIGHLIGHT_STYLES}
 `;
 
@@ -248,6 +270,76 @@ export function buildPlainTextPopoutDocument(title: string, text: string): strin
 </header>
 <main>
   <pre class="raw-text">${safeText}</pre>
+</main>
+</body>
+</html>`;
+}
+
+export function buildVideoPopoutDocument(
+  title: string,
+  videoSrc: string,
+  mimeType = 'video/mp4',
+): string {
+  const safeTitle = escapeHtml(title);
+  const safeSrc = escapeHtml(videoSrc);
+  const mimeJson = JSON.stringify(mimeType);
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${safeTitle}</title>
+<style>${POPOUT_STYLES}</style>
+</head>
+<body>
+<header>
+  <h1>${safeTitle}</h1>
+</header>
+<main>
+  <video id="attachment-video" class="video-preview" src="${safeSrc}" controls playsinline preload="metadata"></video>
+  <div id="attachment-video-fallback" class="video-fallback" hidden>
+    <p>Preview unavailable in this browser.</p>
+    <a href="${safeSrc}" download="${safeTitle}">Download ${safeTitle}</a>
+  </div>
+</main>
+<script>
+(function () {
+  var video = document.getElementById('attachment-video');
+  var fallback = document.getElementById('attachment-video-fallback');
+  function showFallback() {
+    video.hidden = true;
+    fallback.hidden = false;
+  }
+  if (video.canPlayType(${mimeJson}) === '') {
+    showFallback();
+    return;
+  }
+  video.addEventListener('error', function () {
+    if (video.error && video.error.code === 4) showFallback();
+  });
+})();
+</script>
+</body>
+</html>`;
+}
+
+export function buildAudioPopoutDocument(title: string, audioSrc: string): string {
+  const safeTitle = escapeHtml(title);
+  const safeSrc = escapeHtml(audioSrc);
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${safeTitle}</title>
+<style>${POPOUT_STYLES}</style>
+</head>
+<body>
+<header>
+  <h1>${safeTitle}</h1>
+</header>
+<main>
+  <audio class="audio-preview" src="${safeSrc}" controls preload="metadata"></audio>
 </main>
 </body>
 </html>`;

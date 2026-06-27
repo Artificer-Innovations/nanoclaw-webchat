@@ -40,12 +40,33 @@ export function adapterSrcDir(startDir: string = __dirname): string {
  * package.json `files`), so `packages/adapter/src` is absent there and we fall
  * back to build-synced skill resources. No separate isMonorepo flag needed.
  */
-export function resourcesDir(startDir: string = __dirname): string {
+export function resourcesDir(startDir: string = __dirname, nanoclawRoot?: string): string {
   const adapterSrc = adapterSrcDir(startDir);
   if (fs.existsSync(path.join(adapterSrc, 'web.ts'))) {
     return adapterSrc;
   }
+  if (nanoclawRoot) {
+    const linked = resolveLinkedAdapterSrc(nanoclawRoot);
+    if (linked) return linked;
+  }
   return path.join(skillDir(startDir), 'resources');
+}
+
+/** When the host uses `file:` to link the monorepo, pnpm may omit `packages/` from node_modules. */
+export function resolveLinkedAdapterSrc(nanoclawRoot: string): string | null {
+  const pkgPath = path.join(nanoclawRoot, 'package.json');
+  if (!fs.existsSync(pkgPath)) return null;
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as {
+    dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
+  };
+  const dep =
+    pkg.dependencies?.['nanoclaw-webchat'] ?? pkg.devDependencies?.['nanoclaw-webchat'];
+  if (!dep?.startsWith('file:')) return null;
+  const linkedRoot = path.resolve(nanoclawRoot, dep.slice('file:'.length));
+  const adapterSrc = path.join(linkedRoot, 'packages/adapter/src');
+  if (fs.existsSync(path.join(adapterSrc, 'web.ts'))) return adapterSrc;
+  return null;
 }
 
 export interface AdapterCopyRule {

@@ -1,4 +1,4 @@
-import { buildCodePopoutDocument, buildCsvPopoutDocument, buildHtmlPopoutDocument, buildMarkdownPopoutDocument, buildPlainTextPopoutDocument, openHtmlDocumentInNewTab, ATTACHMENT_HTML_IFRAME_SANDBOX } from './attachment-text-popout';
+import { buildAudioPopoutDocument, buildCodePopoutDocument, buildCsvPopoutDocument, buildHtmlPopoutDocument, buildMarkdownPopoutDocument, buildPlainTextPopoutDocument, buildVideoPopoutDocument, openHtmlDocumentInNewTab, ATTACHMENT_HTML_IFRAME_SANDBOX } from './attachment-text-popout';
 import { codeLanguageFromAttachment, isCodeFilename, isCodeMimeType } from './attachment-code';
 import { isCsvAttachment } from './csv-preview';
 import { getStoredToken, uploadAttachmentMultipart } from './api';
@@ -34,6 +34,12 @@ const EXT_TO_MIME: Record<string, string> = {
   '.png': 'image/png',
   '.webp': 'image/webp',
   '.gif': 'image/gif',
+  '.mp4': 'video/mp4',
+  '.webm': 'video/webm',
+  '.mov': 'video/quicktime',
+  '.m4v': 'video/quicktime',
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
   '.pdf': 'application/pdf',
   '.txt': 'text/plain',
   '.md': 'text/markdown',
@@ -159,9 +165,22 @@ export interface ReadAttachmentFilesResult {
 }
 
 export function inferMimeType(name: string, mimeType = ''): string {
-  if (mimeType.trim()) return mimeType.trim();
+  const trimmed = mimeType.trim().split(';', 1)[0].trim().toLowerCase();
   const ext = name.includes('.') ? `.${name.split('.').pop()!.toLowerCase()}` : '';
-  return EXT_TO_MIME[ext] ?? 'application/octet-stream';
+  const fromExt = EXT_TO_MIME[ext];
+  if (!trimmed || trimmed === 'application/octet-stream') {
+    return fromExt ?? (trimmed || 'application/octet-stream');
+  }
+  if (fromExt?.startsWith('audio/') && !trimmed.startsWith('audio/')) {
+    return fromExt;
+  }
+  if (fromExt?.startsWith('video/') && !trimmed.startsWith('video/')) {
+    return fromExt;
+  }
+  if (fromExt?.startsWith('image/') && !trimmed.startsWith('image/')) {
+    return fromExt;
+  }
+  return trimmed;
 }
 
 export function attachmentTypeFromMime(mimeType: string): 'image' | 'file' {
@@ -185,9 +204,46 @@ export function attachmentIsTextPreviewable(mimeType: string, name = ''): boolea
   return attachmentTextCategory(mimeType, name) !== null;
 }
 
+export function attachmentIsVideo(mimeType: string): boolean {
+  return mimeType.startsWith('video/');
+}
+
+const MEDIA_ERR_SRC_NOT_SUPPORTED = 4;
+
+/** True when the browser reports it can play the container MIME (SSR: defer to onError). */
+export function videoMimeTypePlayable(mimeType: string): boolean {
+  if (typeof document === 'undefined') return true;
+  return document.createElement('video').canPlayType(mimeType) !== '';
+}
+
+export function isVideoSrcNotSupportedError(error: MediaError | null | undefined): boolean {
+  return (error?.code ?? 0) === MEDIA_ERR_SRC_NOT_SUPPORTED;
+}
+
+export function handleVideoPreviewError(
+  event: { currentTarget: HTMLVideoElement },
+  onUnsupported: () => void,
+): void {
+  if (isVideoSrcNotSupportedError(event.currentTarget.error)) {
+    onUnsupported();
+  }
+}
+
+export function attachmentIsAudio(mimeType: string): boolean {
+  return mimeType.startsWith('audio/');
+}
+
 export function attachmentPreviewMode(mimeType: string, name = ''): AttachmentPreviewMode {
-  if (attachmentIsTextPreviewable(mimeType, name)) return 'text';
-  if (mimeType.startsWith('image/') || mimeType === 'application/pdf') return 'embed';
+  const resolved = inferMimeType(name, mimeType);
+  if (attachmentIsTextPreviewable(resolved, name)) return 'text';
+  if (
+    resolved.startsWith('image/') ||
+    attachmentIsVideo(resolved) ||
+    attachmentIsAudio(resolved) ||
+    resolved === 'application/pdf'
+  ) {
+    return 'embed';
+  }
   return 'metadata';
 }
 
@@ -211,6 +267,14 @@ export function attachmentUsesIframePreview(mimeType: string): boolean {
   return mimeType === 'application/pdf';
 }
 
+export function attachmentUsesVideoPreview(mimeType: string): boolean {
+  return attachmentIsVideo(mimeType);
+}
+
+export function attachmentUsesAudioPreview(mimeType: string): boolean {
+  return attachmentIsAudio(mimeType);
+}
+
 /** HTML previews: run JS in an isolated origin; never add allow-same-origin (parent/token access). */
 export { ATTACHMENT_HTML_IFRAME_SANDBOX };
 
@@ -229,8 +293,11 @@ export function attachmentSupportsPreviewToggle(mimeType: string, name = ''): bo
   return category === 'markdown' || category === 'code' || category === 'html' || category === 'csv';
 }
 
-export function attachmentTypeLabel(type: 'image' | 'file'): string {
-  return type === 'image' ? 'Image' : 'File';
+export function attachmentTypeLabel(type: 'image' | 'file', mimeType = ''): string {
+  if (type === 'image') return 'Image';
+  if (attachmentIsVideo(mimeType)) return 'Video';
+  if (attachmentIsAudio(mimeType)) return 'Audio';
+  return 'File';
 }
 
 export function formatAttachmentSize(size?: number): string {
@@ -251,10 +318,12 @@ export function decodeAttachmentTextFromData(data: string): string | null {
   }
 }
 
-/** Align `type` with `mimeType` when server payloads disagree. */
+/** Align `type` and `mimeType` with filename hints when server/browser payloads disagree. */
 export function normalizeAttachment(att: WebChatAttachment): WebChatAttachment {
-  const type = attachmentTypeFromMime(att.mimeType);
-  return att.type === type ? att : { ...att, type };
+  const mimeType = inferMimeType(att.name, att.mimeType);
+  const type = attachmentTypeFromMime(mimeType);
+  if (att.type === type && att.mimeType === mimeType) return att;
+  return { ...att, mimeType, type };
 }
 
 export function formatAttachmentRejections(rejected: AttachmentRejection[]): string | null {
@@ -364,13 +433,24 @@ function attachmentFetchHeaders(token: string): HeadersInit {
 
 export function attachmentDataUrl(att: WebChatAttachment, token?: string): string | null {
   if (att.data) {
-    return `data:${att.mimeType};base64,${att.data}`;
+    const mimeType = inferMimeType(att.name, att.mimeType);
+    return `data:${mimeType};base64,${att.data}`;
   }
   if (att.url && isSafeAttachmentUrl(att.url)) {
     const authToken = token ?? getStoredToken();
     return attachmentUrlWithAuth(att.url, authToken);
   }
   return null;
+}
+
+/** Absolute embed URL for media elements (popouts need same-origin absolute paths). */
+export function attachmentEmbedUrl(att: WebChatAttachment, token?: string): string | null {
+  const url = attachmentDataUrl(att, token);
+  if (!url) return null;
+  if (url.startsWith('/') && typeof window !== 'undefined') {
+    return new URL(url, window.location.origin).href;
+  }
+  return url;
 }
 
 /** Shareable attachment URL without auth token (for clipboard). */
@@ -413,6 +493,20 @@ export function openAttachmentInNewTab(att: WebChatAttachment, token?: string): 
   }
   window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
   return true;
+}
+
+/** Video pop-out with native controls in a styled viewer page. */
+export function openVideoAttachmentInNewTab(att: WebChatAttachment, token?: string): boolean {
+  const videoSrc = attachmentEmbedUrl(att, token);
+  if (!videoSrc) return false;
+  return openHtmlDocumentInNewTab(buildVideoPopoutDocument(att.name, videoSrc, att.mimeType));
+}
+
+/** Audio pop-out with native controls in a styled viewer page. */
+export function openAudioAttachmentInNewTab(att: WebChatAttachment, token?: string): boolean {
+  const audioSrc = attachmentEmbedUrl(att, token);
+  if (!audioSrc) return false;
+  return openHtmlDocumentInNewTab(buildAudioPopoutDocument(att.name, audioSrc));
 }
 
 /** Markdown pop-out with the in-app renderer and preview/raw toggle. */
