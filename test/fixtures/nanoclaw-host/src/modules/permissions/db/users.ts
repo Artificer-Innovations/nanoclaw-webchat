@@ -29,6 +29,10 @@ export function getAllUsers(): User[] {
   return getDb().prepare('SELECT * FROM users ORDER BY created_at').all() as User[];
 }
 
+export function getAllWebUsers(): User[] {
+  return getDb().prepare('SELECT * FROM users WHERE kind = ? ORDER BY created_at').all('web') as User[];
+}
+
 export function updateDisplayName(id: string, displayName: string): void {
   getDb().prepare('UPDATE users SET display_name = ? WHERE id = ?').run(displayName, id);
 }
