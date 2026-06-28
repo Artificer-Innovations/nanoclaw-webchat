@@ -23,7 +23,7 @@ import {
   WEB_INBOX_PLATFORM_ID,
   WEB_LOBBY_PLATFORM_ID,
 } from './webchat-room-scope.js';
-import { upsertUser } from './modules/permissions/db/users.js';
+import { getAllUsers, upsertUser } from './modules/permissions/db/users.js';
 import { addMember } from './modules/permissions/db/agent-group-members.js';
 import type { AgentGroup } from './types.js';
 
@@ -304,7 +304,11 @@ export function syncWebchatWirings(): void {
   }
 
   if (publicMode) {
-    log.info('Webchat wirings synced (public mode — lobby only at boot)', { agentCount: agents.length, lobbyMgId });
+    for (const user of getAllUsers()) {
+      if (user.kind !== 'web') continue;
+      ensureUserWebchatWirings(user.id, user.display_name || user.id);
+    }
+    log.info('Webchat wirings synced (public mode)', { agentCount: agents.length, lobbyMgId });
     return;
   }
 

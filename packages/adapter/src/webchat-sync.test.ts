@@ -39,6 +39,7 @@ import {
   WEB_LOBBY_PLATFORM_ID,
 } from './webchat-sync.js';
 import { encodeUserSuffix } from './webchat-room-scope.js';
+import { upsertUser } from './modules/permissions/db/users.js';
 import { appendMessage, createThread, ensureWebchatSchema, MAIN_THREAD } from './webchat-store.js';
 
 const readEnvFileMock = vi.mocked(readEnvFile);
@@ -358,7 +359,7 @@ describe('syncWebchatWirings', () => {
     expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, 'dm:sarah')!.is_group).toBe(0);
   });
 
-  it('syncs lobby only at boot in public auth mode', () => {
+  it('backfills per-user inbox and DM wirings for web users in public auth mode', () => {
     readEnvFileMock.mockReturnValue({
       WEBCHAT_ENABLED: 'true',
       WEBCHAT_AUTH_MODE: 'public',
@@ -371,11 +372,39 @@ describe('syncWebchatWirings', () => {
       created_at: now(),
     });
 
+    const userId = 'web:basic:alice';
+    upsertUser({
+      id: userId,
+      kind: 'web',
+      display_name: 'Alice',
+      created_at: now(),
+    });
+    upsertUser({
+      id: 'phone:+1555',
+      kind: 'phone',
+      display_name: 'Phone User',
+      created_at: now(),
+    });
+    const bobId = 'web:basic:bob';
+    upsertUser({
+      id: bobId,
+      kind: 'web',
+      display_name: null,
+      created_at: now(),
+    });
+
     syncWebchatWirings();
 
+    const suffix = encodeUserSuffix(userId);
+    const bobSuffix = encodeUserSuffix(bobId);
     expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, WEB_LOBBY_PLATFORM_ID)).toBeDefined();
     expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, WEB_INBOX_PLATFORM_ID)).toBeUndefined();
     expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, 'dm:sarah')).toBeUndefined();
+    expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, `inbox:${suffix}`)).toBeDefined();
+    expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, `dm:sarah:${suffix}`)).toBeDefined();
+    expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, `inbox:${bobSuffix}`)).toBeDefined();
+    expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, `dm:sarah:${bobSuffix}`)).toBeDefined();
+    expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, `inbox:${encodeUserSuffix('phone:+1555')}`)).toBeUndefined();
   });
 });
 
