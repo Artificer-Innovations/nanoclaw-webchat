@@ -23,7 +23,7 @@ import {
   WEB_INBOX_PLATFORM_ID,
   WEB_LOBBY_PLATFORM_ID,
 } from './webchat-room-scope.js';
-import { getAllUsers, upsertUser } from './modules/permissions/db/users.js';
+import { getAllWebUsers, upsertUser } from './modules/permissions/db/users.js';
 import { addMember } from './modules/permissions/db/agent-group-members.js';
 import type { AgentGroup } from './types.js';
 
@@ -183,16 +183,31 @@ function ensureMemberAccess(userId: string, agentGroupId: string): void {
   });
 }
 
+export interface EnsureUserWebchatWiringsOptions {
+  /** Pre-fetched agent list (avoids N+1 queries during boot backfill). */
+  agents?: AgentGroup[];
+  /** Skip lobby wiring when the caller already synced lobby (boot backfill). */
+  skipLobbyWiring?: boolean;
+  /** Skip upsertUser so boot backfill does not mutate stored display names. */
+  skipWebUserUpsert?: boolean;
+}
+
 /** Per-user inbox + DM messaging groups and permissions (public mode). Idempotent. */
-export function ensureUserWebchatWirings(userId: string, displayName: string): void {
+export function ensureUserWebchatWirings(
+  userId: string,
+  displayName: string,
+  options?: EnsureUserWebchatWiringsOptions,
+): void {
   const teamFolder = readTeamFolder();
-  ensureWebUser(userId, displayName);
+  if (!options?.skipWebUserUpsert) {
+    ensureWebUser(userId, displayName);
+  }
 
   const inboxPhysical = inboxPlatformForUser(userId);
   ensureInboxMessagingGroupForPlatform(inboxPhysical);
 
   const lobbyMgId = getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, WEB_LOBBY_PLATFORM_ID)?.id;
-  const agents = getAllAgentGroups();
+  const agents = options?.agents ?? getAllAgentGroups();
 
   for (const agent of agents) {
     ensureMemberAccess(userId, agent.id);
@@ -201,7 +216,7 @@ export function ensureUserWebchatWirings(userId: string, displayName: string): v
     const dmMgId = ensureDmMessagingGroupForPlatform(dmPhysical, agent.name);
     upsertDmWiring(dmMgId, agent.id);
 
-    if (lobbyMgId) {
+    if (lobbyMgId && !options?.skipLobbyWiring) {
       const pattern =
         teamFolder && agent.folder === teamFolder ? `@(team|${agent.folder})\\b` : lobbyPattern(agent.folder);
       upsertLobbyWiring(lobbyMgId, agent.id, pattern);
@@ -304,9 +319,16 @@ export function syncWebchatWirings(): void {
   }
 
   if (publicMode) {
-    for (const user of getAllUsers()) {
-      if (user.kind !== 'web') continue;
-      ensureUserWebchatWirings(user.id, user.display_name || user.id);
+    for (const user of getAllWebUsers()) {
+      try {
+        ensureUserWebchatWirings(user.id, user.display_name ?? user.id, {
+          agents,
+          skipLobbyWiring: true,
+          skipWebUserUpsert: true,
+        });
+      } catch (err) {
+        log.error('Webchat sync: failed to wire user', { userId: user.id, err });
+      }
     }
     log.info('Webchat wirings synced (public mode)', { agentCount: agents.length, lobbyMgId });
     return;

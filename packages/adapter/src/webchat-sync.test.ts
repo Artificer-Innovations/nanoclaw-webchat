@@ -39,7 +39,9 @@ import {
   WEB_LOBBY_PLATFORM_ID,
 } from './webchat-sync.js';
 import { encodeUserSuffix } from './webchat-room-scope.js';
-import { upsertUser } from './modules/permissions/db/users.js';
+import { upsertUser, getUser } from './modules/permissions/db/users.js';
+import * as agentGroupMembers from './modules/permissions/db/agent-group-members.js';
+import { log } from './log.js';
 import { appendMessage, createThread, ensureWebchatSchema, MAIN_THREAD } from './webchat-store.js';
 
 const readEnvFileMock = vi.mocked(readEnvFile);
@@ -68,6 +70,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   delete process.env.WEBCHAT_ENABLED;
   delete process.env.WEBCHAT_TEAM_FOLDER;
   delete process.env.WEBCHAT_USER_ID;
@@ -405,6 +408,43 @@ describe('syncWebchatWirings', () => {
     expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, `inbox:${bobSuffix}`)).toBeDefined();
     expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, `dm:sarah:${bobSuffix}`)).toBeDefined();
     expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, `inbox:${encodeUserSuffix('phone:+1555')}`)).toBeUndefined();
+    expect(getUser(bobId)?.display_name).toBeNull();
+  });
+
+  it('continues backfill when wiring fails for one web user', async () => {
+    readEnvFileMock.mockReturnValue({
+      WEBCHAT_ENABLED: 'true',
+      WEBCHAT_AUTH_MODE: 'public',
+    });
+    createAgentGroup({
+      id: 'ag-sarah',
+      name: 'Sarah',
+      folder: 'sarah',
+      agent_provider: null,
+      created_at: now(),
+    });
+
+    const okId = 'web:basic:alice';
+    const failId = 'web:basic:fail';
+    upsertUser({ id: okId, kind: 'web', display_name: 'Alice', created_at: now() });
+    upsertUser({ id: failId, kind: 'web', display_name: 'Fail', created_at: now() });
+
+    const { addMember: realAddMember } = await vi.importActual<typeof agentGroupMembers>(
+      './modules/permissions/db/agent-group-members.js',
+    );
+    vi.spyOn(agentGroupMembers, 'addMember').mockImplementation((row) => {
+      if (row.user_id === failId) throw new Error('constraint');
+      return realAddMember(row);
+    });
+
+    syncWebchatWirings();
+
+    const okSuffix = encodeUserSuffix(okId);
+    expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, `dm:sarah:${okSuffix}`)).toBeDefined();
+    expect(vi.mocked(log.error)).toHaveBeenCalledWith(
+      'Webchat sync: failed to wire user',
+      expect.objectContaining({ userId: failId }),
+    );
   });
 });
 
