@@ -778,6 +778,107 @@ describe('App', () => {
     expect(await screen.findByRole('heading', { name: 'Lobby' })).toBeInTheDocument();
   });
 
+  it('redirects to returnTo after public login when requested', async () => {
+    const user = userEvent.setup();
+    const assign = vi.fn();
+    vi.stubGlobal('location', {
+      protocol: 'http:',
+      host: 'localhost:3200',
+      origin: 'http://localhost:3200',
+      search: '?returnTo=%2Fauthorize%3Fclient%3D1',
+      assign,
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input, init) => {
+        const url = String(input);
+        if (url === '/api/auth/config') {
+          return jsonResponse({ basic: { enabled: true }, providers: [] });
+        }
+        if (url === '/api/auth/me') {
+          return jsonResponse(null, false, 401);
+        }
+        if (url === '/api/auth/login/basic' && init?.method === 'POST') {
+          return jsonResponse({ ok: true });
+        }
+        return createFetchMock({ messages: [] })(input, init);
+      }),
+    );
+
+    render(<App />);
+    await user.type(await screen.findByLabelText(/username/i), 'alice');
+    await user.type(screen.getByLabelText(/password/i), 'secret');
+    await user.click(screen.getByRole('button', { name: 'Sign in' }));
+
+    await waitFor(() => {
+      expect(assign).toHaveBeenCalledWith('/authorize?client=1');
+    });
+    expect(screen.queryByRole('heading', { name: 'Lobby' })).not.toBeInTheDocument();
+  });
+
+  it('redirects to stashed returnTo when a public session already exists', async () => {
+    const assign = vi.fn();
+    sessionStorage.setItem('webchat_return_to', '/authorize');
+    vi.stubGlobal('location', {
+      protocol: 'http:',
+      host: 'localhost:3200',
+      origin: 'http://localhost:3200',
+      search: '',
+      assign,
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input) => {
+        const url = String(input);
+        if (url === '/api/auth/config') {
+          return jsonResponse({ basic: { enabled: true }, providers: [] });
+        }
+        if (url === '/api/auth/me') {
+          return jsonResponse({ id: 'alice', displayName: 'Alice' });
+        }
+        return createFetchMock({ messages: [] })(input);
+      }),
+    );
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(assign).toHaveBeenCalledWith('/authorize');
+    });
+    expect(screen.queryByRole('heading', { name: 'Lobby' })).not.toBeInTheDocument();
+  });
+
+  it('redirects to returnTo from the URL when a public session already exists', async () => {
+    const assign = vi.fn();
+    vi.stubGlobal('location', {
+      protocol: 'http:',
+      host: 'localhost:3200',
+      origin: 'http://localhost:3200',
+      search: '?returnTo=%2Fauthorize%3Fclient%3D2',
+      assign,
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input) => {
+        const url = String(input);
+        if (url === '/api/auth/config') {
+          return jsonResponse({ basic: { enabled: true }, providers: [] });
+        }
+        if (url === '/api/auth/me') {
+          return jsonResponse({ id: 'alice', displayName: 'Alice' });
+        }
+        return createFetchMock({ messages: [] })(input);
+      }),
+    );
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(assign).toHaveBeenCalledWith('/authorize?client=2');
+    });
+    expect(screen.queryByRole('heading', { name: 'Lobby' })).not.toBeInTheDocument();
+  });
+
   it('signs out from public auth and returns to login', async () => {
     const user = userEvent.setup();
     let authed = false;

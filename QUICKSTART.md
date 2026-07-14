@@ -144,6 +144,8 @@ Prerequisite: webchat channel installed and host running on `:3200`.
 
 Add to Cursor `mcp.json`:
 
+**Local mode (stdio):**
+
 ```json
 {
   "mcpServers": {
@@ -157,6 +159,20 @@ Add to Cursor `mcp.json`:
   }
 }
 ```
+
+**Public mode (remote URL + OAuth):** set `WEBCHAT_AUTH_MODE=public` and `WEBCHAT_PUBLIC_BASE_URL` on the host, then use:
+
+```json
+{
+  "mcpServers": {
+    "nanoclaw-webchat": {
+      "url": "https://chat.example.com/mcp"
+    }
+  }
+}
+```
+
+Cursor discovers OAuth automatically; sign in with the same account as the web UI. See [docs/public-auth.md](./docs/public-auth.md#mcp-oauth-cursor-and-remote-mcp-clients).
 
 Tools: `webchat_list_channels`, `webchat_list_agents`, `webchat_read_channel`, `webchat_read_thread`, `webchat_send_message`, `webchat_create_thread`, `webchat_list_threads`.
 

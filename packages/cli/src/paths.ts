@@ -102,6 +102,8 @@ export const ADAPTER_COPY_RULES: AdapterCopyRule[] = [
   { source: 'webchat-auth.test.ts', dest: 'src/webchat-auth.test.ts' },
   { source: 'webchat-room-scope.ts', dest: 'src/webchat-room-scope.ts' },
   { source: 'webchat-room-scope.test.ts', dest: 'src/webchat-room-scope.test.ts' },
+  { source: 'webchat-mcp-oauth.ts', dest: 'src/webchat-mcp-oauth.ts' },
+  { source: 'webchat-mcp-oauth.test.ts', dest: 'src/webchat-mcp-oauth.test.ts' },
 ];
 
 export const WEBCHAT_BARREL_IMPORT = "import './web.js';";

@@ -10,13 +10,16 @@ export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
 export interface WebchatClientOptions {
   apiBase: string;
-  secret: string;
+  secret?: string;
+  accessToken?: string;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
 }
 
-function authHeaders(secret: string): Record<string, string> {
-  return { Authorization: `Bearer ${secret}` };
+function authHeaders(options: { secret?: string; accessToken?: string }): Record<string, string> {
+  const token = options.accessToken ?? options.secret;
+  if (!token) throw new Error('WebchatClient requires secret or accessToken');
+  return { Authorization: `Bearer ${token}` };
 }
 
 async function readErrorDetail(res: Response): Promise<string> {
@@ -33,13 +36,16 @@ function httpError(operation: string, status: number, detail: string): Error {
 
 export class WebchatClient {
   private readonly apiBase: string;
-  private readonly secret: string;
+  private readonly auth: { secret?: string; accessToken?: string };
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
 
   constructor(options: WebchatClientOptions) {
     this.apiBase = options.apiBase.replace(/\/$/, '');
-    this.secret = options.secret;
+    if (!options.secret && !options.accessToken) {
+      throw new Error('WebchatClient requires secret or accessToken');
+    }
+    this.auth = { secret: options.secret, accessToken: options.accessToken };
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   }
@@ -81,7 +87,7 @@ export class WebchatClient {
     const res = await this.request(
       'bootstrap',
       '/api/bootstrap',
-      { headers: authHeaders(this.secret) },
+      { headers: authHeaders(this.auth) },
       'bootstrap',
     );
     return res.json() as Promise<BootstrapPayload>;
@@ -97,7 +103,7 @@ export class WebchatClient {
     const res = await this.request(
       `messages/${platformId}/${threadId}`,
       path,
-      { headers: authHeaders(this.secret) },
+      { headers: authHeaders(this.auth) },
       'messages',
     );
     const data = (await res.json()) as { messages: ThreadMessagesPayload['messages']; engagedAgents?: string[] };
@@ -121,7 +127,7 @@ export class WebchatClient {
       path,
       {
         method: 'POST',
-        headers: { ...authHeaders(this.secret), 'Content-Type': 'application/json' },
+        headers: { ...authHeaders(this.auth), 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       },
       'send',
@@ -136,7 +142,7 @@ export class WebchatClient {
       path,
       {
         method: 'POST',
-        headers: { ...authHeaders(this.secret), 'Content-Type': 'application/json' },
+        headers: { ...authHeaders(this.auth), 'Content-Type': 'application/json' },
         body: JSON.stringify(title ? { title } : {}),
       },
       'create thread',

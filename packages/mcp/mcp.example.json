@@ -1,11 +1,14 @@
 {
   "mcpServers": {
-    "nanoclaw-webchat": {
+    "nanoclaw-webchat-local": {
       "command": "nanoclaw-webchat-mcp",
       "env": {
         "WEBCHAT_API_BASE": "http://127.0.0.1:3200",
         "WEBCHAT_SECRET": "REPLACE_WITH_WEBCHAT_SECRET"
       }
+    },
+    "nanoclaw-webchat-remote": {
+      "url": "https://chat.example.com/mcp"
     }
   }
 }

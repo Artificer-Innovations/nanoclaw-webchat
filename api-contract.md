@@ -332,10 +332,25 @@ Thread metadata and message history are stored in `data/webchat.db` on the host.
 
 The MCP server lives in [`packages/mcp/`](./packages/mcp/) and ships in the **`nanoclaw-webchat`** npm package as the `nanoclaw-webchat-mcp` bin.
 
+### Local mode (stdio)
+
 | Env var | Default | Purpose |
 |---------|---------|---------|
 | `WEBCHAT_API_BASE` | `http://127.0.0.1:3200` | REST base URL |
 | `WEBCHAT_SECRET` | *(required)* | Bearer token (same as browser UI) |
 | `WEBCHAT_REQUEST_TIMEOUT_MS` | `30000` | Per-request fetch timeout in milliseconds |
+
+### Public mode (HTTP + OAuth)
+
+When `WEBCHAT_AUTH_MODE=public`, the adapter co-hosts Streamable HTTP MCP at `/mcp` with OAuth 2.1 login. MCP clients receive per-user bearer tokens after browser login.
+
+| Env var | Default | Purpose |
+|---------|---------|---------|
+| `WEBCHAT_MCP_HTTP_ENABLED` | `true` in public mode | Enable `/mcp` HTTP transport |
+| `WEBCHAT_PUBLIC_BASE_URL` | derived from OIDC redirect URI | Canonical public origin for OAuth resource indicator |
+
+OAuth endpoints: `GET /authorize`, `POST /token`, `POST /register`, `GET /.well-known/oauth-authorization-server`, `GET /.well-known/oauth-protected-resource/mcp`.
+
+MCP bearer tokens are accepted on REST routes with the same per-user room scoping as browser sessions. `WEBCHAT_SECRET` remains an admin/service credential.
 
 MCP tools wrap a subset of the REST endpoints above: bootstrap for channel/agent/thread discovery, `POST .../threads` to create threads, and GET/POST `.../messages` for reads and sends. After sending, clients poll read endpoints with `since=<timestamp>` every 2–5 seconds to collect agent replies (same pattern as Slack MCP).

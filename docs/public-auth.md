@@ -66,6 +66,8 @@ You will need:
 | `WEBCHAT_OIDC_ALLOWED_EMAILS` | optional | Comma-separated exact emails |
 | `WEBCHAT_OIDC_ALLOWED_SUBS` | optional | Comma-separated `providerId:numericSub` (e.g. `github:12345678`) |
 | `WEBCHAT_OIDC_REQUIRED_GROUP` | optional | OIDC `groups` claim must include this value |
+| `WEBCHAT_MCP_HTTP_ENABLED` | no | `true`/`false`. Defaults to `true` in public mode, `false` in local mode. Enables co-hosted Streamable HTTP MCP at `/mcp` with OAuth login |
+| `WEBCHAT_PUBLIC_BASE_URL` | when MCP HTTP enabled | Canonical public origin (e.g. `https://chat.example.com`). Derived from `WEBCHAT_OIDC_REDIRECT_URI` when unset |
 
 Generate secrets:
 
@@ -207,6 +209,38 @@ Enable both `WEBCHAT_AUTH_BASIC_ENABLED=true` and `WEBCHAT_AUTH_OIDC_ENABLED=tru
 | **DMs** | Private per user. Same agent folder, separate conversation per login |
 
 The MCP server and other automation can still call the REST API with `Authorization: Bearer <WEBCHAT_SECRET>`. Treat that token as an admin/service credential, not an end-user session.
+
+## MCP OAuth (Cursor and remote MCP clients)
+
+In public mode, the web adapter co-hosts a **Streamable HTTP MCP** endpoint at `/mcp` on the same port as the UI. MCP clients (such as Cursor) discover OAuth via [Protected Resource Metadata](https://www.rfc-editor.org/rfc/rfc9728) and log in through the same browser session as the web UI.
+
+| Mode | MCP transport | Auth |
+|------|---------------|------|
+| Local (default) | stdio `nanoclaw-webchat-mcp` | `WEBCHAT_SECRET` in env |
+| Public | URL `https://<your-host>/mcp` | OAuth (browser login) |
+| Public automation | REST API directly | `WEBCHAT_SECRET` admin bearer |
+
+**Cursor config (public mode):**
+
+```json
+{
+  "mcpServers": {
+    "nanoclaw-webchat": {
+      "url": "https://chat.example.com/mcp"
+    }
+  }
+}
+```
+
+No secrets in the config — Cursor runs the OAuth flow and receives a per-user bearer token scoped to that login.
+
+**Requirements:**
+
+- `WEBCHAT_PUBLIC_BASE_URL` must match the URL users and MCP clients reach (including TLS termination at your reverse proxy)
+- MCP HTTP is enabled by default in public mode (`WEBCHAT_MCP_HTTP_ENABLED=false` to disable)
+- Local stdio MCP (`nanoclaw-webchat-mcp` with `WEBCHAT_SECRET`) is unchanged for solo dev
+
+OAuth endpoints (same origin as the UI): `/authorize`, `/token`, `/register`, `/.well-known/oauth-authorization-server`, `/.well-known/oauth-protected-resource/mcp`.
 
 ## Migrating an existing deployment from local to public
 

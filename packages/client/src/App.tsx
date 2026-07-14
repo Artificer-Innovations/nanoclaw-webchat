@@ -83,6 +83,7 @@ import type { BootstrapPayload, ThreadMeta, WebChatAttachment, WebChatMessage, W
 import { Login } from './Login';
 import {
   connectWebSocket,
+  consumeStashedReturnTo,
   createThread,
   deleteThread,
   detectPublicAuthMode,
@@ -90,9 +91,11 @@ import {
   fetchAuthMe,
   fetchBootstrap,
   fetchMessages,
+  getReturnToParam,
   getStoredToken,
   isLocalTokenMode,
   logoutSession,
+  redirectToReturnTo,
   renameThread,
   sendMessage,
   storeToken,
@@ -213,7 +216,14 @@ export function App() {
   useEffect(() => {
     if (authMode !== 'public') return;
     void fetchAuthMe()
-      .then((me) => setPublicAuthed(me != null))
+      .then((me) => {
+        if (me != null) {
+          const stashed = consumeStashedReturnTo();
+          if (redirectToReturnTo(stashed)) return;
+          if (redirectToReturnTo(getReturnToParam())) return;
+        }
+        setPublicAuthed(me != null);
+      })
       .catch(() => setPublicAuthed(false));
   }, [authMode]);
 
@@ -859,6 +869,7 @@ export function App() {
     return (
       <Login
         onSuccess={() => {
+          if (redirectToReturnTo(getReturnToParam())) return;
           setPublicAuthed(true);
         }}
       />
