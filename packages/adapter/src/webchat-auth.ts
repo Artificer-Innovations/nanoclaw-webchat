@@ -314,6 +314,14 @@ function redirect(res: http.ServerResponse, location: string): void {
   res.end();
 }
 
+/** Normalize public path prefix for home redirects and Back links (empty → `/`). */
+function webchatHomePath(publicPath?: string): string {
+  const raw = (publicPath ?? '').trim();
+  if (!raw || raw === '/') return '/';
+  const normalized = raw.startsWith('/') ? raw.replace(/\/+$/, '') : `/${raw.replace(/\/+$/, '')}`;
+  return `${normalized}/`;
+}
+
 function htmlPage(res: http.ServerResponse, status: number, title: string, body: string): void {
   res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8' });
   res.end(
@@ -418,6 +426,8 @@ export async function handlePublicAuthRequest(
   config: PublicAuthConfig,
   json: JsonResponder,
   onLogin: (user: WebchatSessionUser) => void,
+  /** Public path prefix (e.g. `/webchat`) for post-login redirect under a stripPrefix mount. */
+  publicPath?: string,
 ): Promise<boolean> {
   if (url.pathname === '/api/auth/config' && req.method === 'GET') {
     json(res, 200, buildAuthConfigResponse(config));
@@ -496,9 +506,11 @@ export async function handlePublicAuthRequest(
       json(res, 404, { error: 'Not found' });
       return true;
     }
+    const home = webchatHomePath(publicPath);
+    const backLink = `<p><a href="${home}">Back</a></p>`;
     const err = url.searchParams.get('error');
     if (err) {
-      htmlPage(res, 403, 'Access denied', '<h1>Login cancelled</h1><p><a href="/">Back</a></p>');
+      htmlPage(res, 403, 'Access denied', `<h1>Login cancelled</h1>${backLink}`);
       return true;
     }
     const code = url.searchParams.get('code');
@@ -522,19 +534,19 @@ export async function handlePublicAuthRequest(
       // Wire before Set-Cookie so a wiring/db failure cannot leave a usable session cookie.
       onLogin(user);
       writeSession(res, config, user);
-      redirect(res, '/');
+      redirect(res, home);
     } catch (e) {
       if (e instanceof AllowlistError) {
         htmlPage(
           res,
           403,
           'Access denied',
-          '<h1>Access denied</h1><p>Your account is not authorized for this webchat.</p><p><a href="/">Back</a></p>',
+          `<h1>Access denied</h1><p>Your account is not authorized for this webchat.</p>${backLink}`,
         );
         return true;
       }
       log.error('Webchat OIDC login failed', { err: e });
-      htmlPage(res, 500, 'Login failed', '<h1>Login failed</h1><p><a href="/">Back</a></p>');
+      htmlPage(res, 500, 'Login failed', `<h1>Login failed</h1>${backLink}`);
     }
     return true;
   }

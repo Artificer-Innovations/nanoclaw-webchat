@@ -163,6 +163,8 @@ import {
   flushWebAgentDeliveryChains,
   isAuthorizedApprovalActor,
   resolveWebchatPort,
+  resolveWebchatPublicPath,
+  rewriteWebchatPublicPaths,
   shouldMirrorApprovalToOrigin,
 } from './web.js';
 import type { ChannelSetup, InboundMessage } from './adapter.js';
@@ -3671,6 +3673,62 @@ describe('web channel adapter', () => {
     process.env.WEBCHAT_PORT = '4500';
     expect(resolveWebchatPort({ WEBCHAT_PORT: '3200' })).toBe(4500);
     delete process.env.WEBCHAT_PORT;
+  });
+
+  it('resolveWebchatPublicPath normalizes slashes and ignores bare root', () => {
+    expect(resolveWebchatPublicPath({})).toBe('');
+    expect(resolveWebchatPublicPath({ WEBCHAT_PUBLIC_PATH: '/' })).toBe('');
+    expect(resolveWebchatPublicPath({ WEBCHAT_PUBLIC_PATH: '/webchat/' })).toBe('/webchat');
+    expect(resolveWebchatPublicPath({ WEBCHAT_PUBLIC_PATH: 'webchat' })).toBe('/webchat');
+    process.env.WEBCHAT_PUBLIC_PATH = '/webchat/';
+    expect(resolveWebchatPublicPath({ WEBCHAT_PUBLIC_PATH: '/ignored' })).toBe('/webchat');
+    delete process.env.WEBCHAT_PUBLIC_PATH;
+  });
+
+  it('rewriteWebchatPublicPaths prefixes /api and /assets and collapses doubles', () => {
+    const html = '<script src="/assets/index.js"></script><a href="/api/auth/login">login</a>';
+    expect(rewriteWebchatPublicPaths(html, '/webchat')).toBe(
+      '<script src="/webchat/assets/index.js"></script><a href="/webchat/api/auth/login">login</a>',
+    );
+    const js = 'fetch("/api/bootstrap"); const u=`${o.host}/api/ws`;';
+    expect(rewriteWebchatPublicPaths(js, '/webchat')).toContain('/webchat/api/bootstrap');
+    expect(rewriteWebchatPublicPaths(js, '/webchat')).toContain('${o.host}/webchat/api/ws');
+    expect(rewriteWebchatPublicPaths('/webchat/api/rooms', '/webchat')).toBe('/webchat/api/rooms');
+    expect(rewriteWebchatPublicPaths('/api/x', '')).toBe('/api/x');
+  });
+
+  it('rewrites /api and /assets in served HTML and JS when publicPath is set', async () => {
+    const assetDir = '/tmp/nanoclaw-webchat-test-assets';
+    const assetsSubdir = path.join(assetDir, 'assets');
+    fs.mkdirSync(assetsSubdir, { recursive: true });
+    fs.writeFileSync(
+      path.join(assetDir, 'index.html'),
+      '<!doctype html><html><head><script src="/assets/app.js"></script></head><body></body></html>',
+    );
+    fs.writeFileSync(path.join(assetsSubdir, 'app.js'), 'fetch("/api/bootstrap")');
+    fs.writeFileSync(path.join(assetsSubdir, 'font.woff2'), Buffer.from('font'));
+    adapter = createWebAdapter({
+      ...defaultAdapterOptions(testPort),
+      publicPath: '/webchat',
+    });
+    await adapter.setup(setup);
+
+    const index = await httpGetText('/', testPort);
+    expect(index.status).toBe(200);
+    expect(index.body).toContain('/webchat/assets/app.js');
+    expect(index.body).not.toContain('src="/assets/app.js"');
+
+    const js = await httpGetText('/assets/app.js', testPort);
+    expect(js.status).toBe(200);
+    expect(js.body).toBe('fetch("/webchat/api/bootstrap")');
+
+    // Cached on second serve (same rewritten body).
+    const jsAgain = await httpGetText('/assets/app.js', testPort);
+    expect(jsAgain.body).toBe('fetch("/webchat/api/bootstrap")');
+
+    const font = await httpGetText('/assets/font.woff2', testPort);
+    expect(font.status).toBe(200);
+    expect(font.body).toBe('font');
   });
 
   it('accepts bearer token for bootstrap when session is absent in public mode', async () => {

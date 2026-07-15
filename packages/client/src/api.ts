@@ -134,6 +134,9 @@ export function resolveWebSocketUrl(
   token: string,
   env: Pick<ImportMetaEnv, 'DEV' | 'VITE_WEBCHAT_API_TARGET'> = import.meta.env,
 ): string {
+  // Keep the socket under `/api/…`. WEBCHAT_PUBLIC_PATH rewrites only `/api/` and
+  // `/assets/` substrings in served JS — a path outside those prefixes would break
+  // path-mounted deploys (UI loads, live channel never connects).
   if (env.DEV) {
     const target = env.VITE_WEBCHAT_API_TARGET ?? DEFAULT_WEBCHAT_API_TARGET;
     const backend = new URL(target);

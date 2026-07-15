@@ -80,6 +80,7 @@ Full walkthrough: **[QUICKSTART.md](./QUICKSTART.md)**
 |----------|----------|---------|-------------|
 | `WEBCHAT_ENABLED` | yes | — | Set `true` to start the channel |
 | `WEBCHAT_PORT` | no | `3200` | HTTP/WebSocket port |
+| `WEBCHAT_PUBLIC_PATH` | no | — | Public URL path prefix (e.g. `/webchat`) when a reverse proxy strips that prefix before the adapter; rewrites `/api` and `/assets` in served HTML/JS so the browser stays on the mount. Do not set this to `/api` or `/assets`. |
 | `WEBCHAT_SECRET` | yes | — | Bearer token (injected into served HTML in local mode) |
 | `WEBCHAT_USER_ID` | no | `web:local` | User id for outbound messages |
 | `WEBCHAT_DISPLAY_NAME` | no | `Local` | Display name in the UI |
