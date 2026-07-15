@@ -55,6 +55,8 @@ export interface WebAdapterAuthConfig {
   localDisplayName: string;
   mcpHttpEnabled: boolean;
   publicBaseUrl?: string;
+  /** MCP access-token TTL in seconds (default 86400). */
+  mcpTokenTtlSeconds?: number;
   public?: PublicAuthConfig;
 }
 
@@ -83,6 +85,7 @@ const ENV_KEYS = [
   'WEBCHAT_BASIC_ALLOWED_USERNAMES',
   'WEBCHAT_BASIC_DISPLAY_NAMES',
   'WEBCHAT_MCP_HTTP_ENABLED',
+  'WEBCHAT_MCP_TOKEN_TTL_SECONDS',
   'WEBCHAT_PUBLIC_BASE_URL',
 ] as const;
 
@@ -111,6 +114,13 @@ function resolveMcpHttpEnabled(
   if (raw === 'true') return true;
   if (raw === 'false') return false;
   return mode === 'public';
+}
+
+function resolveMcpTokenTtlSeconds(file: Record<string, string | undefined>): number {
+  const raw = env('WEBCHAT_MCP_TOKEN_TTL_SECONDS', file);
+  if (!raw) return 86_400;
+  const parsed = parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 86_400;
 }
 
 function resolveSecureCookies(file: Record<string, string | undefined>): boolean {
@@ -214,6 +224,7 @@ export function loadWebAdapterAuthConfig(): WebAdapterAuthConfig | null {
     localDisplayName,
     mcpHttpEnabled: resolveMcpHttpEnabled(mode, file),
     publicBaseUrl: resolvePublicBaseUrl(file),
+    mcpTokenTtlSeconds: resolveMcpTokenTtlSeconds(file),
   };
 
   if (mode === 'local') return base;

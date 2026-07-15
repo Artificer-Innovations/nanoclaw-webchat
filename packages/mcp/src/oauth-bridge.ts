@@ -1,5 +1,9 @@
 /**
  * Bridges adapter MCP OAuth backend to @modelcontextprotocol/sdk OAuthServerProvider.
+ *
+ * PKCE: the MCP SDK calls `challengeForAuthorizationCode` and verifies S256 against the
+ * token-request `code_verifier` *before* invoking `exchangeAuthorizationCode`. We still
+ * forward the verifier and redirect_uri so the backend can re-validate as defence-in-depth.
  */
 import type { Response } from 'express';
 import type { OAuthServerProvider } from '@modelcontextprotocol/sdk/server/auth/provider.js';
@@ -29,13 +33,20 @@ export interface WebchatMcpOAuthBackendLike {
     client: McpOAuthClientLike,
     authorizationCode: string,
     resource?: string,
+    options?: { codeVerifier?: string; redirectUri?: string },
   ): Promise<{
     access_token: string;
     token_type: string;
     expires_in: number;
     scope: string;
   }>;
-  verifyAccessToken(token: string): {
+  verifyAccessToken(token: string): Promise<{
+    userId: string;
+    displayName: string;
+    clientId: string;
+    scopes: string[];
+    resource?: string;
+  } | null> | {
     userId: string;
     displayName: string;
     clientId: string;
@@ -85,20 +96,25 @@ export function wrapWebchatMcpOAuthBackend(backend: WebchatMcpOAuthBackendLike):
       return backend.challengeForAuthorizationCode(client as McpOAuthClientLike, authorizationCode);
     },
 
-    async exchangeAuthorizationCode(client, authorizationCode, _codeVerifier, _redirectUri, resource) {
+    async exchangeAuthorizationCode(client, authorizationCode, codeVerifier, redirectUri, resource) {
       return backend.exchangeAuthorizationCode(
         client as McpOAuthClientLike,
         authorizationCode,
         resource?.href,
+        {
+          codeVerifier,
+          redirectUri,
+        },
       );
     },
 
     async exchangeRefreshToken() {
+      // Refresh not implemented yet; access tokens use a longer TTL (see MCP_ACCESS_TOKEN_TTL_SECONDS).
       throw new Error('refresh_token grant not supported');
     },
 
     async verifyAccessToken(token) {
-      const user = backend.verifyAccessToken(token);
+      const user = await backend.verifyAccessToken(token);
       if (!user) throw new Error('Invalid or expired token');
       return {
         token,

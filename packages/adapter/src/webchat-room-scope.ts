@@ -62,10 +62,23 @@ export function ownerUserIdFromPhysical(physicalPlatformId: string): string | nu
 
 export function assertRoomAccess(logicalPlatformId: string, sessionUserId: string): string {
   const existingOwner = ownerUserIdFromPhysical(logicalPlatformId);
-  if (existingOwner !== null && existingOwner !== sessionUserId) {
-    throw new RoomAccessError(logicalPlatformId);
+  if (existingOwner !== null) {
+    // Already a physical scoped id (e.g. inbox:<suffix>); validate ownership and return as-is.
+    if (existingOwner !== sessionUserId) {
+      throw new RoomAccessError(logicalPlatformId);
+    }
+    return logicalPlatformId;
   }
-  const physical = toPhysicalPlatformId(logicalPlatformId, sessionUserId);
+
+  let physical: string;
+  try {
+    physical = toPhysicalPlatformId(logicalPlatformId, sessionUserId);
+  } catch (e) {
+    if (e instanceof Error && e.message.startsWith('Unknown room')) {
+      throw new RoomAccessError(logicalPlatformId);
+    }
+    throw e;
+  }
   const owner = ownerUserIdFromPhysical(physical);
   if (owner !== null && owner !== sessionUserId) {
     throw new RoomAccessError(logicalPlatformId);

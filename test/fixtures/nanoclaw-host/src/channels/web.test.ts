@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import crypto from 'crypto';
 import fs from 'fs';
 import http from 'http';
-import { createServer as createNetServer } from 'node:net';
+import { createServer as createNetServer, connect as netConnect } from 'node:net';
 import path from 'path';
 import WebSocket from 'ws';
 
@@ -16,9 +17,23 @@ vi.mock('nanoclaw-webchat', () => ({
   getAssetDir: vi.fn(() => '/tmp/nanoclaw-webchat-test-assets'),
 }));
 
+vi.mock('nanoclaw-webchat/mcp-http', () => ({
+  createMcpHttpDelegate: vi.fn(() => ({
+    listener: (_req: http.IncomingMessage, res: http.ServerResponse) => {
+      res.writeHead(204).end();
+    },
+  })),
+  mcpHttpPathMatches: (pathname: string) =>
+    pathname === '/mcp' ||
+    pathname.startsWith('/.well-known/') ||
+    pathname === '/authorize' ||
+    pathname === '/token' ||
+    pathname === '/register',
+}));
+
 vi.mock('../webchat-sync.js', () => ({
-  buildWebchatBootstrap: () => ({
-    user: { id: 'web:local', displayName: 'Local' },
+  buildWebchatBootstrap: (userId: string, displayName: string) => ({
+    user: { id: userId, displayName },
     rooms: [
       {
         platformId: 'inbox',
@@ -126,6 +141,7 @@ import * as webchatMentions from '../webchat-mentions.js';
 import { resetWebchatAuthSchemaForTests, createSession, signSessionCookie, WEBCHAT_SESSION_COOKIE } from '../webchat-auth-sessions.js';
 import { createWebchatMcpOAuthBackend, MCP_DEFAULT_SCOPE, verifyMcpAccessToken } from '../webchat-mcp-oauth.js';
 import { encodeUserSuffix } from '../webchat-room-scope.js';
+import * as webchatRoomScope from '../webchat-room-scope.js';
 
 const routeInboundMock = vi.mocked(routeInbound);
 const cleanupSessionsMock = vi.mocked(cleanupAgentSessionsForThread);
@@ -1296,6 +1312,32 @@ describe('web channel adapter', () => {
     await adapter.setup(setup);
     const { status } = await httpGetText('/api/rooms/lobby/threads/main/messages', testPort);
     expect(status).toBe(401);
+  });
+
+  it('rejects requests whose Content-Length exceeds the body limit', async () => {
+    await adapter.setup(setup);
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port: testPort,
+          path: '/api/rooms/lobby/threads/main/messages',
+          method: 'POST',
+          agent: false,
+          headers: {
+            Authorization: `Bearer ${SECRET}`,
+            'Content-Type': 'application/json',
+            'Content-Length': String(30 * 1024 * 1024),
+            Connection: 'close',
+          },
+        },
+        (res) => resolve(res.statusCode ?? 0),
+      );
+      req.on('error', reject);
+      req.write('{}');
+      req.end();
+    });
+    expect(status).toBe(400);
   });
 
   it('returns bootstrap payload from GET /api/bootstrap', async () => {
@@ -3442,7 +3484,7 @@ describe('web channel adapter', () => {
     expect(forbiddenUpload.status).toBe(403);
   });
 
-  it('returns 500 when room id is invalid in public mode', async () => {
+  it('returns 403 when room id is invalid in public mode', async () => {
     adapter = createWebAdapter(publicAdapterOptions(testPort));
     resetWebchatAuthSchemaForTests();
     await adapter.setup(setup);
@@ -3451,7 +3493,47 @@ describe('web channel adapter', () => {
     const res = await httpGetWithHeaders('/api/rooms/not-a-room/threads/main/messages', {
       Cookie: cookie,
     });
+    expect(res.status).toBe(403);
+  });
+
+  it('returns 500 when physical room mapping throws unexpectedly in public mode', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const cookie = await loginBasicSession('alice');
+    // Empty DM folder triggers non-RoomAccessError from toPhysicalPlatformId.
+    const res = await httpGetWithHeaders('/api/rooms/dm%3A/threads/main/messages', {
+      Cookie: cookie,
+    });
     expect(res.status).toBe(500);
+  });
+
+  it('delivers lobby events to session-scoped WebSocket clients in public mode', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const cookie = await loginBasicSession('alice');
+    const events: unknown[] = [];
+    await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${testPort}/api/ws`, {
+        headers: { Cookie: cookie },
+      });
+      ws.on('open', async () => {
+        await adapter.deliver('lobby', null, { kind: 'chat', content: 'lobby hello' });
+      });
+      ws.on('message', (data) => {
+        events.push(JSON.parse(String(data)));
+        if (events.some((event) => (event as { type?: string }).type === 'message')) {
+          ws.close();
+          resolve();
+        }
+      });
+      ws.on('error', reject);
+    });
+
+    expect(events.some((event) => (event as { type?: string }).type === 'message')).toBe(true);
   });
 
   it('logs out and invalidates the session cookie in public mode', async () => {
@@ -3615,7 +3697,7 @@ describe('web channel adapter', () => {
     expect(messages.some((msg) => msg.text === 'hello from alice')).toBe(true);
   });
 
-  it('delivers to bearer-token WebSocket clients without per-user filtering in public mode', async () => {
+  it('does not deliver private-room events to unscoped bearer WebSocket clients in public mode', async () => {
     adapter = createWebAdapter(publicAdapterOptions(testPort));
     resetWebchatAuthSchemaForTests();
     await adapter.setup(setup);
@@ -3626,18 +3708,19 @@ describe('web channel adapter', () => {
       ws.on('open', async () => {
         const aliceInbox = `inbox:${encodeUserSuffix('web:basic:alice')}`;
         await adapter.deliver(aliceInbox, null, { kind: 'chat', content: 'via bearer token' });
+        // Give the server a beat to fan out; unscoped clients must receive nothing.
+        setTimeout(() => {
+          ws.close();
+          resolve();
+        }, 50);
       });
       ws.on('message', (data) => {
         events.push(JSON.parse(String(data)));
-        if (events.some((event) => (event as { type?: string }).type === 'message')) {
-          ws.close();
-          resolve();
-        }
       });
       ws.on('error', reject);
     });
 
-    expect(events.some((event) => (event as { type?: string }).type === 'message')).toBe(true);
+    expect(events).toEqual([]);
   });
 
   it('POST actions uses session user id in public mode', async () => {
@@ -3706,6 +3789,8 @@ describe('web channel adapter', () => {
       3600,
     );
     const cookie = signSessionCookie(session.id, PUBLIC_SESSION_SECRET);
+    const codeVerifier = 'test-verifier';
+    const codeChallenge = crypto.createHash('sha256').update(codeVerifier).digest('base64url');
     const redirect = backend.authorize(
       {
         originalUrl: '/authorize',
@@ -3714,13 +3799,16 @@ describe('web channel adapter', () => {
       client,
       {
         scopes: [MCP_DEFAULT_SCOPE],
-        codeChallenge: 'challenge',
+        codeChallenge,
         redirectUri: 'http://127.0.0.1:8765/callback',
         resource: resourceServerUrl,
       },
     );
     const code = new URL(redirect.location).searchParams.get('code')!;
-    const tokens = await backend.exchangeAuthorizationCode(client, code, resourceServerUrl);
+    const tokens = await backend.exchangeAuthorizationCode(client, code, resourceServerUrl, {
+      codeVerifier,
+      redirectUri: 'http://127.0.0.1:8765/callback',
+    });
     return tokens.access_token;
   }
 
@@ -3736,6 +3824,7 @@ describe('web channel adapter', () => {
       verifyMcpAccessToken(token, {
         publicAuth: opts.publicAuth!,
         resourceServerUrl,
+        publicBaseUrl: opts.publicBaseUrl,
       }),
     ).toMatchObject({ userId: 'web:basic:alice', displayName: 'Alice' });
 
@@ -3746,11 +3835,6 @@ describe('web channel adapter', () => {
       Authorization: `Bearer ${token}`,
     });
     expect(bootstrap.status).toBe(200);
-    if ((bootstrap.body as { user?: { id?: string } }).user?.id === 'web:local') {
-      throw new Error(
-        `expected MCP user bootstrap, got local admin fallback; tokenLen=${token.length} resource=${resourceServerUrl}`,
-      );
-    }
     expect(bootstrap.body).toMatchObject({
       user: { id: 'web:basic:alice', displayName: 'Alice' },
     });
@@ -3767,6 +3851,255 @@ describe('web channel adapter', () => {
       `/api/rooms/${encodeURIComponent(bobInbox)}/threads/main/messages`,
       { Authorization: `Bearer ${token}` },
     );
+    expect(res.status).toBe(403);
+  });
+
+  it('MCP bearer token cannot upload to another user inbox', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const token = await mintMcpAccessToken('alice');
+    const bobInbox = `inbox:${encodeUserSuffix('web:basic:bob')}`;
+    const res = await httpPostJsonWithHeaders(
+      `/api/rooms/${encodeURIComponent(bobInbox)}/threads/main/uploads/chunk`,
+      {
+        uploadId: '550e8400-e29b-41d4-a716-446655440099',
+        chunkIndex: 0,
+        totalChunks: 1,
+        filename: 'x.png',
+        mimeType: 'image/png',
+        data: PNG_BASE64,
+      },
+      { Authorization: `Bearer ${token}` },
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it('MCP bearer token cannot multipart upload to another user inbox', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const token = await mintMcpAccessToken('alice');
+    const bobInbox = `inbox:${encodeUserSuffix('web:basic:bob')}`;
+    const boundary = '----WebKitFormBoundaryMcpForbidden';
+    const content = Buffer.from('hello');
+    const body = Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="x.txt"\r\nContent-Type: text/plain\r\n\r\n`),
+      content,
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ]);
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port: testPort,
+          path: `/api/rooms/${encodeURIComponent(bobInbox)}/threads/main/uploads`,
+          method: 'POST',
+          agent: false,
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': `multipart/form-data; boundary=${boundary}`,
+            'Content-Length': body.length,
+            Connection: 'close',
+          },
+        },
+        (res) => resolve(res.statusCode ?? 0),
+      );
+      req.on('error', reject);
+      req.write(body);
+      req.end();
+    });
+    expect(status).toBe(403);
+  });
+
+  it('MCP bearer token cannot post actions in another user inbox', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const token = await mintMcpAccessToken('alice');
+    const bobInbox = `inbox:${encodeUserSuffix('web:basic:bob')}`;
+    const res = await httpPostJsonWithHeaders(
+      `/api/rooms/${encodeURIComponent(bobInbox)}/threads/main/actions`,
+      { questionId: 'approval-mcp', value: 'approve' },
+      { Authorization: `Bearer ${token}` },
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it('MCP bearer token cannot create threads in another user inbox', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const token = await mintMcpAccessToken('alice');
+    const bobInbox = `inbox:${encodeUserSuffix('web:basic:bob')}`;
+    const res = await httpPostJsonWithHeaders(
+      `/api/rooms/${encodeURIComponent(bobInbox)}/threads`,
+      { title: 'Nope' },
+      { Authorization: `Bearer ${token}` },
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it('MCP bearer token cannot patch threads in another user inbox', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const token = await mintMcpAccessToken('alice');
+    const bobInbox = `inbox:${encodeUserSuffix('web:basic:bob')}`;
+    const res = await httpPatchWithHeaders(
+      `/api/rooms/${encodeURIComponent(bobInbox)}/threads/main`,
+      { title: 'Nope' },
+      { Authorization: `Bearer ${token}` },
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it('MCP bearer token cannot delete threads in another user inbox', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const token = await mintMcpAccessToken('alice');
+    const bobInbox = `inbox:${encodeUserSuffix('web:basic:bob')}`;
+    const res = await httpDeleteWithHeaders(
+      `/api/rooms/${encodeURIComponent(bobInbox)}/threads/main`,
+      { Authorization: `Bearer ${token}` },
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it('MCP bearer token cannot post messages in another user inbox', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const token = await mintMcpAccessToken('alice');
+    const bobInbox = `inbox:${encodeUserSuffix('web:basic:bob')}`;
+    const res = await httpPostJsonWithHeaders(
+      `/api/rooms/${encodeURIComponent(bobInbox)}/threads/main/messages`,
+      { text: 'hello bob' },
+      { Authorization: `Bearer ${token}` },
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it('accepts MCP bearer tokens for WebSocket upgrade in public mode', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const token = await mintMcpAccessToken('alice');
+    await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${testPort}/api/ws`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      ws.on('open', () => {
+        ws.close();
+        resolve();
+      });
+      ws.on('error', reject);
+    });
+  });
+
+  it('delegates MCP HTTP routes when mcpHttpEnabled is true', async () => {
+    adapter = createWebAdapter({ ...publicAdapterOptions(testPort), mcpHttpEnabled: true });
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const res = await httpGetWithHeaders('/.well-known/oauth-authorization-server', {});
+    expect(res.status).toBe(204);
+
+    const mcp = await httpGetWithHeaders('/mcp', {});
+    expect(mcp.status).toBe(204);
+
+    const authorize = await httpGetWithHeaders('/authorize', {});
+    expect(authorize.status).toBe(204);
+  });
+
+  it('throws when nanoclaw-webchat assets are unavailable', async () => {
+    getAssetDirMock.mockImplementationOnce(() => {
+      throw new Error('no assets');
+    });
+    adapter = createWebAdapter(defaultAdapterOptions(testPort));
+    await expect(adapter.setup(setup)).rejects.toThrow('no assets');
+  });
+
+  it('throws when MCP HTTP transport fails to initialize', async () => {
+    const { createMcpHttpDelegate } = await import('nanoclaw-webchat/mcp-http');
+    vi.mocked(createMcpHttpDelegate).mockImplementationOnce(() => {
+      throw new Error('mcp http down');
+    });
+    adapter = createWebAdapter({ ...publicAdapterOptions(testPort), mcpHttpEnabled: true });
+    resetWebchatAuthSchemaForTests();
+    await expect(adapter.setup(setup)).rejects.toThrow('mcp http down');
+  });
+
+  it('destroys WebSocket upgrade requests for non-ws paths', async () => {
+    adapter = createWebAdapter(defaultAdapterOptions(testPort));
+    await adapter.setup(setup);
+
+    async function expectUpgradeRejected(path: string): Promise<void> {
+      await new Promise<void>((resolve) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${testPort}${path}`, {
+          headers: { Authorization: `Bearer ${SECRET}` },
+        });
+        ws.on('open', () => {
+          ws.close();
+          resolve();
+        });
+        ws.on('error', () => resolve());
+        ws.on('close', () => resolve());
+      });
+    }
+
+    await expectUpgradeRejected('/api/ws/extra');
+    await expectUpgradeRejected('/mcp');
+
+    await new Promise<void>((resolve) => {
+      const socket = netConnect(testPort, '127.0.0.1', () => {
+        socket.write(
+          'GET /wrong HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n',
+        );
+      });
+      const done = () => {
+        socket.destroy();
+        resolve();
+      };
+      socket.on('close', done);
+      socket.on('error', done);
+      setTimeout(done, 250);
+    });
+  });
+
+  it('returns 400 when removing engaged agents outside lobby', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const cookie = await loginBasicSession('alice');
+    const res = await httpDeleteWithHeaders('/api/rooms/inbox/threads/main/engaged/sarah', {
+      Cookie: cookie,
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 403 when engaged removal hits room access failure', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const cookie = await loginBasicSession('alice');
+    vi.spyOn(webchatRoomScope, 'assertRoomAccess').mockImplementationOnce(() => {
+      throw new webchatRoomScope.RoomAccessError('Forbidden');
+    });
+    const res = await httpDeleteWithHeaders('/api/rooms/lobby/threads/main/engaged/sarah', {
+      Cookie: cookie,
+    });
     expect(res.status).toBe(403);
   });
 

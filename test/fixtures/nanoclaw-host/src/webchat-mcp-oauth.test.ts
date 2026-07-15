@@ -5,6 +5,8 @@ import { authConfigForTests } from './webchat-auth-config.js';
 import {
   createWebchatMcpOAuthBackend,
   MCP_DEFAULT_SCOPE,
+  MCP_OAUTH_CLIENT_TTL_SECONDS,
+  purgeStaleMcpOAuthClients,
   resetWebchatMcpOAuthForTests,
   verifyMcpAccessToken,
 } from './webchat-mcp-oauth.js';
@@ -18,6 +20,7 @@ import {
 const PUBLIC_BASE = 'http://127.0.0.1:3200';
 const RESOURCE_URL = `${PUBLIC_BASE}/mcp`;
 const SESSION_SECRET = 'a'.repeat(32);
+const REDIRECT = 'http://127.0.0.1:8765/callback';
 
 function publicAuthConfig() {
   return authConfigForTests({
@@ -40,6 +43,44 @@ function publicAuthConfig() {
   }).public!;
 }
 
+function backend() {
+  return createWebchatMcpOAuthBackend({
+    publicAuth: publicAuthConfig(),
+    publicBaseUrl: PUBLIC_BASE,
+    resourceServerUrl: RESOURCE_URL,
+  });
+}
+
+async function mintCode(opts?: { challenge?: string; redirectUri?: string }) {
+  const b = backend();
+  const client = await b.clientsStore.registerClient({
+    redirect_uris: [REDIRECT],
+    token_endpoint_auth_method: 'none',
+  });
+  const session = createSession(
+    { userId: 'web:basic:alice', displayName: 'Alice', authMethod: 'basic' },
+    3600,
+  );
+  const cookie = signSessionCookie(session.id, SESSION_SECRET);
+  const codeChallenge =
+    opts?.challenge ?? crypto.createHash('sha256').update('verifier').digest('base64url');
+  const redirect = b.authorize(
+    {
+      originalUrl: '/authorize',
+      headers: { cookie: `${WEBCHAT_SESSION_COOKIE}=${encodeURIComponent(cookie)}` },
+    } as import('node:http').IncomingMessage,
+    client,
+    {
+      scopes: [MCP_DEFAULT_SCOPE],
+      codeChallenge,
+      redirectUri: opts?.redirectUri ?? REDIRECT,
+      resource: RESOURCE_URL,
+    },
+  );
+  const code = new URL(redirect.location).searchParams.get('code')!;
+  return { backend: b, client, code, codeChallenge };
+}
+
 describe('webchat-mcp-oauth', () => {
   beforeEach(() => {
     resetWebchatAuthSchemaForTests();
@@ -52,47 +93,18 @@ describe('webchat-mcp-oauth', () => {
   });
 
   it('issues and verifies user-scoped JWT access tokens', async () => {
-    const backend = createWebchatMcpOAuthBackend({
-      publicAuth: publicAuthConfig(),
-      publicBaseUrl: PUBLIC_BASE,
-      resourceServerUrl: RESOURCE_URL,
+    const { backend: b, client, code } = await mintCode();
+    const tokens = await b.exchangeAuthorizationCode(client, code, RESOURCE_URL, {
+      codeVerifier: 'verifier',
+      redirectUri: REDIRECT,
     });
-
-    const client = await backend.clientsStore.registerClient({
-      redirect_uris: ['http://127.0.0.1:8765/callback'],
-      token_endpoint_auth_method: 'none',
-    });
-
-    const session = createSession(
-      { userId: 'web:basic:alice', displayName: 'Alice', authMethod: 'basic' },
-      3600,
-    );
-    const cookie = signSessionCookie(session.id, SESSION_SECRET);
-
-    const authorizeReq = {
-      originalUrl:
-        '/authorize?client_id=' +
-        client.client_id +
-        '&redirect_uri=http%3A%2F%2F127.0.0.1%3A8765%2Fcallback&response_type=code&code_challenge=abc&code_challenge_method=S256',
-      headers: { cookie: `${WEBCHAT_SESSION_COOKIE}=${encodeURIComponent(cookie)}` },
-    } as import('node:http').IncomingMessage;
-
-    const redirect = backend.authorize(authorizeReq, client, {
-      scopes: [MCP_DEFAULT_SCOPE],
-      codeChallenge: 'abc',
-      redirectUri: 'http://127.0.0.1:8765/callback',
-      resource: RESOURCE_URL,
-    });
-    expect(redirect.location).toContain('code=');
-    const code = new URL(redirect.location).searchParams.get('code');
-    expect(code).toBeTruthy();
-
-    const tokens = await backend.exchangeAuthorizationCode(client, code!, RESOURCE_URL);
     expect(tokens.access_token).toBeTruthy();
+    expect(tokens.expires_in).toBe(86_400);
 
     const user = verifyMcpAccessToken(tokens.access_token, {
       publicAuth: publicAuthConfig(),
       resourceServerUrl: RESOURCE_URL,
+      publicBaseUrl: PUBLIC_BASE,
     });
     expect(user).toEqual({
       userId: 'web:basic:alice',
@@ -104,22 +116,17 @@ describe('webchat-mcp-oauth', () => {
   });
 
   it('redirects unauthenticated authorize requests to login', () => {
-    const backend = createWebchatMcpOAuthBackend({
-      publicAuth: publicAuthConfig(),
-      publicBaseUrl: PUBLIC_BASE,
-      resourceServerUrl: RESOURCE_URL,
-    });
-
-    const result = backend.authorize(
+    const b = backend();
+    const result = b.authorize(
       { originalUrl: '/authorize?client_id=x', headers: {} } as import('node:http').IncomingMessage,
       {
         client_id: 'x',
-        redirect_uris: ['http://127.0.0.1:8765/callback'],
+        redirect_uris: [REDIRECT],
       },
       {
         scopes: [MCP_DEFAULT_SCOPE],
         codeChallenge: 'abc',
-        redirectUri: 'http://127.0.0.1:8765/callback',
+        redirectUri: REDIRECT,
       },
     );
 
@@ -127,40 +134,48 @@ describe('webchat-mcp-oauth', () => {
   });
 
   it('rejects tokens with wrong audience', async () => {
-    const backend = createWebchatMcpOAuthBackend({
-      publicAuth: publicAuthConfig(),
-      publicBaseUrl: PUBLIC_BASE,
-      resourceServerUrl: RESOURCE_URL,
+    const { backend: b, client, code } = await mintCode();
+    const tokens = await b.exchangeAuthorizationCode(client, code, RESOURCE_URL, {
+      codeVerifier: 'verifier',
+      redirectUri: REDIRECT,
     });
-    const client = await backend.clientsStore.registerClient({
-      redirect_uris: ['http://127.0.0.1:8765/callback'],
-      token_endpoint_auth_method: 'none',
-    });
-    const session = createSession(
-      { userId: 'web:basic:alice', displayName: 'Alice', authMethod: 'basic' },
-      3600,
-    );
-    const cookie = signSessionCookie(session.id, SESSION_SECRET);
-    const redirect = backend.authorize(
-      {
-        originalUrl: '/authorize',
-        headers: { cookie: `${WEBCHAT_SESSION_COOKIE}=${encodeURIComponent(cookie)}` },
-      } as import('node:http').IncomingMessage,
-      client,
-      {
-        scopes: [MCP_DEFAULT_SCOPE],
-        codeChallenge: crypto.createHash('sha256').update('verifier').digest('base64url'),
-        redirectUri: 'http://127.0.0.1:8765/callback',
-        resource: RESOURCE_URL,
-      },
-    );
-    const code = new URL(redirect.location).searchParams.get('code')!;
-    const tokens = await backend.exchangeAuthorizationCode(client, code, RESOURCE_URL);
     expect(
       verifyMcpAccessToken(tokens.access_token, {
         publicAuth: publicAuthConfig(),
         resourceServerUrl: 'http://127.0.0.1:3200/other',
+        publicBaseUrl: PUBLIC_BASE,
       }),
     ).toBeNull();
+  });
+
+  it('rejects redirect_uri mismatch on token exchange', async () => {
+    const { backend: b, client, code } = await mintCode();
+    await expect(
+      b.exchangeAuthorizationCode(client, code, RESOURCE_URL, {
+        codeVerifier: 'verifier',
+        redirectUri: 'http://127.0.0.1:9999/evil',
+      }),
+    ).rejects.toThrow(/redirect_uri mismatch/);
+  });
+
+  it('rejects invalid PKCE code_verifier on token exchange', async () => {
+    const { backend: b, client, code } = await mintCode();
+    await expect(
+      b.exchangeAuthorizationCode(client, code, RESOURCE_URL, {
+        codeVerifier: 'wrong-verifier',
+        redirectUri: REDIRECT,
+      }),
+    ).rejects.toThrow(/Invalid PKCE/);
+  });
+
+  it('purges stale oauth clients', async () => {
+    const b = backend();
+    await b.clientsStore.registerClient({
+      client_id: 'old-client',
+      client_id_issued_at: Math.floor(Date.now() / 1000) - MCP_OAUTH_CLIENT_TTL_SECONDS - 10,
+      redirect_uris: [REDIRECT],
+    });
+    expect(purgeStaleMcpOAuthClients()).toBeGreaterThanOrEqual(1);
+    expect(await b.clientsStore.getClient('old-client')).toBeUndefined();
   });
 });

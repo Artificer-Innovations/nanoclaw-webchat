@@ -48,7 +48,8 @@ export function createMcpHttpDelegate(options: CreateMcpHttpDelegateOptions): Mc
   const provider: OAuthServerProvider = wrapWebchatMcpOAuthBackend(options.oauthBackend);
 
   const app = createMcpExpressApp({ host: issuerUrl.hostname });
-  app.use(express.json());
+  // Align with REST MAX_BODY_BYTES (20 MiB) so MCP payloads are not unbounded.
+  app.use(express.json({ limit: '20mb' }));
   app.use(
     mcpAuthRouter({
       provider,
@@ -84,6 +85,7 @@ export function createMcpHttpDelegate(options: CreateMcpHttpDelegateOptions): Mc
           timeoutMs: options.requestTimeoutMs,
         }),
       createServer: (client) =>
+        // `client` supplies per-request accessToken auth; config.secret is unused in HTTP mode.
         createWebchatMcpServer({
           config: {
             apiBase: options.apiBase,

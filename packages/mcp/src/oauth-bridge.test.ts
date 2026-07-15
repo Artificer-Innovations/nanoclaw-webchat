@@ -56,11 +56,17 @@ describe('wrapWebchatMcpOAuthBackend', () => {
       provider.exchangeAuthorizationCode(
         { client_id: 'client-1', redirect_uris: [] },
         'code',
-        undefined,
-        undefined,
+        'verifier',
+        'http://127.0.0.1/cb',
         new URL('http://127.0.0.1:3200/mcp'),
       ),
     ).resolves.toMatchObject({ access_token: 'token-1' });
+    expect(backend.exchangeAuthorizationCode).toHaveBeenCalledWith(
+      expect.anything(),
+      'code',
+      'http://127.0.0.1:3200/mcp',
+      { codeVerifier: 'verifier', redirectUri: 'http://127.0.0.1/cb' },
+    );
   });
 
   it('verifyAccessToken maps user extra fields', async () => {
@@ -97,6 +103,24 @@ describe('wrapWebchatMcpOAuthBackend', () => {
     await expect(
       provider.exchangeRefreshToken({ client_id: 'c', redirect_uris: [] }, 'rt'),
     ).rejects.toThrow(/not supported/);
+  });
+
+  it('propagates PKCE verification failures from the backend', async () => {
+    const provider = wrapWebchatMcpOAuthBackend(
+      mockBackend({
+        exchangeAuthorizationCode: vi.fn(async () => {
+          throw new Error('Invalid PKCE code_verifier');
+        }),
+      }),
+    );
+    await expect(
+      provider.exchangeAuthorizationCode(
+        { client_id: 'client-1', redirect_uris: [] },
+        'code',
+        'bad-verifier',
+        'http://127.0.0.1/cb',
+      ),
+    ).rejects.toThrow(/Invalid PKCE/);
   });
 
   it('omits registerClient when store lacks it', () => {

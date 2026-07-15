@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import crypto from 'crypto';
 import fs from 'fs';
 import http from 'http';
 import { createServer as createNetServer, connect as netConnect } from 'node:net';
@@ -22,6 +23,12 @@ vi.mock('nanoclaw-webchat/mcp-http', () => ({
       res.writeHead(204).end();
     },
   })),
+  mcpHttpPathMatches: (pathname: string) =>
+    pathname === '/mcp' ||
+    pathname.startsWith('/.well-known/') ||
+    pathname === '/authorize' ||
+    pathname === '/token' ||
+    pathname === '/register',
 }));
 
 vi.mock('../webchat-sync.js', () => ({
@@ -3477,7 +3484,7 @@ describe('web channel adapter', () => {
     expect(forbiddenUpload.status).toBe(403);
   });
 
-  it('returns 500 when room id is invalid in public mode', async () => {
+  it('returns 403 when room id is invalid in public mode', async () => {
     adapter = createWebAdapter(publicAdapterOptions(testPort));
     resetWebchatAuthSchemaForTests();
     await adapter.setup(setup);
@@ -3486,7 +3493,47 @@ describe('web channel adapter', () => {
     const res = await httpGetWithHeaders('/api/rooms/not-a-room/threads/main/messages', {
       Cookie: cookie,
     });
+    expect(res.status).toBe(403);
+  });
+
+  it('returns 500 when physical room mapping throws unexpectedly in public mode', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const cookie = await loginBasicSession('alice');
+    // Empty DM folder triggers non-RoomAccessError from toPhysicalPlatformId.
+    const res = await httpGetWithHeaders('/api/rooms/dm%3A/threads/main/messages', {
+      Cookie: cookie,
+    });
     expect(res.status).toBe(500);
+  });
+
+  it('delivers lobby events to session-scoped WebSocket clients in public mode', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const cookie = await loginBasicSession('alice');
+    const events: unknown[] = [];
+    await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${testPort}/api/ws`, {
+        headers: { Cookie: cookie },
+      });
+      ws.on('open', async () => {
+        await adapter.deliver('lobby', null, { kind: 'chat', content: 'lobby hello' });
+      });
+      ws.on('message', (data) => {
+        events.push(JSON.parse(String(data)));
+        if (events.some((event) => (event as { type?: string }).type === 'message')) {
+          ws.close();
+          resolve();
+        }
+      });
+      ws.on('error', reject);
+    });
+
+    expect(events.some((event) => (event as { type?: string }).type === 'message')).toBe(true);
   });
 
   it('logs out and invalidates the session cookie in public mode', async () => {
@@ -3650,7 +3697,7 @@ describe('web channel adapter', () => {
     expect(messages.some((msg) => msg.text === 'hello from alice')).toBe(true);
   });
 
-  it('delivers to bearer-token WebSocket clients without per-user filtering in public mode', async () => {
+  it('does not deliver private-room events to unscoped bearer WebSocket clients in public mode', async () => {
     adapter = createWebAdapter(publicAdapterOptions(testPort));
     resetWebchatAuthSchemaForTests();
     await adapter.setup(setup);
@@ -3661,18 +3708,19 @@ describe('web channel adapter', () => {
       ws.on('open', async () => {
         const aliceInbox = `inbox:${encodeUserSuffix('web:basic:alice')}`;
         await adapter.deliver(aliceInbox, null, { kind: 'chat', content: 'via bearer token' });
+        // Give the server a beat to fan out; unscoped clients must receive nothing.
+        setTimeout(() => {
+          ws.close();
+          resolve();
+        }, 50);
       });
       ws.on('message', (data) => {
         events.push(JSON.parse(String(data)));
-        if (events.some((event) => (event as { type?: string }).type === 'message')) {
-          ws.close();
-          resolve();
-        }
       });
       ws.on('error', reject);
     });
 
-    expect(events.some((event) => (event as { type?: string }).type === 'message')).toBe(true);
+    expect(events).toEqual([]);
   });
 
   it('POST actions uses session user id in public mode', async () => {
@@ -3741,6 +3789,8 @@ describe('web channel adapter', () => {
       3600,
     );
     const cookie = signSessionCookie(session.id, PUBLIC_SESSION_SECRET);
+    const codeVerifier = 'test-verifier';
+    const codeChallenge = crypto.createHash('sha256').update(codeVerifier).digest('base64url');
     const redirect = backend.authorize(
       {
         originalUrl: '/authorize',
@@ -3749,13 +3799,16 @@ describe('web channel adapter', () => {
       client,
       {
         scopes: [MCP_DEFAULT_SCOPE],
-        codeChallenge: 'challenge',
+        codeChallenge,
         redirectUri: 'http://127.0.0.1:8765/callback',
         resource: resourceServerUrl,
       },
     );
     const code = new URL(redirect.location).searchParams.get('code')!;
-    const tokens = await backend.exchangeAuthorizationCode(client, code, resourceServerUrl);
+    const tokens = await backend.exchangeAuthorizationCode(client, code, resourceServerUrl, {
+      codeVerifier,
+      redirectUri: 'http://127.0.0.1:8765/callback',
+    });
     return tokens.access_token;
   }
 
@@ -3771,6 +3824,7 @@ describe('web channel adapter', () => {
       verifyMcpAccessToken(token, {
         publicAuth: opts.publicAuth!,
         resourceServerUrl,
+        publicBaseUrl: opts.publicBaseUrl,
       }),
     ).toMatchObject({ userId: 'web:basic:alice', displayName: 'Alice' });
 

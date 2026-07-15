@@ -146,6 +146,7 @@ interface WebAdapterOptions {
   publicAuth?: PublicAuthConfig;
   mcpHttpEnabled?: boolean;
   publicBaseUrl?: string;
+  mcpTokenTtlSeconds?: number;
 }
 
 interface TrackedWsClient {
@@ -786,19 +787,18 @@ function attachMcpUser(
   res: http.ServerResponse | undefined,
   mcpUser: McpAccessTokenUser,
 ): void {
+  (req as WebchatAuthedRequest).webchatMcpUser = mcpUser;
   if (res) {
     (res as WebchatAuthedResponse).webchatMcpUser = mcpUser;
-  } else {
-    (req as WebchatAuthedRequest).webchatMcpUser = mcpUser;
   }
 }
 
 function readMcpUser(
   req: http.IncomingMessage,
-  res: http.ServerResponse,
+  res?: http.ServerResponse,
 ): McpAccessTokenUser | undefined {
   return (
-    (res as WebchatAuthedResponse).webchatMcpUser ??
+    (res ? (res as WebchatAuthedResponse).webchatMcpUser : undefined) ??
     (req as WebchatAuthedRequest).webchatMcpUser
   );
 }
@@ -815,16 +815,6 @@ function internalApiBase(port: number, bindAddress?: string): string {
   return `http://${host}:${port}`;
 }
 
-function isMcpHttpPath(pathname: string): boolean {
-  return (
-    pathname === '/mcp' ||
-    pathname === '/authorize' ||
-    pathname === '/token' ||
-    pathname === '/register' ||
-    pathname.startsWith('/.well-known/oauth-')
-  );
-}
-
 export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
   let server: http.Server | null = null;
   let wss: WebSocketServer | null = null;
@@ -833,6 +823,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
   let cachedIndexHtml: string | null = null;
   const wsClients = new Set<TrackedWsClient>();
   let mcpHttpListener: import('node:http').RequestListener | null = null;
+  let mcpHttpPathMatches: ((pathname: string) => boolean) | null = null;
   let mcpOAuthBackend: WebchatMcpOAuthBackend | null = null;
   let mcpResourceServerUrl: string | null = null;
 
@@ -842,7 +833,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
 
   function resolveRequestUser(
     req: http.IncomingMessage,
-    res: http.ServerResponse,
+    res?: http.ServerResponse,
   ): { userId: string; displayName: string } {
     const mcpUser = readMcpUser(req, res);
     if (mcpUser) return { userId: mcpUser.userId, displayName: mcpUser.displayName };
@@ -880,13 +871,11 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
     const bearer = parseBearerAuthorization(bearerHeader);
 
     if (isPublicMode()) {
-      const resourceServerUrl =
-        mcpResourceServerUrl ??
-        (opts.publicBaseUrl ? new URL('/mcp', `${opts.publicBaseUrl}/`).href : null);
-      if (bearer && resourceServerUrl) {
+      if (bearer && mcpResourceServerUrl) {
         const mcpUser = verifyMcpAccessToken(bearer, {
           publicAuth: opts.publicAuth!,
-          resourceServerUrl,
+          resourceServerUrl: mcpResourceServerUrl,
+          publicBaseUrl: opts.publicBaseUrl,
         });
         if (mcpUser) {
           attachMcpUser(req, res, mcpUser);
@@ -916,7 +905,9 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
     const payload = JSON.stringify(event);
     for (const client of wsClients) {
       if (client.ws.readyState !== WebSocket.OPEN) continue;
-      if (isPublicMode() && client.userId) {
+      if (isPublicMode()) {
+        // Unscoped clients (null userId) must not receive private room traffic.
+        if (!client.userId) continue;
         if (
           !shouldDeliverWsEvent(
             event as {
@@ -1504,6 +1495,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
           publicAuth: opts.publicAuth,
           publicBaseUrl: opts.publicBaseUrl,
           resourceServerUrl: mcpResourceServerUrl,
+          tokenTtlSeconds: opts.mcpTokenTtlSeconds,
         });
         if (opts.mcpHttpEnabled) {
           try {
@@ -1514,6 +1506,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
               oauthBackend: mcpOAuthBackend,
             });
             mcpHttpListener = delegate.listener;
+            mcpHttpPathMatches = mcpHttp.mcpHttpPathMatches;
           } catch (err) {
             log.error('Web channel: failed to initialize MCP HTTP transport', { err });
             throw err;
@@ -1535,7 +1528,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
         try {
           const url = new URL(req.url ?? '/', `http://127.0.0.1:${opts.port}`);
 
-          if (mcpHttpListener && isMcpHttpPath(url.pathname)) {
+          if (mcpHttpListener && mcpHttpPathMatches?.(url.pathname)) {
             mcpHttpListener(req, res);
             return;
           }
@@ -1754,8 +1747,12 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
           return;
         }
         wss!.handleUpgrade(req, socket, head, (ws) => {
+          const mcpUser = readMcpUser(req);
           const sessionUser = isPublicMode() ? resolveSessionUser(opts.publicAuth!, req) : null;
-          const client: TrackedWsClient = { ws, userId: sessionUser?.userId ?? null };
+          const client: TrackedWsClient = {
+            ws,
+            userId: mcpUser?.userId ?? sessionUser?.userId ?? null,
+          };
           wsClients.add(client);
           ws.on('close', () => wsClients.delete(client));
         });
@@ -1912,6 +1909,7 @@ registerChannelAdapter('web', {
       publicAuth: cfg.public,
       mcpHttpEnabled: cfg.mcpHttpEnabled,
       publicBaseUrl: cfg.publicBaseUrl,
+      mcpTokenTtlSeconds: cfg.mcpTokenTtlSeconds,
     });
   },
 });

@@ -1,5 +1,8 @@
 /**
  * MCP OAuth authorization server backend: client registration, auth codes, JWT access tokens.
+ *
+ * Tokens are HS256 JWTs with explicit typ/alg/iss/aud validation (defence-in-depth against
+ * alg-confusion across the shared WEBCHAT_SESSION_SECRET used for browser sessions).
  */
 import crypto from 'crypto';
 import http from 'http';
@@ -8,8 +11,13 @@ import type { PublicAuthConfig } from './webchat-auth-config.js';
 import { resolveSessionUser } from './webchat-auth.js';
 import { ensureWebchatAuthSchema, getAuthDbInternal } from './webchat-auth-sessions.js';
 
-export const MCP_ACCESS_TOKEN_TTL_SECONDS = 3600;
+/** Default MCP access-token lifetime (24h). Override with WEBCHAT_MCP_TOKEN_TTL_SECONDS. */
+export const MCP_ACCESS_TOKEN_TTL_SECONDS = 86_400;
 export const MCP_DEFAULT_SCOPE = 'mcp:tools';
+/** Purge unused dynamic clients older than this (30 days). */
+export const MCP_OAUTH_CLIENT_TTL_SECONDS = 30 * 24 * 60 * 60;
+export const MCP_JWT_TYP = 'MCP+JWT';
+export const MCP_JWT_ALG = 'HS256';
 
 export interface McpAccessTokenUser {
   userId: string;
@@ -47,6 +55,11 @@ export interface McpOAuthTokens {
   scope: string;
 }
 
+export interface McpExchangeOptions {
+  codeVerifier?: string;
+  redirectUri?: string;
+}
+
 export interface WebchatMcpOAuthConfig {
   publicAuth: PublicAuthConfig;
   publicBaseUrl: string;
@@ -54,10 +67,16 @@ export interface WebchatMcpOAuthConfig {
   tokenTtlSeconds?: number;
 }
 
+interface JwtHeader {
+  alg: string;
+  typ?: string;
+}
+
 interface JwtPayload {
   sub: string;
   name: string;
   aud: string;
+  iss: string;
   scope: string;
   client_id: string;
   exp: number;
@@ -69,35 +88,63 @@ function base64UrlJson(value: unknown): string {
 }
 
 function signJwt(payload: JwtPayload, secret: string): string {
-  const header = base64UrlJson({ alg: 'HS256', typ: 'JWT' });
+  const header = base64UrlJson({ alg: MCP_JWT_ALG, typ: MCP_JWT_TYP });
   const body = base64UrlJson(payload);
   const sig = crypto.createHmac('sha256', secret).update(`${header}.${body}`).digest('base64url');
   return `${header}.${body}.${sig}`;
 }
 
-function verifyJwt(token: string, secret: string): JwtPayload | null {
+function verifyJwt(token: string, secret: string, iss: string, aud: string): JwtPayload | null {
   const parts = token.split('.');
   if (parts.length !== 3) return null;
-  const [header, body, sig] = parts;
+  const [headerB64, payloadB64, sig] = parts;
+  if (!headerB64 || !payloadB64 || !sig) return null;
+
   const expected = crypto
     .createHmac('sha256', secret)
-    .update(`${header}.${body}`)
+    .update(`${headerB64}.${payloadB64}`)
     .digest('base64url');
   if (sig.length !== expected.length) return null;
   if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
+
   try {
-    const payload = JSON.parse(Buffer.from(body!, 'base64url').toString('utf8')) as JwtPayload;
-    if (typeof payload.exp !== 'number' || payload.exp <= Math.floor(Date.now() / 1000)) return null;
+    const header = JSON.parse(Buffer.from(headerB64, 'base64url').toString('utf8')) as JwtHeader;
+    // Reject alg/typ confusion with browser session cookies that share WEBCHAT_SESSION_SECRET.
+    if (header.alg !== MCP_JWT_ALG) return null;
+    if (header.typ !== MCP_JWT_TYP) return null;
+
+    const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8')) as JwtPayload;
+    const now = Math.floor(Date.now() / 1000);
+    if (typeof payload.exp !== 'number' || payload.exp <= now) return null;
+    if (typeof payload.iat !== 'number' || payload.iat > now + 60) return null;
+    if (payload.iss !== iss) return null;
+    if (payload.aud !== aud) return null;
+    if (typeof payload.sub !== 'string' || typeof payload.name !== 'string') return null;
+    if (typeof payload.client_id !== 'string') return null;
     return payload;
   } catch {
     return null;
   }
 }
 
+function verifyPkceS256(codeVerifier: string, codeChallenge: string): boolean {
+  const computed = crypto.createHash('sha256').update(codeVerifier).digest('base64url');
+  if (computed.length !== codeChallenge.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(computed), Buffer.from(codeChallenge));
+}
+
 function purgeExpiredMcpCodes(): void {
   const db = getAuthDbInternal();
   const cutoff = Date.now() - 10 * 60 * 1000;
   db.prepare('DELETE FROM web_mcp_oauth_codes WHERE created_at_ms < ?').run(cutoff);
+}
+
+/** Drop unused dynamic clients after MCP_OAUTH_CLIENT_TTL_SECONDS. */
+export function purgeStaleMcpOAuthClients(nowSeconds = Math.floor(Date.now() / 1000)): number {
+  const db = getAuthDbInternal();
+  const cutoff = nowSeconds - MCP_OAUTH_CLIENT_TTL_SECONDS;
+  const result = db.prepare('DELETE FROM web_mcp_oauth_clients WHERE client_id_issued_at < ?').run(cutoff);
+  return Number(result.changes ?? 0);
 }
 
 function rowToClient(row: {
@@ -134,11 +181,13 @@ export function ensureWebchatMcpOAuthSchema(): void {
 
 export function verifyMcpAccessToken(
   token: string,
-  config: Pick<WebchatMcpOAuthConfig, 'publicAuth' | 'resourceServerUrl'>,
+  config: Pick<WebchatMcpOAuthConfig, 'publicAuth' | 'resourceServerUrl' | 'publicBaseUrl'> & {
+    publicBaseUrl?: string;
+  },
 ): McpAccessTokenUser | null {
-  const payload = verifyJwt(token, config.publicAuth.sessionSecret);
+  const issuer = (config.publicBaseUrl ?? new URL(config.resourceServerUrl).origin).replace(/\/$/, '');
+  const payload = verifyJwt(token, config.publicAuth.sessionSecret, issuer, config.resourceServerUrl);
   if (!payload) return null;
-  if (payload.aud !== config.resourceServerUrl) return null;
   const scopes = payload.scope ? payload.scope.split(' ').filter(Boolean) : [MCP_DEFAULT_SCOPE];
   return {
     userId: payload.sub,
@@ -152,9 +201,11 @@ export function verifyMcpAccessToken(
 export function createWebchatMcpOAuthBackend(config: WebchatMcpOAuthConfig) {
   ensureWebchatMcpOAuthSchema();
   const tokenTtlSeconds = config.tokenTtlSeconds ?? MCP_ACCESS_TOKEN_TTL_SECONDS;
+  const issuer = config.publicBaseUrl.replace(/\/$/, '');
 
   const clientsStore = {
     async getClient(clientId: string): Promise<McpOAuthClientRecord | undefined> {
+      purgeStaleMcpOAuthClients();
       const db = getAuthDbInternal();
       const row = db
         .prepare(
@@ -183,6 +234,7 @@ export function createWebchatMcpOAuthBackend(config: WebchatMcpOAuthConfig) {
     async registerClient(
       client: Omit<McpOAuthClientRecord, 'client_id'> & { client_id?: string },
     ): Promise<McpOAuthClientRecord> {
+      purgeStaleMcpOAuthClients();
       const db = getAuthDbInternal();
       const clientId = client.client_id ?? crypto.randomUUID();
       const issuedAt = client.client_id_issued_at ?? Math.floor(Date.now() / 1000);
@@ -285,12 +337,13 @@ export function createWebchatMcpOAuthBackend(config: WebchatMcpOAuthConfig) {
       client: McpOAuthClientRecord,
       authorizationCode: string,
       resource?: string,
+      options?: McpExchangeOptions,
     ): Promise<McpOAuthTokens> {
       purgeExpiredMcpCodes();
       const db = getAuthDbInternal();
       const row = db
         .prepare(
-          `SELECT client_id, user_id, display_name, redirect_uri, scopes_json, resource
+          `SELECT client_id, user_id, display_name, redirect_uri, code_challenge, scopes_json, resource
            FROM web_mcp_oauth_codes WHERE code = ?`,
         )
         .get(authorizationCode) as
@@ -299,6 +352,7 @@ export function createWebchatMcpOAuthBackend(config: WebchatMcpOAuthConfig) {
             user_id: string;
             display_name: string;
             redirect_uri: string;
+            code_challenge: string;
             scopes_json: string;
             resource: string | null;
           }
@@ -306,6 +360,17 @@ export function createWebchatMcpOAuthBackend(config: WebchatMcpOAuthConfig) {
       if (!row) throw new Error('Invalid authorization code');
       if (row.client_id !== client.client_id) {
         throw new Error('Authorization code was not issued to this client');
+      }
+      // OAuth 2.1 §4.1.3 — redirect_uri on the token request must match the authorize request.
+      if (options?.redirectUri != null && options.redirectUri !== row.redirect_uri) {
+        throw new Error('redirect_uri mismatch');
+      }
+      // Defence-in-depth: SDK also verifies PKCE via challengeForAuthorizationCode before
+      // calling exchange; we re-check S256 when a verifier is provided.
+      if (options?.codeVerifier != null) {
+        if (!verifyPkceS256(options.codeVerifier, row.code_challenge)) {
+          throw new Error('Invalid PKCE code_verifier');
+        }
       }
       const expectedResource = resource ?? row.resource ?? config.resourceServerUrl;
       if (expectedResource !== config.resourceServerUrl) {
@@ -319,6 +384,7 @@ export function createWebchatMcpOAuthBackend(config: WebchatMcpOAuthConfig) {
         sub: row.user_id,
         name: row.display_name,
         aud: config.resourceServerUrl,
+        iss: issuer,
         scope: scopes.join(' '),
         client_id: client.client_id,
         iat: now,

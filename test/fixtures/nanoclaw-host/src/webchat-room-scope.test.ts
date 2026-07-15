@@ -39,6 +39,15 @@ describe('webchat-room-scope', () => {
     expect(() => assertRoomAccess(aliceDm, 'web:basic:bob')).toThrow(RoomAccessError);
   });
 
+  it('assertRoomAccess accepts owned physical ids', () => {
+    const aliceInbox = toPhysicalPlatformId('inbox', alice);
+    expect(assertRoomAccess(aliceInbox, alice)).toBe(aliceInbox);
+  });
+
+  it('assertRoomAccess maps malformed logical ids to RoomAccessError', () => {
+    expect(() => assertRoomAccess('not-a-room', alice)).toThrow(RoomAccessError);
+  });
+
   it('delivers lobby events to everyone', () => {
     expect(shouldDeliverWsEvent({ type: 'message', platformId: 'lobby' }, alice)).toBe(true);
     expect(shouldDeliverWsEvent({ type: 'message', platformId: 'lobby' }, 'web:basic:bob')).toBe(true);

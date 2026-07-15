@@ -67,6 +67,7 @@ You will need:
 | `WEBCHAT_OIDC_ALLOWED_SUBS` | optional | Comma-separated `providerId:numericSub` (e.g. `github:12345678`) |
 | `WEBCHAT_OIDC_REQUIRED_GROUP` | optional | OIDC `groups` claim must include this value |
 | `WEBCHAT_MCP_HTTP_ENABLED` | no | `true`/`false`. Defaults to `true` in public mode, `false` in local mode. Enables co-hosted Streamable HTTP MCP at `/mcp` with OAuth login |
+| `WEBCHAT_MCP_TOKEN_TTL_SECONDS` | no | MCP access-token lifetime in seconds (default `86400` / 24h). Refresh grants are not supported yet |
 | `WEBCHAT_PUBLIC_BASE_URL` | when MCP HTTP enabled | Canonical public origin (e.g. `https://chat.example.com`). Derived from `WEBCHAT_OIDC_REDIRECT_URI` when unset |
 
 Generate secrets:
@@ -238,7 +239,10 @@ No secrets in the config — Cursor runs the OAuth flow and receives a per-user 
 
 - `WEBCHAT_PUBLIC_BASE_URL` must match the URL users and MCP clients reach (including TLS termination at your reverse proxy)
 - MCP HTTP is enabled by default in public mode (`WEBCHAT_MCP_HTTP_ENABLED=false` to disable)
+- Access tokens last 24 hours by default (`WEBCHAT_MCP_TOKEN_TTL_SECONDS`); there is no refresh grant yet, so clients re-authorize when the token expires
+- Rate-limit `/authorize`, `/token`, and `/register` at the reverse proxy (they hit SQLite before user auth)
 - Local stdio MCP (`nanoclaw-webchat-mcp` with `WEBCHAT_SECRET`) is unchanged for solo dev
+- Rotating `WEBCHAT_SESSION_SECRET` invalidates browser sessions and MCP tokens together
 
 OAuth endpoints (same origin as the UI): `/authorize`, `/token`, `/register`, `/.well-known/oauth-authorization-server`, `/.well-known/oauth-protected-resource/mcp`.
 

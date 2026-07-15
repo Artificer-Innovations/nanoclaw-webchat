@@ -21,12 +21,31 @@ export interface McpHttpHandlerOptions {
   requestTimeoutMs?: number;
 }
 
+interface BoundMcpSession {
+  transport: StreamableHTTPServerTransport;
+  userId: string;
+}
+
+function sessionUserId(req: express.Request): string | undefined {
+  const extra = req.auth?.extra as { userId?: unknown } | undefined;
+  return typeof extra?.userId === 'string' ? extra.userId : undefined;
+}
+
 export function createMcpHttpHandlers(
   options: McpHttpHandlerOptions,
   deps: McpHttpHandlerDeps,
 ) {
-  const transports: Record<string, StreamableHTTPServerTransport> = {};
+  // Map avoids prototype-key collisions from user-controlled session IDs.
+  const transports = new Map<string, BoundMcpSession>();
   const log = deps.log ?? webchatLog;
+
+  const rejectUnauthorizedSession = (res: express.Response): void => {
+    res.status(403).json({
+      jsonrpc: '2.0',
+      error: { code: -32000, message: 'Forbidden: session does not belong to this user' },
+      id: null,
+    });
+  };
 
   const mcpPostHandler = async (
     req: express.Request,
@@ -35,11 +54,18 @@ export function createMcpHttpHandlers(
     const sessionId = req.headers['mcp-session-id'];
     try {
       let transport: StreamableHTTPServerTransport | undefined;
-      if (sessionId && transports[sessionId as string]) {
-        transport = transports[sessionId as string];
+      if (typeof sessionId === 'string' && transports.has(sessionId)) {
+        const bound = transports.get(sessionId)!;
+        const requestUserId = sessionUserId(req);
+        if (!requestUserId || requestUserId !== bound.userId) {
+          rejectUnauthorizedSession(res);
+          return;
+        }
+        transport = bound.transport;
       } else if (!sessionId && isInitializeRequest(req.body)) {
         const accessToken = req.auth?.token;
-        if (!accessToken) {
+        const userId = sessionUserId(req);
+        if (!accessToken || !userId) {
           res.status(401).json({
             jsonrpc: '2.0',
             error: { code: -32000, message: 'Unauthorized' },
@@ -51,13 +77,12 @@ export function createMcpHttpHandlers(
         transport = deps.createTransport({
           onsessioninitialized: (sid) => {
             activeSessionId = sid;
-            queueMicrotask(() => {
-              transports[sid] = transport!;
-            });
+            // Register synchronously so an early onclose can still find the session.
+            transports.set(sid, { transport: transport!, userId });
           },
           onclose: () => {
             const sid = activeSessionId ?? transport?.sessionId;
-            if (sid && transports[sid]) delete transports[sid];
+            if (sid) transports.delete(sid);
           },
         });
         const client = deps.createClient(accessToken);
@@ -91,11 +116,17 @@ export function createMcpHttpHandlers(
     res: express.Response,
   ): Promise<void> => {
     const sessionId = req.headers['mcp-session-id'];
-    if (!sessionId || !transports[sessionId as string]) {
+    if (typeof sessionId !== 'string' || !transports.has(sessionId)) {
       res.status(400).send('Invalid or missing session ID');
       return;
     }
-    await transports[sessionId as string]!.handleRequest(req, res);
+    const bound = transports.get(sessionId)!;
+    const requestUserId = sessionUserId(req);
+    if (!requestUserId || requestUserId !== bound.userId) {
+      res.status(403).send('Forbidden: session does not belong to this user');
+      return;
+    }
+    await bound.transport.handleRequest(req, res);
   };
 
   return { mcpPostHandler, mcpStreamHandler, transports };

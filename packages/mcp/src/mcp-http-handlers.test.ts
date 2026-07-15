@@ -34,6 +34,10 @@ function mockRes() {
   return res;
 }
 
+function auth(userId: string, token = 'user-token') {
+  return { token, extra: { userId, displayName: userId } };
+}
+
 describe('createMcpHttpHandlers', () => {
   it('initializes a new MCP session with bearer auth', async () => {
     const handleRequest = vi.fn(async () => undefined);
@@ -43,7 +47,7 @@ describe('createMcpHttpHandlers', () => {
       onclose: undefined as (() => void) | undefined,
       handleRequest,
     };
-    const { mcpPostHandler } = createMcpHttpHandlers(
+    const { mcpPostHandler, transports } = createMcpHttpHandlers(
       { apiBase: 'http://127.0.0.1:3200' },
       {
         createTransport: ({ onsessioninitialized, onclose }) => {
@@ -58,13 +62,14 @@ describe('createMcpHttpHandlers', () => {
 
     const res = mockRes();
     await mcpPostHandler(
-      { headers: {}, body: INIT_BODY, auth: { token: 'user-token' } } as never,
+      { headers: {}, body: INIT_BODY, auth: auth('web:basic:alice') } as never,
       res as never,
     );
 
     expect(connect).toHaveBeenCalled();
     expect(handleRequest).toHaveBeenCalled();
     expect(res.statusCode).toBe(200);
+    expect(transports.get('sess-1')?.userId).toBe('web:basic:alice');
   });
 
   it('returns 401 when initialize lacks auth token', async () => {
@@ -92,13 +97,17 @@ describe('createMcpHttpHandlers', () => {
     );
     const res = mockRes();
     await mcpPostHandler(
-      { headers: { 'mcp-session-id': 'missing' }, body: { jsonrpc: '2.0', method: 'ping', id: 2 } } as never,
+      {
+        headers: { 'mcp-session-id': 'missing' },
+        body: { jsonrpc: '2.0', method: 'ping', id: 2 },
+        auth: auth('web:basic:alice'),
+      } as never,
       res as never,
     );
     expect(res.statusCode).toBe(400);
   });
 
-  it('reuses an existing transport for follow-up POSTs', async () => {
+  it('reuses an existing transport for follow-up POSTs from the same user', async () => {
     const handleRequest = vi.fn(async () => undefined);
     const transport = { sessionId: 'sess-1', handleRequest };
     const { mcpPostHandler, transports } = createMcpHttpHandlers(
@@ -109,19 +118,47 @@ describe('createMcpHttpHandlers', () => {
         createServer: vi.fn(),
       },
     );
-    transports['sess-1'] = transport as never;
+    transports.set('sess-1', { transport: transport as never, userId: 'web:basic:alice' });
     const res = mockRes();
     await mcpPostHandler(
       {
         headers: { 'mcp-session-id': 'sess-1' },
         body: { jsonrpc: '2.0', method: 'ping', id: 2 },
+        auth: auth('web:basic:alice'),
       } as never,
       res as never,
     );
     expect(handleRequest).toHaveBeenCalled();
   });
 
-  it('handles valid stream session', async () => {
+  it('rejects session reuse when the caller is a different user', async () => {
+    const handleRequest = vi.fn(async () => undefined);
+    const { mcpPostHandler, transports } = createMcpHttpHandlers(
+      { apiBase: 'http://127.0.0.1:3200' },
+      {
+        createTransport: vi.fn(),
+        createClient: vi.fn(),
+        createServer: vi.fn(),
+      },
+    );
+    transports.set('sess-1', {
+      transport: { sessionId: 'sess-1', handleRequest } as never,
+      userId: 'web:basic:alice',
+    });
+    const res = mockRes();
+    await mcpPostHandler(
+      {
+        headers: { 'mcp-session-id': 'sess-1' },
+        body: { jsonrpc: '2.0', method: 'ping', id: 2 },
+        auth: auth('web:basic:bob'),
+      } as never,
+      res as never,
+    );
+    expect(res.statusCode).toBe(403);
+    expect(handleRequest).not.toHaveBeenCalled();
+  });
+
+  it('handles valid stream session for the owning user', async () => {
     const handleRequest = vi.fn(async () => undefined);
     const { mcpStreamHandler, transports } = createMcpHttpHandlers(
       { apiBase: 'http://127.0.0.1:3200' },
@@ -131,23 +168,43 @@ describe('createMcpHttpHandlers', () => {
         createServer: vi.fn(),
       },
     );
-    transports.s1 = { handleRequest } as never;
+    transports.set('s1', { transport: { handleRequest } as never, userId: 'web:basic:alice' });
     await mcpStreamHandler(
-      { headers: { 'mcp-session-id': 's1' } } as never,
+      { headers: { 'mcp-session-id': 's1' }, auth: auth('web:basic:alice') } as never,
       mockRes() as never,
     );
     expect(handleRequest).toHaveBeenCalled();
   });
 
-  it('registers transport after async session initialization', async () => {
+  it('rejects stream session access for a different user', async () => {
+    const handleRequest = vi.fn(async () => undefined);
+    const { mcpStreamHandler, transports } = createMcpHttpHandlers(
+      { apiBase: 'http://127.0.0.1:3200' },
+      {
+        createTransport: vi.fn(),
+        createClient: vi.fn(),
+        createServer: vi.fn(),
+      },
+    );
+    transports.set('s1', { transport: { handleRequest } as never, userId: 'web:basic:alice' });
+    const res = mockRes();
+    await mcpStreamHandler(
+      { headers: { 'mcp-session-id': 's1' }, auth: auth('web:basic:bob') } as never,
+      res as never,
+    );
+    expect(res.statusCode).toBe(403);
+    expect(handleRequest).not.toHaveBeenCalled();
+  });
+
+  it('registers transport synchronously on session initialization', async () => {
     let capturedOnclose: (() => void) | undefined;
     const { mcpPostHandler, transports } = createMcpHttpHandlers(
       { apiBase: 'http://127.0.0.1:3200' },
       {
         createTransport: ({ onsessioninitialized, onclose }) => {
           capturedOnclose = onclose;
-          const t = { sessionId: 'sess-async', handleRequest: vi.fn() };
-          queueMicrotask(() => onsessioninitialized('sess-async'));
+          const t = { sessionId: 'sess-sync', handleRequest: vi.fn() };
+          onsessioninitialized('sess-sync');
           return t as never;
         },
         createClient: vi.fn(() => ({}) as never),
@@ -156,13 +213,12 @@ describe('createMcpHttpHandlers', () => {
     );
 
     await mcpPostHandler(
-      { headers: {}, body: INIT_BODY, auth: { token: 'user-token' } } as never,
+      { headers: {}, body: INIT_BODY, auth: auth('web:basic:alice') } as never,
       mockRes() as never,
     );
-    await new Promise<void>((resolve) => queueMicrotask(resolve));
-    expect(transports['sess-async']).toBeDefined();
+    expect(transports.get('sess-sync')).toBeDefined();
     capturedOnclose?.();
-    expect(transports['sess-async']).toBeUndefined();
+    expect(transports.get('sess-sync')).toBeUndefined();
   });
 
   it('returns 400 for missing stream session', async () => {
@@ -175,7 +231,7 @@ describe('createMcpHttpHandlers', () => {
       },
     );
     const res = mockRes();
-    await mcpStreamHandler({ headers: {} } as never, res as never);
+    await mcpStreamHandler({ headers: {}, auth: auth('web:basic:alice') } as never, res as never);
     expect(res.statusCode).toBe(400);
   });
 
@@ -193,7 +249,7 @@ describe('createMcpHttpHandlers', () => {
     );
     const res = mockRes();
     await mcpPostHandler(
-      { headers: {}, body: INIT_BODY, auth: { token: 'user-token' } } as never,
+      { headers: {}, body: INIT_BODY, auth: auth('web:basic:alice') } as never,
       res as never,
     );
     expect(res.statusCode).toBe(500);
@@ -214,7 +270,7 @@ describe('createMcpHttpHandlers', () => {
     );
     const res = mockRes();
     await mcpPostHandler(
-      { headers: {}, body: INIT_BODY, auth: { token: 'user-token' } } as never,
+      { headers: {}, body: INIT_BODY, auth: auth('web:basic:alice') } as never,
       res as never,
     );
     expect(log).toHaveBeenCalledWith('MCP HTTP error: boom');
@@ -235,7 +291,7 @@ describe('createMcpHttpHandlers', () => {
     const res = mockRes();
     res.headersSent = true;
     await mcpPostHandler(
-      { headers: {}, body: INIT_BODY, auth: { token: 'user-token' } } as never,
+      { headers: {}, body: INIT_BODY, auth: auth('web:basic:alice') } as never,
       res as never,
     );
     expect(res.body).toBeUndefined();
@@ -255,7 +311,7 @@ describe('createMcpHttpHandlers', () => {
       },
     );
     await mcpPostHandler(
-      { headers: {}, body: INIT_BODY, auth: { token: 'user-token' } } as never,
+      { headers: {}, body: INIT_BODY, auth: auth('web:basic:alice') } as never,
       mockRes() as never,
     );
     expect(() => onclose?.()).not.toThrow();
