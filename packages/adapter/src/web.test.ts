@@ -3699,12 +3699,14 @@ describe('web channel adapter', () => {
 
   it('rewrites /api and /assets in served HTML and JS when publicPath is set', async () => {
     const assetDir = '/tmp/nanoclaw-webchat-test-assets';
+    const assetsSubdir = path.join(assetDir, 'assets');
+    fs.mkdirSync(assetsSubdir, { recursive: true });
     fs.writeFileSync(
       path.join(assetDir, 'index.html'),
       '<!doctype html><html><head><script src="/assets/app.js"></script></head><body></body></html>',
     );
-    fs.writeFileSync(path.join(assetDir, 'app.js'), 'fetch("/api/bootstrap")');
-    fs.writeFileSync(path.join(assetDir, 'font.woff2'), Buffer.from('font'));
+    fs.writeFileSync(path.join(assetsSubdir, 'app.js'), 'fetch("/api/bootstrap")');
+    fs.writeFileSync(path.join(assetsSubdir, 'font.woff2'), Buffer.from('font'));
     adapter = createWebAdapter({
       ...defaultAdapterOptions(testPort),
       publicPath: '/webchat',
@@ -3716,11 +3718,15 @@ describe('web channel adapter', () => {
     expect(index.body).toContain('/webchat/assets/app.js');
     expect(index.body).not.toContain('src="/assets/app.js"');
 
-    const js = await httpGetText('/app.js', testPort);
+    const js = await httpGetText('/assets/app.js', testPort);
     expect(js.status).toBe(200);
     expect(js.body).toBe('fetch("/webchat/api/bootstrap")');
 
-    const font = await httpGetText('/font.woff2', testPort);
+    // Cached on second serve (same rewritten body).
+    const jsAgain = await httpGetText('/assets/app.js', testPort);
+    expect(jsAgain.body).toBe('fetch("/webchat/api/bootstrap")');
+
+    const font = await httpGetText('/assets/font.woff2', testPort);
     expect(font.status).toBe(200);
     expect(font.body).toBe('font');
   });

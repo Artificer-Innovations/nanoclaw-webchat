@@ -69,7 +69,7 @@ You will need:
 | `WEBCHAT_MCP_HTTP_ENABLED` | no | `true`/`false`. Defaults to `true` in public mode, `false` in local mode. Enables co-hosted Streamable HTTP MCP at `/mcp` with OAuth login |
 | `WEBCHAT_MCP_TOKEN_TTL_SECONDS` | no | MCP access-token lifetime in seconds (default `86400` / 24h). Refresh grants are not supported yet |
 | `WEBCHAT_PUBLIC_BASE_URL` | when MCP HTTP enabled | Canonical public origin (e.g. `https://chat.example.com`). Derived from `WEBCHAT_OIDC_REDIRECT_URI` when unset |
-| `WEBCHAT_PUBLIC_PATH` | no | Public URL path prefix (e.g. `/webchat`) when a reverse proxy stripPrefixes that path before the adapter. Rewrites absolute `/api` and `/assets` in served HTML/JS; OIDC success redirects to `${WEBCHAT_PUBLIC_PATH}/`. `WEBCHAT_PUBLIC_BASE_URL` / `WEBCHAT_OIDC_REDIRECT_URI` remain origin-based (register the browser-facing callback under the prefix, e.g. `https://host/webchat/api/auth/callback`) |
+| `WEBCHAT_PUBLIC_PATH` | no | Public URL path prefix (e.g. `/webchat`) when a reverse proxy strips that prefix before the adapter. Rewrites absolute `/api` and `/assets` in served HTML/JS; OIDC success redirects to `${WEBCHAT_PUBLIC_PATH}/`. Do not set this to `/api` or `/assets`. `WEBCHAT_PUBLIC_BASE_URL` / `WEBCHAT_OIDC_REDIRECT_URI` remain origin-based (register the browser-facing callback under the prefix, e.g. `https://host/webchat/api/auth/callback`) |
 
 Generate secrets:
 

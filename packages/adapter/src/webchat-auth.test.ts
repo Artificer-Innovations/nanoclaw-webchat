@@ -301,6 +301,31 @@ describe('webchat-auth', () => {
       expect(handledRoot).toBe(true);
       expect(statusCode).toBe(302);
       expect(headers.Location).toBe('/');
+
+      let htmlBody = '';
+      const htmlRes = {
+        writeHead(status: number) {
+          statusCode = status;
+          return htmlRes;
+        },
+        setHeader() {},
+        end(chunk?: string) {
+          htmlBody = chunk ?? '';
+        },
+      } as unknown as ServerResponse;
+      statusCode = 0;
+      const cancelled = await handlePublicAuthRequest(
+        req,
+        htmlRes,
+        new URL('http://localhost/api/auth/callback?error=access_denied'),
+        cfg,
+        () => {},
+        () => {},
+        '/webchat',
+      );
+      expect(cancelled).toBe(true);
+      expect(statusCode).toBe(403);
+      expect(htmlBody).toContain('href="/webchat/"');
     } finally {
       fetchMock.mockRestore();
     }

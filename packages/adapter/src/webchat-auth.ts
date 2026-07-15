@@ -314,6 +314,14 @@ function redirect(res: http.ServerResponse, location: string): void {
   res.end();
 }
 
+/** Normalize public path prefix for home redirects and Back links (empty → `/`). */
+function webchatHomePath(publicPath?: string): string {
+  const raw = (publicPath ?? '').trim();
+  if (!raw || raw === '/') return '/';
+  const normalized = raw.startsWith('/') ? raw.replace(/\/+$/, '') : `/${raw.replace(/\/+$/, '')}`;
+  return `${normalized}/`;
+}
+
 function htmlPage(res: http.ServerResponse, status: number, title: string, body: string): void {
   res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8' });
   res.end(
@@ -498,9 +506,11 @@ export async function handlePublicAuthRequest(
       json(res, 404, { error: 'Not found' });
       return true;
     }
+    const home = webchatHomePath(publicPath);
+    const backLink = `<p><a href="${home}">Back</a></p>`;
     const err = url.searchParams.get('error');
     if (err) {
-      htmlPage(res, 403, 'Access denied', '<h1>Login cancelled</h1><p><a href="/">Back</a></p>');
+      htmlPage(res, 403, 'Access denied', `<h1>Login cancelled</h1>${backLink}`);
       return true;
     }
     const code = url.searchParams.get('code');
@@ -524,7 +534,6 @@ export async function handlePublicAuthRequest(
       // Wire before Set-Cookie so a wiring/db failure cannot leave a usable session cookie.
       onLogin(user);
       writeSession(res, config, user);
-      const home = publicPath && publicPath !== '/' ? `${publicPath.replace(/\/+$/, '')}/` : '/';
       redirect(res, home);
     } catch (e) {
       if (e instanceof AllowlistError) {
@@ -532,12 +541,12 @@ export async function handlePublicAuthRequest(
           res,
           403,
           'Access denied',
-          '<h1>Access denied</h1><p>Your account is not authorized for this webchat.</p><p><a href="/">Back</a></p>',
+          `<h1>Access denied</h1><p>Your account is not authorized for this webchat.</p>${backLink}`,
         );
         return true;
       }
       log.error('Webchat OIDC login failed', { err: e });
-      htmlPage(res, 500, 'Login failed', '<h1>Login failed</h1><p><a href="/">Back</a></p>');
+      htmlPage(res, 500, 'Login failed', `<h1>Login failed</h1>${backLink}`);
     }
     return true;
   }

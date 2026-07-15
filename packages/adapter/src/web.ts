@@ -483,6 +483,9 @@ function staticMimeType(filePath: string): string {
  * Rewrite absolute SPA roots (`/api/…`, `/assets/…`) so browsers request them under
  * a public path prefix (e.g. `/webchat`). Needed when a reverse proxy stripPrefix
  * forwards `/webchat` to the adapter root — otherwise `/api` and `/assets` miss the mount.
+ *
+ * Intentionally loose: every literal `/api/` or `/assets/` substring is rewritten
+ * (including those in comments or error-message strings), not only path-start uses.
  */
 export function rewriteWebchatPublicPaths(content: string, publicPath: string): string {
   const prefix = publicPath.replace(/\/+$/, '');
@@ -558,6 +561,8 @@ function lobbyAgentFolders(): { folders: string[]; teamFolder: string | null; ag
 
 const agentDeliveryChains = new Map<string, Promise<void>>();
 const pendingJoinStubByThread = new Map<string, string>();
+/** Cached rewritten text assets when WEBCHAT_PUBLIC_PATH is set (cleared in tests). */
+const rewrittenStaticCache = new Map<string, string>();
 
 function deliveryChainKey(platformId: string, threadId: string, folder: string): string {
   return `${platformId}|${threadId}|${folder}`;
@@ -589,6 +594,7 @@ export async function flushWebAgentDeliveryChains(): Promise<void> {
 export function clearWebAdapterTestState(): void {
   agentDeliveryChains.clear();
   pendingJoinStubByThread.clear();
+  rewrittenStaticCache.clear();
   setWebchatBootstrapBroadcaster(null);
 }
 
@@ -1159,7 +1165,11 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
     }
     const mime = staticMimeType(filePath);
     if (opts.publicPath && isRewritableStaticText(filePath)) {
-      const body = rewriteWebchatPublicPaths(fs.readFileSync(filePath, 'utf8'), opts.publicPath);
+      let body = rewrittenStaticCache.get(filePath);
+      if (body === undefined) {
+        body = rewriteWebchatPublicPaths(fs.readFileSync(filePath, 'utf8'), opts.publicPath);
+        rewrittenStaticCache.set(filePath, body);
+      }
       res.writeHead(200, { 'Content-Type': mime });
       res.end(body);
       return true;
