@@ -31,7 +31,9 @@ import {
 } from './db/messaging-groups.js';
 import {
   buildWebchatBootstrap,
+  ensurePublicWebOwner,
   readTeamFolder,
+  revokeLegacyLocalWebApprovers,
   syncWebchatWirings,
   ensureUserWebchatWirings,
   WEB_CHANNEL_TYPE,
@@ -41,6 +43,8 @@ import {
 import { encodeUserSuffix } from './webchat-room-scope.js';
 import { upsertUser, getUser } from './modules/permissions/db/users.js';
 import * as agentGroupMembers from './modules/permissions/db/agent-group-members.js';
+import { grantRole, isGlobalAdmin, isOwner } from './modules/permissions/db/user-roles.js';
+import { upsertUserDm, getUserDm } from './modules/permissions/db/user-dms.js';
 import { log } from './log.js';
 import { appendMessage, createThread, ensureWebchatSchema, MAIN_THREAD } from './webchat-store.js';
 
@@ -75,6 +79,7 @@ afterEach(() => {
   delete process.env.WEBCHAT_TEAM_FOLDER;
   delete process.env.WEBCHAT_USER_ID;
   delete process.env.WEBCHAT_DISPLAY_NAME;
+  delete process.env.WEBCHAT_AUTH_MODE;
   closeDb();
   resetWebchatData();
 });
@@ -533,5 +538,147 @@ describe('ensureUserWebchatWirings', () => {
 
     expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, `inbox:${encodeUserSuffix(userId)}`)).toBeDefined();
     expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, WEB_LOBBY_PLATFORM_ID)).toBeUndefined();
+  });
+
+  it('grants owner to public web users and revokes legacy web:local owner/admin', () => {
+    process.env.WEBCHAT_AUTH_MODE = 'public';
+    readEnvFileMock.mockReturnValue({
+      WEBCHAT_ENABLED: 'true',
+      WEBCHAT_USER_ID: 'web:local',
+      WEBCHAT_DISPLAY_NAME: 'Local',
+      WEBCHAT_AUTH_MODE: 'public',
+    });
+
+    upsertUser({
+      id: 'web:local',
+      kind: 'web',
+      display_name: 'Local',
+      created_at: now(),
+    });
+    grantRole({
+      user_id: 'web:local',
+      role: 'owner',
+      agent_group_id: null,
+      granted_by: null,
+      granted_at: now(),
+    });
+    grantRole({
+      user_id: 'web:local',
+      role: 'admin',
+      agent_group_id: null,
+      granted_by: null,
+      granted_at: now(),
+    });
+    expect(isOwner('web:local')).toBe(true);
+    expect(isGlobalAdmin('web:local')).toBe(true);
+
+    const inboxMgId = 'mg-stale-inbox';
+    createMessagingGroup({
+      id: inboxMgId,
+      channel_type: WEB_CHANNEL_TYPE,
+      platform_id: WEB_INBOX_PLATFORM_ID,
+      name: 'Inbox',
+      is_group: 0,
+      unknown_sender_policy: 'strict',
+      created_at: now(),
+    });
+    upsertUserDm({
+      user_id: 'web:local',
+      channel_type: WEB_CHANNEL_TYPE,
+      messaging_group_id: inboxMgId,
+      resolved_at: now(),
+    });
+
+    createAgentGroup({
+      id: 'ag-sarah',
+      name: 'Sarah',
+      folder: 'sarah',
+      agent_provider: null,
+      created_at: now(),
+    });
+    syncWebchatWirings();
+
+    const userId = 'web:github:2093195';
+    ensureUserWebchatWirings(userId, 'Brad');
+
+    expect(isOwner(userId)).toBe(true);
+    expect(isOwner('web:local')).toBe(false);
+    expect(isGlobalAdmin('web:local')).toBe(false);
+    expect(getUserDm('web:local', WEB_CHANNEL_TYPE)).toBeUndefined();
+  });
+
+  it('does not grant owner in local mode', () => {
+    createAgentGroup({
+      id: 'ag-sarah',
+      name: 'Sarah',
+      folder: 'sarah',
+      agent_provider: null,
+      created_at: now(),
+    });
+    ensureUserWebchatWirings('web:basic:alice', 'Alice');
+    expect(isOwner('web:basic:alice')).toBe(false);
+    // Direct calls cover the public-mode early returns (call sites skip them in local mode).
+    revokeLegacyLocalWebApprovers();
+    ensurePublicWebOwner('web:basic:alice');
+    expect(isOwner('web:basic:alice')).toBe(false);
+  });
+
+  it('skips granting owner for legacy local identity and is idempotent for existing owners', () => {
+    process.env.WEBCHAT_AUTH_MODE = 'public';
+    readEnvFileMock.mockReturnValue({
+      WEBCHAT_ENABLED: 'true',
+      WEBCHAT_USER_ID: 'web:local',
+      WEBCHAT_DISPLAY_NAME: 'Local',
+      WEBCHAT_AUTH_MODE: 'public',
+    });
+    createAgentGroup({
+      id: 'ag-sarah',
+      name: 'Sarah',
+      folder: 'sarah',
+      agent_provider: null,
+      created_at: now(),
+    });
+    syncWebchatWirings();
+
+    ensureUserWebchatWirings('web:local', 'Local');
+    expect(isOwner('web:local')).toBe(false);
+
+    ensureUserWebchatWirings('web:basic:alice', 'Alice');
+    expect(isOwner('web:basic:alice')).toBe(true);
+    ensureUserWebchatWirings('web:basic:alice', 'Alice');
+    expect(isOwner('web:basic:alice')).toBe(true);
+  });
+
+  it('leaves user_dms alone when cached messaging group is not shared inbox', () => {
+    process.env.WEBCHAT_AUTH_MODE = 'public';
+    readEnvFileMock.mockReturnValue({
+      WEBCHAT_ENABLED: 'true',
+      WEBCHAT_USER_ID: 'web:local',
+      WEBCHAT_DISPLAY_NAME: 'Local',
+      WEBCHAT_AUTH_MODE: 'public',
+    });
+    upsertUser({
+      id: 'web:local',
+      kind: 'web',
+      display_name: 'Local',
+      created_at: now(),
+    });
+    createMessagingGroup({
+      id: 'mg-private-inbox',
+      channel_type: WEB_CHANNEL_TYPE,
+      platform_id: `inbox:${encodeUserSuffix('web:local')}`,
+      name: 'Inbox',
+      is_group: 0,
+      unknown_sender_policy: 'strict',
+      created_at: now(),
+    });
+    upsertUserDm({
+      user_id: 'web:local',
+      channel_type: WEB_CHANNEL_TYPE,
+      messaging_group_id: 'mg-private-inbox',
+      resolved_at: now(),
+    });
+    syncWebchatWirings();
+    expect(getUserDm('web:local', WEB_CHANNEL_TYPE)?.messaging_group_id).toBe('mg-private-inbox');
   });
 });

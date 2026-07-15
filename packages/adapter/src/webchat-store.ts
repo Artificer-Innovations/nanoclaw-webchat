@@ -556,7 +556,7 @@ export function getEngagedAgents(platformId: string, threadId: string): string[]
       .prepare(
         `SELECT agent_folder FROM web_thread_engaged
          WHERE platform_id = ? AND thread_id = ?
-         ORDER BY engaged_at ASC`,
+         ORDER BY engaged_at ASC, agent_folder ASC`,
       )
       .all(platformId, threadId) as Array<{ agent_folder: string }>;
     return rows.map((r) => r.agent_folder);

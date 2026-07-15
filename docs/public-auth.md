@@ -174,6 +174,8 @@ Default OAuth scopes are `read:user user:email`.
 
 **Access is gated by the allowlist, not by signing in.** With no `WEBCHAT_OIDC_ALLOWED_*` rules set, any account that completes the provider flow is admitted. Set at least one allowlist rule before exposing the host.
 
+**Admitted users are owners.** Public-mode login (basic or OIDC) grants the global `owner` role for that web identity so the same person can approve inbox cards (`create_agent`, package installs, and so on). You do not need to discover opaque ids like `web:github:2093195` ahead of time — the allowlist is the privilege gate. An empty OIDC allowlist therefore admits *and* owns anyone who completes OAuth; keep allowlist rules tight on internet-facing hosts.
+
 ### 3. Generic OIDC (Google, Okta, etc.)
 
 Use `"protocol": "oidc"` and set `"issuer"` to the provider's issuer URL (the discovery document is fetched automatically):
@@ -246,16 +248,20 @@ No secrets in the config — Cursor runs the OAuth flow and receives a per-user 
 
 OAuth endpoints (same origin as the UI): `/authorize`, `/token`, `/register`, `/.well-known/oauth-authorization-server`, `/.well-known/oauth-protected-resource/mcp`.
 
+When a new agent group is created (approved `create_agent` or `ncl groups create`), webchat re-syncs lobby/`@folder` and per-user DM wirings and pushes a soft bootstrap refresh over WebSocket so the new DM appears without restarting the host. A full page reload also heals wirings via `/api/bootstrap`.
+
 ## Migrating an existing deployment from local to public
 
 Public mode scopes inbox and DM rooms per user under new internal room ids. Messages created in local mode live under the single local inbox id, so they will not appear once a host switches to public mode. To the newly scoped users, prior inbox and DM history looks empty.
+
+Public sync also revokes owner/admin on the legacy local identity (`web:local` / `WEBCHAT_USER_ID`) so approval cards route to real logged-in users instead of the old shared inbox.
 
 The lobby is shared in both modes, so lobby messages are not affected by per-user scoping. If you need the local inbox or DM history after the switch, export or copy it first, or keep a local-mode instance available for reference. New messages created in public mode are stored correctly under each user's scope.
 
 ## Production checklist
 
 1. **HTTPS** terminate TLS at your reverse proxy. In public mode, session cookies are marked `Secure` by default (this no longer depends on `NODE_ENV`). For local HTTP dev without TLS, opt out explicitly with `WEBCHAT_SESSION_INSECURE_COOKIES=true`, or force the behavior either way with `WEBCHAT_SECURE_COOKIES`.
-2. **Allowlist** set `WEBCHAT_OIDC_ALLOWED_*` or keep basic auth to a fixed username list. With no allowlist rules, any user who completes OAuth is admitted.
+2. **Allowlist** set `WEBCHAT_OIDC_ALLOWED_*` or keep basic auth to a fixed username list. With no allowlist rules, any user who completes OAuth is admitted — and, in public mode, becomes an owner who can approve privileged actions.
 3. **Secrets** store `WEBCHAT_SESSION_SECRET`, `WEBCHAT_SECRET`, OAuth client secrets, and `WEBCHAT_BASIC_PASSWORD` in your secret manager, not in git. `WEBCHAT_SESSION_SECRET` must be at least 32 characters; the host refuses to start otherwise.
 4. **Bind address** use `WEBCHAT_BIND_ADDRESS=0.0.0.0` only when the host firewall and network policy restrict who can reach the port.
 5. **Upgrade** after updating the npm package, run `pnpm exec nanoclaw-webchat upgrade` so auth adapter files stay in sync.
@@ -272,6 +278,8 @@ The lobby is shared in both modes, so lobby messages are not affected by per-use
 | Everyone still labeled "You" in lobby | Hard refresh after upgrade, and confirm messages persist `senderName` / `senderId` (upgrade the adapter) |
 | Inbox/DM history empty after switching from local to public | Expected. Public mode scopes those rooms per user under new ids. See [Migrating an existing deployment](#migrating-an-existing-deployment-from-local-to-public) |
 | OIDC login fails with an unsupported-algorithm error | The provider signs id_tokens with something other than RS256 or ES256. Those two are supported; anything else is rejected |
+| Approve shows success but agent is not created | Stale card targeted at legacy `web:local`. Sign out/in once after upgrade, then re-request `create_agent`. UI should return **403 not authorized** for wrong-identity clicks |
+| New agent DM missing until host restart | Upgrade adapter (live rewire). Hard refresh also heals via `/api/bootstrap`. Confirm `WEBCHAT_ENABLED=true` |
 
 ## Auth HTTP endpoints
 

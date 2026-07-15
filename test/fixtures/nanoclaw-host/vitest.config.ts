@@ -11,6 +11,7 @@ export default defineConfig({
         'src/webchat-store.ts',
         'src/webchat-uploads.ts',
         'src/webchat-sync.ts',
+        'src/webchat-live.ts',
         'src/webchat-routing.ts',
         'src/webchat-mentions.ts',
       ],

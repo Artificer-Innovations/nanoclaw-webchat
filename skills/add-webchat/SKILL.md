@@ -76,6 +76,8 @@ cp "$PKG/web-registration.test.ts" src/channels/web-registration.test.ts
 cp "$PKG/webchat-sync.ts" src/webchat-sync.ts
 cp "$PKG/webchat-sync.test.ts" src/webchat-sync.test.ts
 cp "$PKG/webchat-boot.ts" src/webchat-boot.ts
+cp "$PKG/webchat-live.ts" src/webchat-live.ts
+cp "$PKG/webchat-live.test.ts" src/webchat-live.test.ts
 cp "$PKG/webchat-wiring.test.ts" src/webchat-wiring.test.ts
 cp "$PKG/webchat-store.ts" src/webchat-store.ts
 cp "$PKG/webchat-store.test.ts" src/webchat-store.test.ts

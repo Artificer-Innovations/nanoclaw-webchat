@@ -19,12 +19,14 @@ import {
   markMessagesSeen,
   mergeUnreadDeltas,
   migrateLegacyThreads,
+  mergeThreadsFromBootstrapRooms,
   reconcileOptimisticMessage,
   dropPendingOptimisticId,
   defaultRoomThreads,
   resolveActiveThreadTitle,
   seedSyncCursors,
   shouldAppendMessage,
+  softMergeBootstrap,
   syncInactiveUnread,
   threadsForRoom,
   threadsFromState,
@@ -703,6 +705,93 @@ describe('app-helpers', () => {
     it('leaves the list unchanged when the message id is missing', () => {
       const updated = { ...message, id: 'missing', text: 'Updated' };
       expect(applyMessageUpdate([message], updated, room, 'main')).toEqual([message]);
+    });
+  });
+
+  describe('softMergeBootstrap', () => {
+    it('replaces rooms and agents and preserves authMode from prev when next omits it', () => {
+      const prev: BootstrapPayload = {
+        user: { id: 'web:basic:alice', displayName: 'Alice' },
+        rooms: [{ platformId: 'lobby', name: 'Lobby', kind: 'lobby' }],
+        agents: [{ folder: 'sarah', name: 'Sarah', mention: '@sarah' }],
+        authMode: 'public',
+      };
+      const next: BootstrapPayload = {
+        user: { id: 'web:basic:alice', displayName: 'Alice' },
+        rooms: [
+          { platformId: 'lobby', name: 'Lobby', kind: 'lobby' },
+          { platformId: 'dm:ted', name: 'Ted', kind: 'dm', folder: 'ted' },
+        ],
+        agents: [
+          { folder: 'sarah', name: 'Sarah', mention: '@sarah' },
+          { folder: 'ted', name: 'Ted', mention: '@ted' },
+        ],
+      };
+      expect(softMergeBootstrap(prev, next)).toEqual({
+        user: next.user,
+        rooms: next.rooms,
+        agents: next.agents,
+        authMode: 'public',
+      });
+    });
+
+    it('prefers next.authMode when present', () => {
+      const prev: BootstrapPayload = {
+        user: { id: 'u', displayName: 'U' },
+        rooms: [],
+        agents: [],
+        authMode: 'local',
+      };
+      const next: BootstrapPayload = {
+        user: { id: 'u', displayName: 'U' },
+        rooms: [],
+        agents: [],
+        authMode: 'public',
+      };
+      expect(softMergeBootstrap(prev, next).authMode).toBe('public');
+    });
+
+    it('omits authMode when neither payload has it', () => {
+      const prev: BootstrapPayload = {
+        user: { id: 'u', displayName: 'U' },
+        rooms: [],
+        agents: [],
+      };
+      const next: BootstrapPayload = {
+        user: { id: 'u', displayName: 'U' },
+        rooms: [],
+        agents: [],
+      };
+      expect(softMergeBootstrap(prev, next)).toEqual(next);
+    });
+  });
+
+  describe('mergeThreadsFromBootstrapRooms', () => {
+    it('adds thread maps for new rooms only', () => {
+      const prev = {
+        lobby: [{ id: 'main', title: 'Main' }],
+        'dm:sarah': [{ id: 'main', title: 'Main' }, { id: 't1', title: 'One' }],
+      };
+      const next = mergeThreadsFromBootstrapRooms(prev, [
+        { platformId: 'lobby', name: 'Lobby', kind: 'lobby' },
+        { platformId: 'dm:sarah', name: 'Sarah', kind: 'dm', folder: 'sarah' },
+        {
+          platformId: 'dm:ted',
+          name: 'Ted',
+          kind: 'dm',
+          folder: 'ted',
+          threads: [{ id: 'main', title: 'Main' }],
+        },
+      ]);
+      expect(next['dm:sarah']).toEqual(prev['dm:sarah']);
+      expect(next['dm:ted']).toEqual([{ id: 'main', title: 'Main' }]);
+    });
+
+    it('defaults to main thread when a new room has no threads', () => {
+      const next = mergeThreadsFromBootstrapRooms({}, [
+        { platformId: 'dm:new', name: 'New', kind: 'dm', folder: 'new', threads: [] },
+      ]);
+      expect(next['dm:new']).toEqual(DEFAULT_ROOM_THREADS);
     });
   });
 });

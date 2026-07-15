@@ -26,6 +26,36 @@ export function defaultRoomThreads(_platformId: string): ThreadMeta[] {
   return DEFAULT_ROOM_THREADS;
 }
 
+/**
+ * Apply a live bootstrap refresh without resetting the active conversation.
+ * Replaces room/agent metadata; preserves thread maps for rooms the client already knows.
+ */
+export function softMergeBootstrap(
+  prev: BootstrapPayload,
+  next: BootstrapPayload,
+): BootstrapPayload {
+  const authMode = next.authMode ?? prev.authMode;
+  return {
+    user: next.user,
+    rooms: next.rooms,
+    agents: next.agents,
+    ...(authMode !== undefined ? { authMode } : {}),
+  };
+}
+
+/** Add thread lists for newly discovered rooms; leave existing room threads untouched. */
+export function mergeThreadsFromBootstrapRooms(
+  prev: Record<string, ThreadMeta[]>,
+  rooms: WebChatRoom[],
+): Record<string, ThreadMeta[]> {
+  const next = { ...prev };
+  for (const room of rooms) {
+    if (next[room.platformId]) continue;
+    next[room.platformId] = room.threads?.length ? room.threads : [...DEFAULT_ROOM_THREADS];
+  }
+  return next;
+}
+
 export function threadsForRoom(
   threadsByRoom: Record<string, ThreadMeta[]>,
   platformId: string,

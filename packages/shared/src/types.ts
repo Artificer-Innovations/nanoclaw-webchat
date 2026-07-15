@@ -122,4 +122,17 @@ export interface WsMessageUpdateEvent {
   message: WebChatMessage;
 }
 
-export type WsEvent = WsMessageEvent | WsTypingEvent | WsEngagedEvent | WsMessageUpdateEvent;
+/** Soft room/agent refresh after sync (e.g. new agent group created). */
+export interface WsBootstrapEvent {
+  type: 'bootstrap';
+  bootstrap: BootstrapPayload;
+  /** Public mode: only the owning client should apply this payload. */
+  forUserId?: string;
+}
+
+export type WsEvent =
+  | WsMessageEvent
+  | WsTypingEvent
+  | WsEngagedEvent
+  | WsMessageUpdateEvent
+  | WsBootstrapEvent;

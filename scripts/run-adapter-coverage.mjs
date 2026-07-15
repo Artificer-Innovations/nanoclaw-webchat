@@ -18,6 +18,7 @@ const ADAPTER_TESTS = [
   'src/channels/web-registration.test.ts',
   'src/channels/web.test.ts',
   'src/webchat-sync.test.ts',
+  'src/webchat-live.test.ts',
   'src/webchat-wiring.test.ts',
   'src/webchat-store.test.ts',
   'src/webchat-uploads.test.ts',

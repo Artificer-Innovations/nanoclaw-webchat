@@ -17,7 +17,22 @@ import { getDb, hasTable } from '../db/connection.js';
 import { getMessagingGroup, getMessagingGroupByPlatform } from '../db/messaging-groups.js';
 import { getPendingApproval, getSession } from '../db/sessions.js';
 import { log } from '../log.js';
-import { buildWebchatBootstrap, ensureUserWebchatWirings, readTeamFolder, WEB_INBOX_PLATFORM_ID } from '../webchat-sync.js';
+import {
+  bootstrapPayloadForUser,
+  setWebchatBootstrapBroadcaster,
+} from '../webchat-live.js';
+import {
+  buildWebchatBootstrap,
+  ensureUserWebchatWirings,
+  readTeamFolder,
+  syncWebchatWirings,
+  WEB_INBOX_PLATFORM_ID,
+} from '../webchat-sync.js';
+import {
+  hasAdminPrivilege,
+  isGlobalAdmin,
+  isOwner,
+} from '../modules/permissions/db/user-roles.js';
 import type { PublicAuthConfig } from '../webchat-auth-config.js';
 import { loadWebAdapterAuthConfig } from '../webchat-auth-config.js';
 import {
@@ -259,6 +274,74 @@ function resolveApprovalSessionOrigin(questionId: string): ApprovalSessionOrigin
   }
 }
 
+function isInboxDeliveryPlatform(platformId: string): boolean {
+  return platformId === WEB_INBOX_PLATFORM_ID || platformId.startsWith(`${WEB_INBOX_PLATFORM_ID}:`);
+}
+
+/**
+ * Host pending_approvals authz (mirrors nanoclaw approvals response-handler).
+ * Non-approval ask_question cards (no pending row) are allowed through.
+ */
+export function isAuthorizedApprovalActor(actorUserId: string, questionId: string): boolean {
+  try {
+    const db = getDb();
+    if (!hasTable(db, 'pending_approvals')) return true;
+    const approval = getPendingApproval(questionId);
+    if (!approval) return true;
+
+    if (approval.approver_user_id) {
+      return actorUserId === approval.approver_user_id;
+    }
+
+    const agentGroupId =
+      approval.agent_group_id ??
+      (approval.session_id ? getSession(approval.session_id)?.agent_group_id : null);
+
+    if (!agentGroupId) {
+      return isOwner(actorUserId) || isGlobalAdmin(actorUserId);
+    }
+
+    return hasAdminPrivilege(actorUserId, agentGroupId);
+  } catch (err) {
+    log.warn('isAuthorizedApprovalActor failed', { questionId, actorUserId, err });
+    return false;
+  }
+}
+
+/**
+ * Mirror inbox approval cards into the requesting session only when the session
+ * room belongs to the named approver (public). Local mode keeps prior behavior.
+ */
+/** Exported for unit tests. */
+export function shouldMirrorApprovalToOrigin(
+  origin: ApprovalSessionOrigin,
+  questionId: string,
+  deliveryPlatformId: string,
+  publicMode: boolean,
+): boolean {
+  if (
+    origin.platformId === WEB_INBOX_PLATFORM_ID ||
+    origin.platformId === deliveryPlatformId
+  ) {
+    return false;
+  }
+
+  if (!publicMode) return true;
+
+  try {
+    const db = getDb();
+    if (!hasTable(db, 'pending_approvals')) return false;
+    const approval = getPendingApproval(questionId);
+    if (!approval?.approver_user_id) return false;
+    const originOwner = ownerUserIdFromPhysical(origin.platformId);
+    if (originOwner === null) return false;
+    return originOwner === approval.approver_user_id;
+  } catch (err) {
+    log.warn('shouldMirrorApprovalToOrigin failed', { questionId, err });
+    return false;
+  }
+}
+
 function attachmentType(mimeType: string): 'image' | 'file' {
   return mimeType.startsWith('image/') ? 'image' : 'file';
 }
@@ -476,6 +559,7 @@ export async function flushWebAgentDeliveryChains(): Promise<void> {
 export function clearWebAdapterTestState(): void {
   agentDeliveryChains.clear();
   pendingJoinStubByThread.clear();
+  setWebchatBootstrapBroadcaster(null);
 }
 
 function agentRefsForFolders(folders: readonly string[], allAgents: readonly AgentNameRef[]): AgentNameRef[] {
@@ -1375,6 +1459,12 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
       return;
     }
 
+    if (!isAuthorizedApprovalActor(actorUserId, questionId)) {
+      log.warn('Ignoring unauthorized webchat approval click', { questionId, actorUserId });
+      json(res, 403, { error: 'not authorized' });
+      return;
+    }
+
     const selectedLabel = selectedOption.selectedLabel ?? selectedOption.label;
     const result = answerCardsByQuestionId(questionId, value, selectedLabel);
     if (!result.ok) {
@@ -1559,6 +1649,8 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
             const requestUser = resolveRequestUser(req, res);
 
             if (req.method === 'GET' && url.pathname === '/api/bootstrap') {
+              // Heal wirings for agents created via CLI / paths that skip create_agent hooks.
+              syncWebchatWirings();
               json(res, 200, {
                 ...buildWebchatBootstrap(requestUser.userId, requestUser.displayName),
                 authMode: opts.authMode,
@@ -1766,10 +1858,25 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
         });
       });
 
+      setWebchatBootstrapBroadcaster(() => {
+        for (const client of wsClients) {
+          if (client.ws.readyState !== WebSocket.OPEN) continue;
+          const userId = client.userId ?? opts.userId;
+          const bootstrap = bootstrapPayloadForUser(userId);
+          // Per-client payload: forUserId matches the recipient, so no extra filter needed.
+          const event: Record<string, unknown> = { type: 'bootstrap', bootstrap };
+          if (isPublicMode()) {
+            event.forUserId = userId;
+          }
+          client.ws.send(JSON.stringify(event));
+        }
+      });
+
       config.onMetadata('lobby', 'Web Lobby', true);
     },
 
     async teardown(): Promise<void> {
+      setWebchatBootstrapBroadcaster(null);
       for (const client of wsClients) {
         try {
           client.ws.close();
@@ -1799,8 +1906,9 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
       if (askQuestion) {
         const card = buildAskQuestionCard(askQuestion);
         const text = cardFallbackText(card.title, card.question);
-        const origin =
-          platformId === WEB_INBOX_PLATFORM_ID ? resolveApprovalSessionOrigin(askQuestion.questionId) : undefined;
+        const origin = isInboxDeliveryPlatform(platformId)
+          ? resolveApprovalSessionOrigin(askQuestion.questionId)
+          : undefined;
         const senderName = extractSenderName(message.content) ?? origin?.agentName;
         const id = `web-out-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
         persistAndBroadcast({
@@ -1816,8 +1924,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
 
         if (
           origin &&
-          origin.platformId !== WEB_INBOX_PLATFORM_ID &&
-          origin.platformId !== platformId
+          shouldMirrorApprovalToOrigin(origin, askQuestion.questionId, platformId, isPublicMode())
         ) {
           const mirrorId = `web-out-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
           persistAndBroadcast({

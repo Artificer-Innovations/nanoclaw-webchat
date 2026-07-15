@@ -1423,6 +1423,42 @@ describe('App', () => {
     expect(await screen.findByText('Agent reply')).toBeInTheDocument();
   });
 
+  it('soft-merges bootstrap websocket events without leaving the active room', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    const MockWebSocket = createWebSocketMock();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const ws = await waitForWebSocket(MockWebSocket);
+    await act(async () => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: 'bootstrap',
+          bootstrap: {
+            user: bootstrapFixture.user,
+            rooms: [
+              ...bootstrapFixture.rooms,
+              {
+                platformId: 'dm:ted',
+                name: 'Ted',
+                kind: 'dm',
+                folder: 'ted',
+                threads: [{ id: 'main', title: 'Main' }],
+              },
+            ],
+            agents: [
+              ...bootstrapFixture.agents,
+              { folder: 'ted', name: 'Ted', mention: '@ted' },
+            ],
+          },
+        }),
+      } as MessageEvent);
+    });
+
+    expect(await screen.findByRole('button', { name: 'Ted' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Lobby' })).toBeInTheDocument();
+  });
+
   it('ignores duplicate websocket messages', async () => {
     vi.stubGlobal(
       'fetch',
