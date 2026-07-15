@@ -4,6 +4,7 @@
 import fs from 'fs';
 
 import { readEnvFile } from './env.js';
+import { log } from './log.js';
 
 export type WebchatAuthMode = 'local' | 'public';
 
@@ -295,6 +296,18 @@ export function loadWebAdapterAuthConfig(): WebAdapterAuthConfig | null {
     },
     secureCookies: resolveSecureCookies(file),
   };
+
+  if (
+    oidcEnabled &&
+    base.public.allowlist.emailDomains.length === 0 &&
+    base.public.allowlist.emails.length === 0 &&
+    base.public.allowlist.subs.length === 0 &&
+    base.public.allowlist.requiredGroup === null
+  ) {
+    log.warn(
+      'Webchat public OIDC allowlist is empty: any account that completes OAuth is admitted and granted global owner',
+    );
+  }
 
   return base;
 }

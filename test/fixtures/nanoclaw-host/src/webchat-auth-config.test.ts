@@ -1,17 +1,34 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('./log.js', () => ({
+  log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+}));
+
+vi.mock('./env.js', () => ({
+  readEnvFile: vi.fn(() => ({})),
+}));
 
 import { loadWebAdapterAuthConfig, MIN_SESSION_SECRET_LENGTH } from './webchat-auth-config.js';
+import { log } from './log.js';
 
 const ENV_KEYS = [
   'WEBCHAT_ENABLED',
   'WEBCHAT_SECRET',
   'WEBCHAT_AUTH_MODE',
   'WEBCHAT_AUTH_BASIC_ENABLED',
+  'WEBCHAT_AUTH_OIDC_ENABLED',
   'WEBCHAT_BASIC_PASSWORD',
   'WEBCHAT_BASIC_ALLOWED_USERNAMES',
   'WEBCHAT_SESSION_SECRET',
   'WEBCHAT_SECURE_COOKIES',
   'WEBCHAT_SESSION_INSECURE_COOKIES',
+  'WEBCHAT_PUBLIC_BASE_URL',
+  'WEBCHAT_OIDC_REDIRECT_URI',
+  'WEBCHAT_OIDC_PROVIDERS',
+  'WEBCHAT_OIDC_ALLOWED_EMAIL_DOMAINS',
+  'WEBCHAT_OIDC_ALLOWED_EMAILS',
+  'WEBCHAT_OIDC_ALLOWED_SUBS',
+  'WEBCHAT_OIDC_REQUIRED_GROUP',
   'NODE_ENV',
 ] as const;
 
@@ -74,5 +91,39 @@ describe('loadWebAdapterAuthConfig', () => {
     const cfg = loadWebAdapterAuthConfig();
     expect(cfg?.mcpHttpEnabled).toBe(true);
     expect(cfg?.publicBaseUrl).toBe('http://127.0.0.1:3200');
+  });
+
+  it('warns when public OIDC is enabled with an empty allowlist', () => {
+    publicEnv();
+    setEnv('WEBCHAT_AUTH_BASIC_ENABLED', undefined);
+    setEnv('WEBCHAT_AUTH_OIDC_ENABLED', 'true');
+    setEnv('WEBCHAT_OIDC_REDIRECT_URI', 'http://127.0.0.1:3200/api/auth/callback');
+    setEnv(
+      'WEBCHAT_OIDC_PROVIDERS',
+      JSON.stringify([
+        {
+          id: 'github',
+          label: 'GitHub',
+          protocol: 'oauth',
+          authorizationUrl: 'https://github.com/login/oauth/authorize',
+          tokenUrl: 'https://github.com/login/oauth/access_token',
+          userInfoUrl: 'https://api.github.com/user',
+          clientId: 'id',
+          clientSecret: 'secret',
+          scopes: 'read:user user:email',
+        },
+      ]),
+    );
+    delete process.env.WEBCHAT_OIDC_ALLOWED_EMAIL_DOMAINS;
+    delete process.env.WEBCHAT_OIDC_ALLOWED_EMAILS;
+    delete process.env.WEBCHAT_OIDC_ALLOWED_SUBS;
+    delete process.env.WEBCHAT_OIDC_REQUIRED_GROUP;
+
+    vi.mocked(log.warn).mockClear();
+    const cfg = loadWebAdapterAuthConfig();
+    expect(cfg?.public?.oidcEnabled).toBe(true);
+    expect(vi.mocked(log.warn)).toHaveBeenCalledWith(
+      expect.stringContaining('OIDC allowlist is empty'),
+    );
   });
 });
