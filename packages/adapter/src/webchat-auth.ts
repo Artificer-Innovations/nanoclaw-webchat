@@ -418,6 +418,8 @@ export async function handlePublicAuthRequest(
   config: PublicAuthConfig,
   json: JsonResponder,
   onLogin: (user: WebchatSessionUser) => void,
+  /** Public path prefix (e.g. `/webchat`) for post-login redirect under a stripPrefix mount. */
+  publicPath?: string,
 ): Promise<boolean> {
   if (url.pathname === '/api/auth/config' && req.method === 'GET') {
     json(res, 200, buildAuthConfigResponse(config));
@@ -522,7 +524,8 @@ export async function handlePublicAuthRequest(
       // Wire before Set-Cookie so a wiring/db failure cannot leave a usable session cookie.
       onLogin(user);
       writeSession(res, config, user);
-      redirect(res, '/');
+      const home = publicPath && publicPath !== '/' ? `${publicPath.replace(/\/+$/, '')}/` : '/';
+      redirect(res, home);
     } catch (e) {
       if (e instanceof AllowlistError) {
         htmlPage(

@@ -154,6 +154,8 @@ type InboundAttachment =
 interface WebAdapterOptions {
   port: number;
   bindAddress?: string;
+  /** Public URL path prefix (e.g. `/webchat`) for reverse-proxy stripPrefix mounts. */
+  publicPath?: string;
   authMode: 'local' | 'public';
   authToken: string;
   userId: string;
@@ -474,6 +476,34 @@ function staticMimeType(filePath: string): string {
       return 'font/woff2';
     default:
       return 'application/octet-stream';
+  }
+}
+
+/**
+ * Rewrite absolute SPA roots (`/api/…`, `/assets/…`) so browsers request them under
+ * a public path prefix (e.g. `/webchat`). Needed when a reverse proxy stripPrefix
+ * forwards `/webchat` to the adapter root — otherwise `/api` and `/assets` miss the mount.
+ */
+export function rewriteWebchatPublicPaths(content: string, publicPath: string): string {
+  const prefix = publicPath.replace(/\/+$/, '');
+  if (!prefix || prefix === '/') return content;
+  const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  let out = content.replace(/\/api\//g, `${prefix}/api/`).replace(/\/assets\//g, `${prefix}/assets/`);
+  // Collapse doubles if content was already prefixed (nested `/api/` match).
+  out = out.replace(new RegExp(`(?:${escaped})+(?=/api/|/assets/)`, 'g'), prefix);
+  return out;
+}
+
+function isRewritableStaticText(filePath: string): boolean {
+  switch (path.extname(filePath).toLowerCase()) {
+    case '.html':
+    case '.js':
+    case '.css':
+    case '.svg':
+    case '.json':
+      return true;
+    default:
+      return false;
   }
 }
 
@@ -1096,6 +1126,9 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
       if (!isPublicMode()) {
         html = injectWebchatTokenMeta(html, opts.authToken);
       }
+      if (opts.publicPath) {
+        html = rewriteWebchatPublicPaths(html, opts.publicPath);
+      }
       cachedIndexHtml = html;
     }
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -1124,7 +1157,14 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
     if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
       return serveIndexHtml(res);
     }
-    res.writeHead(200, { 'Content-Type': staticMimeType(filePath) });
+    const mime = staticMimeType(filePath);
+    if (opts.publicPath && isRewritableStaticText(filePath)) {
+      const body = rewriteWebchatPublicPaths(fs.readFileSync(filePath, 'utf8'), opts.publicPath);
+      res.writeHead(200, { 'Content-Type': mime });
+      res.end(body);
+      return true;
+    }
+    res.writeHead(200, { 'Content-Type': mime });
     res.end(fs.readFileSync(filePath));
     return true;
   }
@@ -1637,6 +1677,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
                 opts.publicAuth!,
                 json,
                 (user) => ensureUserWebchatWirings(user.userId, user.displayName),
+                opts.publicPath,
               );
               if (handled) return;
             }
@@ -1999,17 +2040,26 @@ export function resolveWebchatPort(env: Record<string, string | undefined>): num
   return parseInt(portStr, 10);
 }
 
+/** Public path prefix for reverse-proxy mounts (e.g. `/webchat`). Empty when unset. */
+export function resolveWebchatPublicPath(env: Record<string, string | undefined>): string {
+  const raw = (process.env.WEBCHAT_PUBLIC_PATH || env.WEBCHAT_PUBLIC_PATH || '').trim();
+  if (!raw || raw === '/') return '';
+  return raw.startsWith('/') ? raw.replace(/\/+$/, '') : `/${raw.replace(/\/+$/, '')}`;
+}
+
 registerChannelAdapter('web', {
   factory: () => {
     const cfg = loadWebAdapterAuthConfig();
     if (!cfg) return null;
 
-    const env = readEnvFile(['WEBCHAT_PORT']);
+    const env = readEnvFile(['WEBCHAT_PORT', 'WEBCHAT_PUBLIC_PATH']);
     const port = resolveWebchatPort(env);
+    const publicPath = resolveWebchatPublicPath(env);
 
     return createWebAdapter({
       port,
       bindAddress: cfg.bindAddress,
+      publicPath: publicPath || undefined,
       authMode: cfg.mode,
       authToken: cfg.authToken,
       userId: cfg.localUserId,
