@@ -6,6 +6,7 @@ import http from 'http';
 
 import type { OidcAllowlistConfig, OidcProviderConfig, PublicAuthConfig } from './webchat-auth-config.js';
 import { verifyIdToken, isJwksRetryableVerificationError, type JsonWebKey } from './webchat-auth-jwt.js';
+import { log } from './log.js';
 import {
   clearSessionCookieHeader,
   consumeOAuthState,
@@ -243,10 +244,11 @@ async function fetchGitHubProfile(accessToken: string): Promise<{ claims: Record
 }
 
 function constantTimeEqual(a: string, b: string): boolean {
-  const ba = Buffer.from(a);
-  const bb = Buffer.from(b);
-  if (ba.length !== bb.length) return false;
-  return crypto.timingSafeEqual(ba, bb);
+  // Hash to fixed-length digests so timingSafeEqual never early-returns on length
+  // (which would leak allowlist/password length information).
+  const ha = crypto.createHash('sha256').update(a, 'utf8').digest();
+  const hb = crypto.createHash('sha256').update(b, 'utf8').digest();
+  return crypto.timingSafeEqual(ha, hb);
 }
 
 function isAllowedUsername(allowedUsernames: string[], normalized: string): boolean {
@@ -461,8 +463,15 @@ export async function handlePublicAuthRequest(
       json(res, 401, { error: 'Invalid username or password' });
       return true;
     }
+    // Wire before Set-Cookie so a wiring/db failure cannot leave a usable session cookie.
+    try {
+      onLogin(user);
+    } catch (err) {
+      log.error('Webchat basic login onLogin failed', { err, userId: user.userId });
+      json(res, 500, { error: 'Login failed' });
+      return true;
+    }
     writeSession(res, config, user);
-    onLogin(user);
     json(res, 200, { ok: true, user: { id: user.userId, displayName: user.displayName } });
     return true;
   }
@@ -510,8 +519,9 @@ export async function handlePublicAuthRequest(
     }
     try {
       const user = await exchangeCode(config, provider, code, oauthState.codeVerifier);
-      writeSession(res, config, user);
+      // Wire before Set-Cookie so a wiring/db failure cannot leave a usable session cookie.
       onLogin(user);
+      writeSession(res, config, user);
       redirect(res, '/');
     } catch (e) {
       if (e instanceof AllowlistError) {
@@ -523,6 +533,7 @@ export async function handlePublicAuthRequest(
         );
         return true;
       }
+      log.error('Webchat OIDC login failed', { err: e });
       htmlPage(res, 500, 'Login failed', '<h1>Login failed</h1><p><a href="/">Back</a></p>');
     }
     return true;

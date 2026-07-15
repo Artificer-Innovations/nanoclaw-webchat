@@ -10,6 +10,7 @@ import { getAllAgentGroups } from './db/agent-groups.js';
 import {
   createMessagingGroup,
   createMessagingGroupAgent,
+  getMessagingGroup,
   getMessagingGroupByPlatform,
   getMessagingGroupAgentByPair,
   updateMessagingGroup,
@@ -25,6 +26,8 @@ import {
 } from './webchat-room-scope.js';
 import { getAllWebUsers, upsertUser } from './modules/permissions/db/users.js';
 import { addMember } from './modules/permissions/db/agent-group-members.js';
+import { grantRole, isGlobalAdmin, isOwner, revokeRole } from './modules/permissions/db/user-roles.js';
+import { deleteUserDm, getUserDm } from './modules/permissions/db/user-dms.js';
 import type { AgentGroup } from './types.js';
 
 export { WEB_LOBBY_PLATFORM_ID, WEB_INBOX_PLATFORM_ID };
@@ -35,6 +38,66 @@ function readAuthMode(): 'local' | 'public' {
   const env = readEnvFile(['WEBCHAT_AUTH_MODE']);
   const raw = process.env.WEBCHAT_AUTH_MODE || env.WEBCHAT_AUTH_MODE || 'local';
   return raw === 'public' ? 'public' : 'local';
+}
+
+function readLocalWebUserId(): string {
+  const env = readEnvFile(['WEBCHAT_USER_ID']);
+  return process.env.WEBCHAT_USER_ID || env.WEBCHAT_USER_ID || 'web:local';
+}
+
+/** Legacy local-mode operator identity — must not remain an approval owner in public mode. */
+function isLegacyLocalWebUser(userId: string): boolean {
+  return userId === 'web:local' || userId === readLocalWebUserId();
+}
+
+/** Drop cached DM rows that still point at the shared local `inbox` platform id. */
+function clearStaleSharedInboxUserDm(userId: string): void {
+  const cached = getUserDm(userId, WEB_CHANNEL_TYPE);
+  if (!cached) return;
+  const mg = getMessagingGroup(cached.messaging_group_id);
+  if (!mg || mg.platform_id !== WEB_INBOX_PLATFORM_ID) return;
+  deleteUserDm(userId, WEB_CHANNEL_TYPE);
+  log.info('Webchat sync: cleared stale shared-inbox user_dm', { userId, messagingGroupId: mg.id });
+}
+
+/**
+ * In public mode, revoke owner/admin on the legacy local web identity and clear
+ * user_dms rows still targeting bare `inbox` so approval cards route to real logins.
+ */
+export function revokeLegacyLocalWebApprovers(): void {
+  if (readAuthMode() !== 'public') return;
+
+  const ids = new Set<string>(['web:local', readLocalWebUserId()]);
+  for (const userId of ids) {
+    if (isOwner(userId)) {
+      revokeRole(userId, 'owner', null);
+      log.info('Webchat sync: revoked legacy local web owner in public mode', { userId });
+    }
+    if (isGlobalAdmin(userId)) {
+      revokeRole(userId, 'admin', null);
+      log.info('Webchat sync: revoked legacy local web admin in public mode', { userId });
+    }
+    clearStaleSharedInboxUserDm(userId);
+  }
+}
+
+/**
+ * Public login allowlist is the privilege gate: admitted users become owners so
+ * they can approve create_agent / install cards without knowing opaque OIDC ids.
+ * Follow-up: privilege tiers for broad domain-allowlist multi-user hosts.
+ */
+export function ensurePublicWebOwner(userId: string): void {
+  if (readAuthMode() !== 'public') return;
+  if (isLegacyLocalWebUser(userId)) return;
+  if (isOwner(userId)) return;
+  grantRole({
+    user_id: userId,
+    role: 'owner',
+    agent_group_id: null,
+    granted_by: null,
+    granted_at: new Date().toISOString(),
+  });
+  log.info('Webchat sync: granted owner to public web user', { userId });
 }
 
 function generateId(prefix: string): string {
@@ -203,6 +266,11 @@ export function ensureUserWebchatWirings(
     ensureWebUser(userId, displayName);
   }
 
+  if (readAuthMode() === 'public') {
+    revokeLegacyLocalWebApprovers();
+    ensurePublicWebOwner(userId);
+  }
+
   const inboxPhysical = inboxPlatformForUser(userId);
   ensureInboxMessagingGroupForPlatform(inboxPhysical);
 
@@ -298,7 +366,41 @@ export function readTeamFolder(): string | null {
   return raw?.trim() || null;
 }
 
-/** Sync lobby + DM wirings for all agent groups. Idempotent. */
+/**
+ * Ensure shared lobby messaging group + lobby @-mention wirings for every agent.
+ * Idempotent (upserts). Cheap relative to per-user DM backfill.
+ */
+function syncLobbyWirings(agents: AgentGroup[]): string {
+  const teamFolder = readTeamFolder();
+  const lobbyMgId = ensureLobbyMessagingGroup();
+  for (const agent of agents) {
+    const pattern =
+      teamFolder && agent.folder === teamFolder ? `@(team|${agent.folder})\\b` : lobbyPattern(agent.folder);
+    upsertLobbyWiring(lobbyMgId, agent.id, pattern);
+  }
+  return lobbyMgId;
+}
+
+/**
+ * Heal lobby + one user's inbox/DM wirings (CLI / non-create_agent paths).
+ * Prefer this on per-request paths like GET /api/bootstrap — unlike
+ * {@link syncWebchatWirings}, public mode does not backfill every web user.
+ */
+export function healWebchatWiringsForUser(userId: string, displayName: string): void {
+  const env = readEnvFile(['WEBCHAT_ENABLED']);
+  const enabled = process.env.WEBCHAT_ENABLED || env.WEBCHAT_ENABLED;
+  if (!enabled || enabled === 'false') return;
+
+  const agents = getAllAgentGroups();
+  syncLobbyWirings(agents);
+  ensureUserWebchatWirings(userId, displayName, { agents, skipLobbyWiring: true });
+}
+
+/**
+ * Sync lobby + DM wirings for all agent groups. Idempotent.
+ * Boot-time / full refresh only — public mode walks every web user (O(users)).
+ * Prefer {@link healWebchatWiringsForUser} on request paths such as bootstrap.
+ */
 export function syncWebchatWirings(): void {
   const env = readEnvFile(['WEBCHAT_ENABLED', 'WEBCHAT_USER_ID', 'WEBCHAT_DISPLAY_NAME', 'WEBCHAT_AUTH_MODE']);
   const enabled = process.env.WEBCHAT_ENABLED || env.WEBCHAT_ENABLED;
@@ -307,18 +409,12 @@ export function syncWebchatWirings(): void {
   const publicMode = readAuthMode() === 'public';
   const userId = process.env.WEBCHAT_USER_ID || env.WEBCHAT_USER_ID || 'web:local';
   const displayName = process.env.WEBCHAT_DISPLAY_NAME || env.WEBCHAT_DISPLAY_NAME || 'Local';
-  const teamFolder = readTeamFolder();
 
-  const lobbyMgId = ensureLobbyMessagingGroup();
   const agents = getAllAgentGroups();
-
-  for (const agent of agents) {
-    const pattern =
-      teamFolder && agent.folder === teamFolder ? `@(team|${agent.folder})\\b` : lobbyPattern(agent.folder);
-    upsertLobbyWiring(lobbyMgId, agent.id, pattern);
-  }
+  const lobbyMgId = syncLobbyWirings(agents);
 
   if (publicMode) {
+    revokeLegacyLocalWebApprovers();
     for (const user of getAllWebUsers()) {
       try {
         ensureUserWebchatWirings(user.id, user.display_name ?? user.id, {

@@ -1423,6 +1423,79 @@ describe('App', () => {
     expect(await screen.findByText('Agent reply')).toBeInTheDocument();
   });
 
+  it('soft-merges bootstrap websocket events without leaving the active room', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    const MockWebSocket = createWebSocketMock();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const ws = await waitForWebSocket(MockWebSocket);
+    await act(async () => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: 'bootstrap',
+          bootstrap: {
+            user: bootstrapFixture.user,
+            rooms: [
+              ...bootstrapFixture.rooms,
+              {
+                platformId: 'dm:ted',
+                name: 'Ted',
+                kind: 'dm',
+                folder: 'ted',
+                threads: [{ id: 'main', title: 'Main' }],
+              },
+            ],
+            agents: [
+              ...bootstrapFixture.agents,
+              { folder: 'ted', name: 'Ted', mention: '@ted' },
+            ],
+          },
+        }),
+      } as MessageEvent);
+    });
+
+    expect(await screen.findByRole('button', { name: 'Ted' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Lobby' })).toBeInTheDocument();
+  });
+
+  it('ignores bootstrap websocket events scoped to another user', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    const MockWebSocket = createWebSocketMock();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const ws = await waitForWebSocket(MockWebSocket);
+    await act(async () => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: 'bootstrap',
+          forUserId: 'web:basic:other',
+          bootstrap: {
+            user: { id: 'web:basic:other', displayName: 'Other' },
+            rooms: [
+              ...bootstrapFixture.rooms,
+              {
+                platformId: 'dm:leaked',
+                name: 'Leaked',
+                kind: 'dm',
+                folder: 'leaked',
+                threads: [{ id: 'main', title: 'Main' }],
+              },
+            ],
+            agents: [
+              ...bootstrapFixture.agents,
+              { folder: 'leaked', name: 'Leaked', mention: '@leaked' },
+            ],
+          },
+        }),
+      } as MessageEvent);
+    });
+
+    expect(screen.queryByRole('button', { name: 'Leaked' })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Lobby' })).toBeInTheDocument();
+  });
+
   it('ignores duplicate websocket messages', async () => {
     vi.stubGlobal(
       'fetch',

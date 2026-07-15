@@ -124,6 +124,7 @@ Body:
 - `questionId` must match the `card.questionId` on a pending message in that thread.
 - Returns HTTP 409 if the card was already answered (idempotent guard).
 - Returns HTTP 404 if no matching pending card exists.
+- Returns HTTP 403 `{ "error": "not authorized" }` when the card maps to a host `pending_approvals` row and the authenticated user is not allowed to resolve it (wrong named approver, or lacking owner/admin). The card stays pending.
 
 Response: `{ "ok": true }`
 
@@ -274,6 +275,18 @@ Engaged-agent updates (lobby threads — when agents are @'d or removed via UI):
   "agents": ["sarah", "diego"]
 }
 ```
+
+Soft room-list refresh after agent groups are created (or other wiring syncs). Clients merge rooms/agents without resetting the active conversation:
+
+```json
+{
+  "type": "bootstrap",
+  "bootstrap": { "user": { "id": "web:basic:alice", "displayName": "Alice" }, "rooms": [], "agents": [] },
+  "forUserId": "web:basic:alice"
+}
+```
+
+(`forUserId` is set in public mode so only that client's tab applies the payload.)
 
 Interactive card updates (after a button click on an `ask_question` card):
 

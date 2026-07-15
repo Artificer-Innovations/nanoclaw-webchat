@@ -12,9 +12,11 @@ import {
   markMessagesSeen,
   mergeUnreadDeltas,
   migrateLegacyThreads,
+  mergeThreadsFromBootstrapRooms,
   reconcileOptimisticMessage,
   resolveActiveThreadTitle,
   seedSyncCursors,
+  softMergeBootstrap,
   syncInactiveUnread,
   takePendingOptimisticId,
   dropPendingOptimisticId,
@@ -286,6 +288,20 @@ export function App() {
               applyMessageUpdate(prev, msg, roomRef.current, threadIdRef.current),
             );
           }
+          return;
+        }
+        if (event.type === 'bootstrap') {
+          const next = event.bootstrap;
+          // Defensive: ignore payloads scoped to another user (server fan-out should already filter).
+          if (event.forUserId && event.forUserId !== bootstrap.user.id) return;
+          // WS connects only after bootstrap is loaded, so prev is always set here.
+          setBootstrap((prev) => softMergeBootstrap(prev!, next));
+          setThreadsByRoom((prev) => mergeThreadsFromBootstrapRooms(prev, next.rooms));
+          syncCursorRef.current = seedSyncCursors(
+            syncCursorRef.current,
+            next.rooms,
+            threadsMapFromRooms(next.rooms),
+          );
           return;
         }
         if (event.type !== 'message') return;

@@ -52,7 +52,40 @@ vi.mock('../webchat-sync.js', () => ({
   }),
   readTeamFolder: () => null,
   ensureUserWebchatWirings: vi.fn(),
+  healWebchatWiringsForUser: vi.fn(),
+  syncWebchatWirings: vi.fn(),
   WEB_INBOX_PLATFORM_ID: 'inbox',
+}));
+
+const { webchatLiveState } = vi.hoisted(() => ({
+  webchatLiveState: { fanout: null as null | (() => void) },
+}));
+
+vi.mock('../webchat-live.js', () => ({
+  setWebchatBootstrapBroadcaster: vi.fn((fn: (() => void) | null) => {
+    webchatLiveState.fanout = fn;
+  }),
+  bootstrapPayloadForUser: vi.fn((userId: string) => ({
+    user: { id: userId, displayName: userId },
+    rooms: [
+      {
+        platformId: 'lobby',
+        name: 'Lobby',
+        kind: 'lobby',
+        threads: [{ id: 'main', title: 'Main' }],
+      },
+    ],
+    agents: [],
+  })),
+  refreshWebchatAfterAgentChange: vi.fn(),
+}));
+
+vi.mock('../modules/permissions/db/user-roles.js', () => ({
+  isOwner: vi.fn(() => true),
+  isGlobalAdmin: vi.fn(() => false),
+  hasAdminPrivilege: vi.fn(() => true),
+  grantRole: vi.fn(),
+  revokeRole: vi.fn(),
 }));
 
 vi.mock('../db/agent-groups.js', () => ({
@@ -124,7 +157,14 @@ vi.mock('../router.js', () => ({
   }),
 }));
 
-import { createWebAdapter, clearWebAdapterTestState, flushWebAgentDeliveryChains, resolveWebchatPort } from './web.js';
+import {
+  createWebAdapter,
+  clearWebAdapterTestState,
+  flushWebAgentDeliveryChains,
+  isAuthorizedApprovalActor,
+  resolveWebchatPort,
+  shouldMirrorApprovalToOrigin,
+} from './web.js';
 import type { ChannelSetup, InboundMessage } from './adapter.js';
 import { routeInbound } from '../router.js';
 import { cleanupAgentSessionsForThread } from '../webchat-thread-cleanup.js';
@@ -142,6 +182,7 @@ import { resetWebchatAuthSchemaForTests, createSession, signSessionCookie, WEBCH
 import { createWebchatMcpOAuthBackend, MCP_DEFAULT_SCOPE, verifyMcpAccessToken } from '../webchat-mcp-oauth.js';
 import { encodeUserSuffix } from '../webchat-room-scope.js';
 import * as webchatRoomScope from '../webchat-room-scope.js';
+import { isOwner, isGlobalAdmin, hasAdminPrivilege } from '../modules/permissions/db/user-roles.js';
 
 const routeInboundMock = vi.mocked(routeInbound);
 const cleanupSessionsMock = vi.mocked(cleanupAgentSessionsForThread);
@@ -3356,6 +3397,23 @@ describe('web channel adapter', () => {
     expect(index.body).not.toContain('name="webchat-token"');
   });
 
+  it('basic login returns 500 without session cookie when wiring throws', async () => {
+    const ensureWirings = vi.mocked(webchatSync.ensureUserWebchatWirings);
+    ensureWirings.mockImplementationOnce(() => {
+      throw new Error('wiring failed');
+    });
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const login = await httpPostJsonNoAuth('/api/auth/login/basic', {
+      username: 'alice',
+      password: 'hunter2',
+    });
+    expect(login.status).toBe(500);
+    expect(login.headers['set-cookie']).toBeUndefined();
+  });
+
   it('openDM returns per-user inbox in public mode', async () => {
     adapter = createWebAdapter(publicAdapterOptions(testPort));
     resetWebchatAuthSchemaForTests();
@@ -4667,5 +4725,354 @@ describe('web channel adapter', () => {
       const id = await adapter.deliver('inbox', null, { kind: 'chat-sdk', content });
       expect(id).toBeUndefined();
     }
+  });
+
+  it('POST actions returns 403 when actor is not the named approver', async () => {
+    getPendingApprovalMock.mockReturnValue({
+      approval_id: 'approval-forbid',
+      session_id: 'sess-sarah',
+      approver_user_id: 'web:github:999',
+    } as never);
+
+    await adapter.setup(setup);
+    await adapter.deliver('inbox', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-forbid',
+        title: 'Create agent',
+        question: 'Approve?',
+        options: [{ label: 'Approve', value: 'approve' }],
+      },
+    });
+
+    actionCaptures.length = 0;
+    const forbidden = await httpPostJson('/api/rooms/inbox/threads/main/actions', {
+      questionId: 'approval-forbid',
+      value: 'approve',
+    });
+    expect(forbidden.status).toBe(403);
+    expect(forbidden.body).toMatchObject({ error: 'not authorized' });
+    expect(actionCaptures).toHaveLength(0);
+  });
+
+  it('isAuthorizedApprovalActor allows non-approval cards and exact approver', () => {
+    getPendingApprovalMock.mockReturnValue(undefined);
+    expect(isAuthorizedApprovalActor('web:github:1', 'missing')).toBe(true);
+
+    getPendingApprovalMock.mockReturnValue({
+      approval_id: 'a1',
+      approver_user_id: 'web:github:1',
+    } as never);
+    expect(isAuthorizedApprovalActor('web:github:1', 'a1')).toBe(true);
+    expect(isAuthorizedApprovalActor('web:github:2', 'a1')).toBe(false);
+  });
+
+  it('isAuthorizedApprovalActor uses admin privilege when approver is unset', () => {
+    const isOwnerMock = vi.mocked(isOwner);
+    const hasAdminMock = vi.mocked(hasAdminPrivilege);
+    getPendingApprovalMock.mockReturnValue({
+      approval_id: 'a2',
+      agent_group_id: 'ag-1',
+      approver_user_id: null,
+    } as never);
+    hasAdminMock.mockReturnValueOnce(false);
+    expect(isAuthorizedApprovalActor('web:github:1', 'a2')).toBe(false);
+    hasAdminMock.mockReturnValueOnce(true);
+    expect(isAuthorizedApprovalActor('web:github:1', 'a2')).toBe(true);
+    isOwnerMock.mockReturnValue(true);
+  });
+
+  it('does not mirror approval cards in public mode when origin owner mismatches approver', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    getPendingApprovalMock.mockReturnValue({
+      approval_id: 'approval-public-mirror',
+      session_id: 'sess-sarah',
+      approver_user_id: 'web:local',
+    } as never);
+    getSessionMock.mockReturnValue({
+      id: 'sess-sarah',
+      agent_group_id: 'ag-sarah',
+      messaging_group_id: 'mg-dm-sarah',
+      thread_id: null,
+    } as never);
+    getMessagingGroupByIdMock.mockReturnValue({
+      id: 'mg-dm-sarah',
+      channel_type: 'web',
+      platform_id: `dm:sarah:${encodeUserSuffix('web:basic:alice')}`,
+    } as never);
+
+    await adapter.setup(setup);
+    const inboxPhysical = `inbox:${encodeUserSuffix('web:basic:alice')}`;
+    await adapter.deliver(inboxPhysical, null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-public-mirror',
+        title: 'Create agent',
+        question: 'Approve?',
+        options: [{ label: 'Approve', value: 'approve' }],
+      },
+    });
+
+    const cookie = await loginBasicSession('alice');
+    const inbox = await httpGetWithHeaders(
+      '/api/rooms/inbox/threads/main/messages',
+      { Cookie: cookie },
+      testPort,
+    );
+    const dm = await httpGetWithHeaders(
+      '/api/rooms/dm%3Asarah/threads/main/messages',
+      { Cookie: cookie },
+      testPort,
+    );
+    expect((inbox.body as { messages: unknown[] }).messages).toHaveLength(1);
+    expect((dm.body as { messages: unknown[] }).messages).toHaveLength(0);
+  });
+
+  it('mirrors approval cards in public mode when origin owner matches approver', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    const alice = 'web:basic:alice';
+    getPendingApprovalMock.mockReturnValue({
+      approval_id: 'approval-public-ok',
+      session_id: 'sess-sarah',
+      approver_user_id: alice,
+    } as never);
+    getSessionMock.mockReturnValue({
+      id: 'sess-sarah',
+      agent_group_id: 'ag-sarah',
+      messaging_group_id: 'mg-dm-sarah',
+      thread_id: null,
+    } as never);
+    getMessagingGroupByIdMock.mockReturnValue({
+      id: 'mg-dm-sarah',
+      channel_type: 'web',
+      platform_id: `dm:sarah:${encodeUserSuffix(alice)}`,
+    } as never);
+
+    await adapter.setup(setup);
+    await adapter.deliver(`inbox:${encodeUserSuffix(alice)}`, null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-public-ok',
+        title: 'Create agent',
+        question: 'Approve?',
+        options: [{ label: 'Approve', value: 'approve' }],
+      },
+    });
+
+    const cookie = await loginBasicSession('alice');
+    const dm = await httpGetWithHeaders(
+      '/api/rooms/dm%3Asarah/threads/main/messages',
+      { Cookie: cookie },
+      testPort,
+    );
+    expect((dm.body as { messages: unknown[] }).messages).toHaveLength(1);
+  });
+
+  it('GET bootstrap heals wirings for the requesting user only', async () => {
+    await adapter.setup(setup);
+    const healSpy = vi.mocked(webchatSync.healWebchatWiringsForUser);
+    healSpy.mockClear();
+    await httpGet('/api/bootstrap');
+    expect(healSpy).toHaveBeenCalledWith('web:local', 'Local');
+  });
+
+  it('broadcasts bootstrap fanout to open websockets', async () => {
+    await adapter.setup(setup);
+    const events: unknown[] = [];
+    await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${testPort}/api/ws?token=${SECRET}`);
+      ws.on('open', () => {
+        expect(webchatLiveState.fanout).toBeTypeOf('function');
+        webchatLiveState.fanout!();
+      });
+      ws.on('message', (data) => {
+        events.push(JSON.parse(data.toString()));
+        if (events.some((e) => (e as { type?: string }).type === 'bootstrap')) {
+          ws.close();
+          resolve();
+        }
+      });
+      ws.on('error', reject);
+    });
+    expect(events.some((e) => (e as { type?: string }).type === 'bootstrap')).toBe(true);
+  });
+
+  it('skips bootstrap fanout for sockets that are not open', async () => {
+    await adapter.setup(setup);
+    await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${testPort}/api/ws?token=${SECRET}`);
+      ws.on('open', () => {
+        // Force CLOSED while still tracked so the broadcaster hits the readyState continue.
+        Object.defineProperty(ws, 'readyState', { configurable: true, get: () => WebSocket.CLOSED });
+        expect(() => webchatLiveState.fanout!()).not.toThrow();
+        Object.defineProperty(ws, 'readyState', { configurable: true, get: () => WebSocket.OPEN });
+        ws.close();
+        resolve();
+      });
+      ws.on('error', reject);
+    });
+  });
+
+  it('broadcasts public bootstrap fanout with forUserId', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+    const cookie = await loginBasicSession('alice');
+    const events: unknown[] = [];
+    await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${testPort}/api/ws`, {
+        headers: { Cookie: cookie },
+      });
+      ws.on('open', () => {
+        webchatLiveState.fanout!();
+      });
+      ws.on('message', (data) => {
+        events.push(JSON.parse(data.toString()));
+        if (events.some((e) => (e as { type?: string }).type === 'bootstrap')) {
+          ws.close();
+          resolve();
+        }
+      });
+      ws.on('error', reject);
+    });
+    const boot = events.find((e) => (e as { type?: string }).type === 'bootstrap') as {
+      forUserId?: string;
+    };
+    expect(boot.forUserId).toBe('web:basic:alice');
+  });
+
+  it('shouldMirrorApprovalToOrigin rejects when origin matches delivery platform', () => {
+    expect(
+      shouldMirrorApprovalToOrigin(
+        { platformId: 'inbox:web~basic~alice', threadId: 'main' },
+        'q',
+        'inbox:web~basic~alice',
+        true,
+      ),
+    ).toBe(false);
+  });
+
+  it('shouldMirrorApprovalToOrigin covers inbox, local, and lookup guards', () => {
+    expect(
+      shouldMirrorApprovalToOrigin({ platformId: 'inbox', threadId: 'main' }, 'q', 'inbox:x', true),
+    ).toBe(false);
+    expect(
+      shouldMirrorApprovalToOrigin({ platformId: 'dm:sarah', threadId: 'main' }, 'q', 'inbox', false),
+    ).toBe(true);
+
+    hasTableMock.mockReturnValueOnce(false);
+    expect(
+      shouldMirrorApprovalToOrigin(
+        { platformId: `dm:sarah:${encodeUserSuffix('web:basic:alice')}`, threadId: 'main' },
+        'q',
+        'inbox:x',
+        true,
+      ),
+    ).toBe(false);
+
+    getPendingApprovalMock.mockReturnValueOnce(undefined);
+    expect(
+      shouldMirrorApprovalToOrigin(
+        { platformId: `dm:sarah:${encodeUserSuffix('web:basic:alice')}`, threadId: 'main' },
+        'q',
+        'inbox:x',
+        true,
+      ),
+    ).toBe(false);
+
+    getPendingApprovalMock.mockReturnValueOnce({
+      approver_user_id: 'web:basic:alice',
+    } as never);
+    expect(
+      shouldMirrorApprovalToOrigin({ platformId: 'lobby', threadId: 'main' }, 'q', 'inbox:x', true),
+    ).toBe(false);
+
+    getPendingApprovalMock.mockImplementationOnce(() => {
+      throw new Error('mirror lookup failed');
+    });
+    expect(
+      shouldMirrorApprovalToOrigin(
+        { platformId: `dm:sarah:${encodeUserSuffix('web:basic:alice')}`, threadId: 'main' },
+        'q',
+        'inbox:x',
+        true,
+      ),
+    ).toBe(false);
+  });
+
+  it('isAuthorizedApprovalActor allows when pending_approvals table is missing', () => {
+    hasTableMock.mockReturnValueOnce(false);
+    expect(isAuthorizedApprovalActor('web:anyone', 'q')).toBe(true);
+  });
+
+  it('isAuthorizedApprovalActor fails closed when lookup throws', () => {
+    getPendingApprovalMock.mockImplementation(() => {
+      throw new Error('db down');
+    });
+    expect(isAuthorizedApprovalActor('web:local', 'q')).toBe(false);
+  });
+
+  it('isAuthorizedApprovalActor uses owner check when agent group is unset', () => {
+    const isOwnerMock = vi.mocked(isOwner);
+    const isGlobalAdminMock = vi.mocked(isGlobalAdmin);
+    getPendingApprovalMock.mockReturnValue({
+      approval_id: 'a3',
+      agent_group_id: null,
+      session_id: null,
+      approver_user_id: null,
+    } as never);
+    isOwnerMock.mockReturnValueOnce(false);
+    isGlobalAdminMock.mockReturnValueOnce(true);
+    expect(isAuthorizedApprovalActor('web:github:1', 'a3')).toBe(true);
+  });
+
+  it('skips public mirror when approval lookup throws', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    getPendingApprovalMock
+      .mockReturnValueOnce({
+        approval_id: 'approval-throw',
+        session_id: 'sess-sarah',
+        approver_user_id: 'web:basic:alice',
+      } as never)
+      .mockImplementation(() => {
+        throw new Error('db down');
+      });
+    getSessionMock.mockReturnValue({
+      id: 'sess-sarah',
+      agent_group_id: 'ag-sarah',
+      messaging_group_id: 'mg-dm-sarah',
+      thread_id: null,
+    } as never);
+    getMessagingGroupByIdMock.mockReturnValue({
+      id: 'mg-dm-sarah',
+      channel_type: 'web',
+      platform_id: `dm:sarah:${encodeUserSuffix('web:basic:alice')}`,
+    } as never);
+
+    await adapter.setup(setup);
+    await adapter.deliver(`inbox:${encodeUserSuffix('web:basic:alice')}`, null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-throw',
+        title: 'Create agent',
+        question: 'Approve?',
+        options: [{ label: 'Approve', value: 'approve' }],
+      },
+    });
+
+    const cookie = await loginBasicSession('alice');
+    const dm = await httpGetWithHeaders(
+      '/api/rooms/dm%3Asarah/threads/main/messages',
+      { Cookie: cookie },
+      testPort,
+    );
+    expect((dm.body as { messages: unknown[] }).messages).toHaveLength(0);
   });
 });
