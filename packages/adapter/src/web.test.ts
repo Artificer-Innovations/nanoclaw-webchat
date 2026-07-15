@@ -3420,6 +3420,21 @@ describe('web channel adapter', () => {
     await adapter.setup(setup);
     const userId = 'web:basic:alice';
     await expect(adapter.openDM!(userId)).resolves.toBe(`inbox:${encodeUserSuffix(userId)}`);
+    // Host ensureUserDm strips the "web:" channel prefix before calling openDM.
+    await expect(adapter.openDM!('basic:alice')).resolves.toBe(`inbox:${encodeUserSuffix(userId)}`);
+    await expect(adapter.openDM!('System')).resolves.toBe(
+      `inbox:${encodeUserSuffix('web:System')}`,
+    );
+  });
+
+  it('openDM reconstructs web user ids for stripped handles in public mode', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+    // Even unexpected handles are treated as web user suffixes (web adapter only).
+    await expect(adapter.openDM!('telegram:123')).resolves.toBe(
+      `inbox:${encodeUserSuffix('web:telegram:123')}`,
+    );
   });
 
   it('returns 401 for protected API routes without session in public mode', async () => {
@@ -3605,13 +3620,6 @@ describe('web channel adapter', () => {
 
     const bootstrap = await httpGetWithHeaders('/api/bootstrap', { Cookie: cookie });
     expect(bootstrap.status).toBe(401);
-  });
-
-  it('openDM returns shared inbox for non-web handles in public mode', async () => {
-    adapter = createWebAdapter(publicAdapterOptions(testPort));
-    resetWebchatAuthSchemaForTests();
-    await adapter.setup(setup);
-    await expect(adapter.openDM!('telegram:123')).resolves.toBe('inbox');
   });
 
   it('manages lobby threads and uploads with session cookie in public mode', async () => {
@@ -3853,7 +3861,7 @@ describe('web channel adapter', () => {
       {
         originalUrl: '/authorize',
         headers: { cookie: `${WEBCHAT_SESSION_COOKIE}=${encodeURIComponent(cookie)}` },
-      } as import('node:http').IncomingMessage,
+      } as unknown as import('node:http').IncomingMessage,
       client,
       {
         scopes: [MCP_DEFAULT_SCOPE],
@@ -4873,6 +4881,49 @@ describe('web channel adapter', () => {
     expect((dm.body as { messages: unknown[] }).messages).toHaveLength(1);
   });
 
+  it('mirrors create_agent cards in public mode when approver_user_id is unset', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    const alice = 'web:basic:alice';
+    getPendingApprovalMock.mockReturnValue({
+      approval_id: 'approval-public-null-approver',
+      session_id: 'sess-sarah',
+      approver_user_id: null,
+    } as never);
+    getSessionMock.mockReturnValue({
+      id: 'sess-sarah',
+      agent_group_id: 'ag-sarah',
+      messaging_group_id: 'mg-dm-sarah',
+      thread_id: null,
+    } as never);
+    getMessagingGroupByIdMock.mockReturnValue({
+      id: 'mg-dm-sarah',
+      channel_type: 'web',
+      platform_id: `dm:sarah:${encodeUserSuffix(alice)}`,
+    } as never);
+    vi.mocked(isOwner).mockReturnValue(true);
+
+    await adapter.setup(setup);
+    await adapter.deliver(`inbox:${encodeUserSuffix(alice)}`, null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'approval-public-null-approver',
+        title: 'Create agent',
+        question: 'Approve?',
+        options: [{ label: 'Approve', value: 'approve' }],
+      },
+    });
+
+    const cookie = await loginBasicSession('alice');
+    const dm = await httpGetWithHeaders(
+      '/api/rooms/dm%3Asarah/threads/main/messages',
+      { Cookie: cookie },
+      testPort,
+    );
+    expect((dm.body as { messages: unknown[] }).messages).toHaveLength(1);
+  });
+
   it('GET bootstrap heals wirings for the requesting user only', async () => {
     await adapter.setup(setup);
     const healSpy = vi.mocked(webchatSync.healWebchatWiringsForUser);
@@ -4976,6 +5027,19 @@ describe('web channel adapter', () => {
     ).toBe(false);
 
     getPendingApprovalMock.mockReturnValueOnce(undefined);
+    // Default isOwner mock is true — null approver still mirrors into an owned room.
+    expect(
+      shouldMirrorApprovalToOrigin(
+        { platformId: `dm:sarah:${encodeUserSuffix('web:basic:alice')}`, threadId: 'main' },
+        'q',
+        'inbox:x',
+        true,
+      ),
+    ).toBe(true);
+
+    vi.mocked(isOwner).mockReturnValueOnce(false);
+    vi.mocked(isGlobalAdmin).mockReturnValueOnce(false);
+    getPendingApprovalMock.mockReturnValueOnce({ approval_id: 'q' } as never);
     expect(
       shouldMirrorApprovalToOrigin(
         { platformId: `dm:sarah:${encodeUserSuffix('web:basic:alice')}`, threadId: 'main' },

@@ -25,6 +25,8 @@ export interface McpAccessTokenUser {
   clientId: string;
   scopes: string[];
   resource?: string;
+  /** Unix seconds — required by MCP SDK requireBearerAuth. */
+  expiresAt: number;
 }
 
 export interface McpOAuthClientRecord {
@@ -133,6 +135,49 @@ function verifyPkceS256(codeVerifier: string, codeChallenge: string): boolean {
   return crypto.timingSafeEqual(Buffer.from(computed), Buffer.from(codeChallenge));
 }
 
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+/**
+ * RFC 8252 §7.3 — loopback redirect URIs may differ only by port.
+ * (Same rule as MCP SDK authorize handler.)
+ */
+export function mcpRedirectUriMatches(requested: string, registered: string): boolean {
+  if (requested === registered) return true;
+  let req: URL;
+  let reg: URL;
+  try {
+    req = new URL(requested);
+    reg = new URL(registered);
+  } catch {
+    return false;
+  }
+  if (!LOOPBACK_HOSTS.has(req.hostname) || !LOOPBACK_HOSTS.has(reg.hostname)) return false;
+  return (
+    req.protocol === reg.protocol &&
+    req.hostname === reg.hostname &&
+    req.pathname === reg.pathname &&
+    req.search === reg.search
+  );
+}
+
+/** Treat localhost / 127.0.0.1 / ::1 as the same resource host for local MCP OAuth. */
+export function mcpResourceUrlMatches(requested: string, expected: string): boolean {
+  if (requested === expected) return true;
+  let req: URL;
+  let exp: URL;
+  try {
+    req = new URL(requested);
+    exp = new URL(expected);
+  } catch {
+    return false;
+  }
+  if (req.protocol !== exp.protocol || req.pathname !== exp.pathname || req.search !== exp.search) {
+    return false;
+  }
+  if (req.hostname === exp.hostname) return true;
+  return LOOPBACK_HOSTS.has(req.hostname) && LOOPBACK_HOSTS.has(exp.hostname);
+}
+
 function purgeExpiredMcpCodes(): void {
   const db = getAuthDbInternal();
   const cutoff = Date.now() - 10 * 60 * 1000;
@@ -195,6 +240,7 @@ export function verifyMcpAccessToken(
     clientId: payload.client_id,
     scopes,
     resource: payload.aud,
+    expiresAt: payload.exp,
   };
 }
 
@@ -289,11 +335,11 @@ export function createWebchatMcpOAuthBackend(config: WebchatMcpOAuthConfig) {
         };
       }
 
-      if (!client.redirect_uris.includes(params.redirectUri)) {
+      if (!client.redirect_uris.some((registered) => mcpRedirectUriMatches(params.redirectUri, registered))) {
         throw new Error('Unregistered redirect_uri');
       }
 
-      if (params.resource && params.resource !== config.resourceServerUrl) {
+      if (params.resource && !mcpResourceUrlMatches(params.resource, config.resourceServerUrl)) {
         throw new Error('Invalid resource');
       }
 
@@ -373,7 +419,7 @@ export function createWebchatMcpOAuthBackend(config: WebchatMcpOAuthConfig) {
         }
       }
       const expectedResource = resource ?? row.resource ?? config.resourceServerUrl;
-      if (expectedResource !== config.resourceServerUrl) {
+      if (!mcpResourceUrlMatches(expectedResource, config.resourceServerUrl)) {
         throw new Error('Invalid resource');
       }
       db.prepare('DELETE FROM web_mcp_oauth_codes WHERE code = ?').run(authorizationCode);

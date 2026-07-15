@@ -1459,6 +1459,59 @@ describe('App', () => {
     expect(screen.getByRole('heading', { name: 'Lobby' })).toBeInTheDocument();
   });
 
+  it('leaves a deleted DM and returns to lobby when bootstrap drops the room', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    const MockWebSocket = createWebSocketMock();
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const ws = await waitForWebSocket(MockWebSocket);
+    await act(async () => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: 'bootstrap',
+          bootstrap: {
+            user: bootstrapFixture.user,
+            rooms: [
+              ...bootstrapFixture.rooms,
+              {
+                platformId: 'dm:ted',
+                name: 'Ted',
+                kind: 'dm',
+                folder: 'ted',
+                threads: [{ id: 'main', title: 'Main' }],
+              },
+            ],
+            agents: [
+              ...bootstrapFixture.agents,
+              { folder: 'ted', name: 'Ted', mention: '@ted' },
+            ],
+          },
+        }),
+      } as MessageEvent);
+    });
+
+    await user.click(await screen.findByRole('button', { name: 'Ted' }));
+    expect(await screen.findByRole('heading', { name: 'Ted' })).toBeInTheDocument();
+
+    await act(async () => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: 'bootstrap',
+          bootstrap: {
+            user: bootstrapFixture.user,
+            rooms: bootstrapFixture.rooms,
+            agents: bootstrapFixture.agents,
+          },
+        }),
+      } as MessageEvent);
+    });
+
+    expect(screen.queryByRole('button', { name: 'Ted' })).not.toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Lobby' })).toBeInTheDocument();
+  });
+
   it('ignores bootstrap websocket events scoped to another user', async () => {
     sessionStorage.setItem('webchat_token', 'secret');
     const MockWebSocket = createWebSocketMock();

@@ -1,4 +1,5 @@
 import type { Response } from 'express';
+import { InvalidGrantError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
 import { describe, it, expect, vi } from 'vitest';
 
 import { wrapWebchatMcpOAuthBackend, type WebchatMcpOAuthBackendLike } from './oauth-bridge.js';
@@ -24,6 +25,7 @@ function mockBackend(overrides: Partial<WebchatMcpOAuthBackendLike> = {}): Webch
       clientId: 'client-1',
       scopes: ['mcp:tools'],
       resource: 'http://127.0.0.1:3200/mcp',
+      expiresAt: Math.floor(Date.now() / 1000) + 3600,
     })),
     ...overrides,
   };
@@ -74,6 +76,7 @@ describe('wrapWebchatMcpOAuthBackend', () => {
     const info = await provider.verifyAccessToken('token-1');
     expect(info.extra).toEqual({ userId: 'web:basic:alice', displayName: 'Alice' });
     expect(info.clientId).toBe('client-1');
+    expect(typeof info.expiresAt).toBe('number');
   });
 
   it('verifyAccessToken throws for invalid token', async () => {
@@ -81,6 +84,34 @@ describe('wrapWebchatMcpOAuthBackend', () => {
       mockBackend({ verifyAccessToken: () => null }),
     );
     await expect(provider.verifyAccessToken('bad')).rejects.toThrow(/Invalid or expired token/);
+  });
+
+  it('verifyAccessToken maps unexpected backend errors to invalid_token', async () => {
+    const provider = wrapWebchatMcpOAuthBackend(
+      mockBackend({
+        verifyAccessToken: () => {
+          throw new Error('db unavailable');
+        },
+      }),
+    );
+    await expect(provider.verifyAccessToken('token-1')).rejects.toMatchObject({
+      errorCode: 'invalid_token',
+      message: 'db unavailable',
+    });
+  });
+
+  it('verifyAccessToken maps non-Error backend throws to invalid_token', async () => {
+    const provider = wrapWebchatMcpOAuthBackend(
+      mockBackend({
+        verifyAccessToken: () => {
+          throw 'boom';
+        },
+      }),
+    );
+    await expect(provider.verifyAccessToken('token-1')).rejects.toMatchObject({
+      errorCode: 'invalid_token',
+      message: 'Invalid or expired token',
+    });
   });
 
   it('verifyAccessToken omits resource when absent', async () => {
@@ -91,6 +122,7 @@ describe('wrapWebchatMcpOAuthBackend', () => {
           displayName: 'Alice',
           clientId: 'client-1',
           scopes: ['mcp:tools'],
+          expiresAt: Math.floor(Date.now() / 1000) + 3600,
         }),
       }),
     );
@@ -120,7 +152,51 @@ describe('wrapWebchatMcpOAuthBackend', () => {
         'bad-verifier',
         'http://127.0.0.1/cb',
       ),
-    ).rejects.toThrow(/Invalid PKCE/);
+    ).rejects.toMatchObject({ errorCode: 'invalid_grant', message: expect.stringMatching(/Invalid PKCE/) });
+  });
+
+  it('maps unknown authorization codes to invalid_grant (not opaque 500)', async () => {
+    const provider = wrapWebchatMcpOAuthBackend(
+      mockBackend({
+        challengeForAuthorizationCode: vi.fn(async () => {
+          throw new Error('Invalid authorization code');
+        }),
+      }),
+    );
+    await expect(
+      provider.challengeForAuthorizationCode({ client_id: 'c', redirect_uris: [] }, 'missing'),
+    ).rejects.toMatchObject({ errorCode: 'invalid_grant' });
+  });
+
+  it('rethrows OAuthError from authorization code challenge unchanged', async () => {
+    const provider = wrapWebchatMcpOAuthBackend(
+      mockBackend({
+        challengeForAuthorizationCode: vi.fn(async () => {
+          throw new InvalidGrantError('already oauth');
+        }),
+      }),
+    );
+    await expect(
+      provider.challengeForAuthorizationCode({ client_id: 'c', redirect_uris: [] }, 'code'),
+    ).rejects.toMatchObject({ errorCode: 'invalid_grant', message: 'already oauth' });
+  });
+
+  it('maps non-Error grant failures to invalid_grant', async () => {
+    const provider = wrapWebchatMcpOAuthBackend(
+      mockBackend({
+        exchangeAuthorizationCode: vi.fn(async () => {
+          throw 'not-an-error';
+        }),
+      }),
+    );
+    await expect(
+      provider.exchangeAuthorizationCode(
+        { client_id: 'client-1', redirect_uris: [] },
+        'code',
+        'verifier',
+        'http://127.0.0.1/cb',
+      ),
+    ).rejects.toMatchObject({ errorCode: 'invalid_grant', message: 'invalid_grant' });
   });
 
   it('omits registerClient when store lacks it', () => {

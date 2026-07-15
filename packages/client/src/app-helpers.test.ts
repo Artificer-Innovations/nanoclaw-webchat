@@ -27,6 +27,7 @@ import {
   seedSyncCursors,
   shouldAppendMessage,
   softMergeBootstrap,
+  resolveRoomAfterBootstrap,
   syncInactiveUnread,
   threadsForRoom,
   threadsFromState,
@@ -792,6 +793,77 @@ describe('app-helpers', () => {
         { platformId: 'dm:new', name: 'New', kind: 'dm', folder: 'new', threads: [] },
       ]);
       expect(next['dm:new']).toEqual(DEFAULT_ROOM_THREADS);
+    });
+
+    it('drops thread maps for rooms removed from bootstrap', () => {
+      const prev = {
+        lobby: [{ id: 'main', title: 'Main' }],
+        'dm:ted': [{ id: 'main', title: 'Main' }],
+        'dm:sarah': [{ id: 'main', title: 'Main' }],
+      };
+      const next = mergeThreadsFromBootstrapRooms(prev, [
+        { platformId: 'lobby', name: 'Lobby', kind: 'lobby' },
+        { platformId: 'dm:sarah', name: 'Sarah', kind: 'dm', folder: 'sarah' },
+      ]);
+      expect(next).toEqual({
+        lobby: prev.lobby,
+        'dm:sarah': prev['dm:sarah'],
+      });
+      expect(next['dm:ted']).toBeUndefined();
+    });
+  });
+
+  describe('resolveRoomAfterBootstrap', () => {
+    const lobby: WebChatRoom = { platformId: 'lobby', name: 'Lobby', kind: 'lobby' };
+    const inbox: WebChatRoom = { platformId: 'inbox', name: 'Inbox', kind: 'inbox' };
+    const ted: WebChatRoom = { platformId: 'dm:ted', name: 'Ted', kind: 'dm', folder: 'ted' };
+
+    it('keeps the current room when it still exists', () => {
+      expect(resolveRoomAfterBootstrap(ted, [lobby, ted])).toEqual({
+        room: ted,
+        leftDeletedRoom: false,
+      });
+    });
+
+    it('falls back to lobby when the active DM was deleted', () => {
+      expect(resolveRoomAfterBootstrap(ted, [inbox, lobby])).toEqual({
+        room: lobby,
+        leftDeletedRoom: true,
+      });
+    });
+
+    it('falls back to inbox when lobby is missing', () => {
+      expect(resolveRoomAfterBootstrap(ted, [inbox])).toEqual({
+        room: inbox,
+        leftDeletedRoom: true,
+      });
+    });
+
+    it('falls back to the first room when lobby and inbox are missing', () => {
+      const other: WebChatRoom = {
+        platformId: 'dm:sarah',
+        name: 'Sarah',
+        kind: 'dm',
+        folder: 'sarah',
+      };
+      expect(resolveRoomAfterBootstrap(ted, [other])).toEqual({
+        room: other,
+        leftDeletedRoom: true,
+      });
+    });
+
+    it('returns null when bootstrap has no rooms left', () => {
+      expect(resolveRoomAfterBootstrap(ted, [])).toEqual({
+        room: null,
+        leftDeletedRoom: true,
+      });
+    });
+
+    it('does not mark leftDeletedRoom when there was no active room', () => {
+      expect(resolveRoomAfterBootstrap(null, [lobby])).toEqual({
+        room: lobby,
+        leftDeletedRoom: false,
+      });
     });
   });
 });

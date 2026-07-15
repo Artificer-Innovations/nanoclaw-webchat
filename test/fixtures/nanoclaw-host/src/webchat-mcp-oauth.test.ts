@@ -68,7 +68,7 @@ async function mintCode(opts?: { challenge?: string; redirectUri?: string }) {
     {
       originalUrl: '/authorize',
       headers: { cookie: `${WEBCHAT_SESSION_COOKIE}=${encodeURIComponent(cookie)}` },
-    } as import('node:http').IncomingMessage,
+    } as unknown as import('node:http').IncomingMessage,
     client,
     {
       scopes: [MCP_DEFAULT_SCOPE],
@@ -112,13 +112,15 @@ describe('webchat-mcp-oauth', () => {
       clientId: client.client_id,
       scopes: [MCP_DEFAULT_SCOPE],
       resource: RESOURCE_URL,
+      expiresAt: expect.any(Number),
     });
+    expect(user!.expiresAt).toBeGreaterThan(Math.floor(Date.now() / 1000));
   });
 
   it('redirects unauthenticated authorize requests to login', () => {
     const b = backend();
     const result = b.authorize(
-      { originalUrl: '/authorize?client_id=x', headers: {} } as import('node:http').IncomingMessage,
+      { originalUrl: '/authorize?client_id=x', headers: {} } as unknown as import('node:http').IncomingMessage,
       {
         client_id: 'x',
         redirect_uris: [REDIRECT],
@@ -166,6 +168,16 @@ describe('webchat-mcp-oauth', () => {
         redirectUri: REDIRECT,
       }),
     ).rejects.toThrow(/Invalid PKCE/);
+  });
+
+  it('accepts loopback resource hostname aliases (localhost vs 127.0.0.1)', async () => {
+    const { backend: b, client, code } = await mintCode();
+    await expect(
+      b.exchangeAuthorizationCode(client, code, 'http://localhost:3200/mcp', {
+        codeVerifier: 'verifier',
+        redirectUri: REDIRECT,
+      }),
+    ).resolves.toMatchObject({ token_type: 'bearer' });
   });
 
   it('purges stale oauth clients', async () => {

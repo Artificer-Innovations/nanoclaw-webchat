@@ -34,6 +34,7 @@ function mockBackend(): WebchatMcpOAuthBackendLike {
             clientId: 'client',
             scopes: ['mcp:tools'],
             resource: `${PUBLIC_BASE}/mcp`,
+            expiresAt: Math.floor(Date.now() / 1000) + 3600,
           }
         : null,
   };

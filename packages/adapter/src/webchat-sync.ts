@@ -24,10 +24,10 @@ import {
   WEB_INBOX_PLATFORM_ID,
   WEB_LOBBY_PLATFORM_ID,
 } from './webchat-room-scope.js';
-import { getAllWebUsers, upsertUser } from './modules/permissions/db/users.js';
+import { getAllUsers, upsertUser } from './modules/permissions/db/users.js';
 import { addMember } from './modules/permissions/db/agent-group-members.js';
 import { grantRole, isGlobalAdmin, isOwner, revokeRole } from './modules/permissions/db/user-roles.js';
-import { deleteUserDm, getUserDm } from './modules/permissions/db/user-dms.js';
+import { deleteUserDm, getUserDm, upsertUserDm } from './modules/permissions/db/user-dms.js';
 import type { AgentGroup } from './types.js';
 
 export { WEB_LOBBY_PLATFORM_ID, WEB_INBOX_PLATFORM_ID };
@@ -77,7 +77,12 @@ export function revokeLegacyLocalWebApprovers(): void {
       revokeRole(userId, 'admin', null);
       log.info('Webchat sync: revoked legacy local web admin in public mode', { userId });
     }
-    clearStaleSharedInboxUserDm(userId);
+  }
+
+  // Stale shared-inbox caches can exist for *any* web user (e.g. web:System after
+  // openDM previously returned bare `inbox`). Clear them so ensureUserDm re-resolves.
+  for (const user of getAllUsers().filter((u) => u.kind === 'web')) {
+    clearStaleSharedInboxUserDm(user.id);
   }
 }
 
@@ -272,7 +277,18 @@ export function ensureUserWebchatWirings(
   }
 
   const inboxPhysical = inboxPlatformForUser(userId);
-  ensureInboxMessagingGroupForPlatform(inboxPhysical);
+  const inboxMgId = ensureInboxMessagingGroupForPlatform(inboxPhysical);
+  // Keep host ensureUserDm cache aligned with the per-user inbox the UI loads.
+  // Never cache delivery for the legacy local identity in public mode.
+  clearStaleSharedInboxUserDm(userId);
+  if (!isLegacyLocalWebUser(userId)) {
+    upsertUserDm({
+      user_id: userId,
+      channel_type: WEB_CHANNEL_TYPE,
+      messaging_group_id: inboxMgId,
+      resolved_at: new Date().toISOString(),
+    });
+  }
 
   const lobbyMgId = getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, WEB_LOBBY_PLATFORM_ID)?.id;
   const agents = options?.agents ?? getAllAgentGroups();
@@ -415,7 +431,7 @@ export function syncWebchatWirings(): void {
 
   if (publicMode) {
     revokeLegacyLocalWebApprovers();
-    for (const user of getAllWebUsers()) {
+    for (const user of getAllUsers().filter((u) => u.kind === 'web')) {
       try {
         ensureUserWebchatWirings(user.id, user.display_name ?? user.id, {
           agents,

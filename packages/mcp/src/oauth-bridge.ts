@@ -6,8 +6,21 @@
  * forward the verifier and redirect_uri so the backend can re-validate as defence-in-depth.
  */
 import type { Response } from 'express';
+import {
+  InvalidGrantError,
+  InvalidTokenError,
+  OAuthError,
+  UnsupportedGrantTypeError,
+} from '@modelcontextprotocol/sdk/server/auth/errors.js';
 import type { OAuthServerProvider } from '@modelcontextprotocol/sdk/server/auth/provider.js';
 import type { OAuthClientInformationFull } from '@modelcontextprotocol/sdk/shared/auth.js';
+
+/** Map plain backend errors to OAuth errors so /token returns 400 invalid_grant, not opaque 500. */
+function asOAuthGrantError(err: unknown): never {
+  if (err instanceof OAuthError) throw err;
+  const message = err instanceof Error ? err.message : 'invalid_grant';
+  throw new InvalidGrantError(message);
+}
 
 export interface WebchatMcpOAuthBackendLike {
   clientsStore: {
@@ -46,12 +59,14 @@ export interface WebchatMcpOAuthBackendLike {
     clientId: string;
     scopes: string[];
     resource?: string;
+    expiresAt: number;
   } | null> | {
     userId: string;
     displayName: string;
     clientId: string;
     scopes: string[];
     resource?: string;
+    expiresAt: number;
   } | null;
 }
 
@@ -92,40 +107,57 @@ export function wrapWebchatMcpOAuthBackend(backend: WebchatMcpOAuthBackendLike):
       res.redirect(302, result.location);
     },
 
-    challengeForAuthorizationCode(client, authorizationCode) {
-      return backend.challengeForAuthorizationCode(client as McpOAuthClientLike, authorizationCode);
+    async challengeForAuthorizationCode(client, authorizationCode) {
+      try {
+        return await backend.challengeForAuthorizationCode(
+          client as McpOAuthClientLike,
+          authorizationCode,
+        );
+      } catch (err) {
+        asOAuthGrantError(err);
+      }
     },
 
     async exchangeAuthorizationCode(client, authorizationCode, codeVerifier, redirectUri, resource) {
-      return backend.exchangeAuthorizationCode(
-        client as McpOAuthClientLike,
-        authorizationCode,
-        resource?.href,
-        {
-          codeVerifier,
-          redirectUri,
-        },
-      );
+      try {
+        return await backend.exchangeAuthorizationCode(
+          client as McpOAuthClientLike,
+          authorizationCode,
+          resource?.href,
+          {
+            codeVerifier,
+            redirectUri,
+          },
+        );
+      } catch (err) {
+        asOAuthGrantError(err);
+      }
     },
 
     async exchangeRefreshToken() {
       // Refresh not implemented yet; access tokens use a longer TTL (see MCP_ACCESS_TOKEN_TTL_SECONDS).
-      throw new Error('refresh_token grant not supported');
+      throw new UnsupportedGrantTypeError('refresh_token grant not supported');
     },
 
     async verifyAccessToken(token) {
-      const user = await backend.verifyAccessToken(token);
-      if (!user) throw new Error('Invalid or expired token');
-      return {
-        token,
-        clientId: user.clientId,
-        scopes: user.scopes,
-        resource: user.resource ? new URL(user.resource) : undefined,
-        extra: {
-          userId: user.userId,
-          displayName: user.displayName,
-        },
-      };
+      try {
+        const user = await backend.verifyAccessToken(token);
+        if (!user) throw new InvalidTokenError('Invalid or expired token');
+        return {
+          token,
+          clientId: user.clientId,
+          scopes: user.scopes,
+          expiresAt: user.expiresAt,
+          resource: user.resource ? new URL(user.resource) : undefined,
+          extra: {
+            userId: user.userId,
+            displayName: user.displayName,
+          },
+        };
+      } catch (err) {
+        if (err instanceof OAuthError) throw err;
+        throw new InvalidTokenError(err instanceof Error ? err.message : 'Invalid or expired token');
+      }
     },
   };
 }
