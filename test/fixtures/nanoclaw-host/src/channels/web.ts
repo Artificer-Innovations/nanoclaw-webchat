@@ -24,8 +24,8 @@ import {
 import {
   buildWebchatBootstrap,
   ensureUserWebchatWirings,
+  healWebchatWiringsForUser,
   readTeamFolder,
-  syncWebchatWirings,
   WEB_INBOX_PLATFORM_ID,
 } from '../webchat-sync.js';
 import {
@@ -311,8 +311,8 @@ export function isAuthorizedApprovalActor(actorUserId: string, questionId: strin
 /**
  * Mirror inbox approval cards into the requesting session only when the session
  * room belongs to the named approver (public). Local mode keeps prior behavior.
+ * Exported for unit tests.
  */
-/** Exported for unit tests. */
 export function shouldMirrorApprovalToOrigin(
   origin: ApprovalSessionOrigin,
   questionId: string,
@@ -1649,8 +1649,9 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
             const requestUser = resolveRequestUser(req, res);
 
             if (req.method === 'GET' && url.pathname === '/api/bootstrap') {
-              // Heal wirings for agents created via CLI / paths that skip create_agent hooks.
-              syncWebchatWirings();
+              // Heal lobby + this user's DMs only (CLI create, etc.). Full syncWebchatWirings
+              // walks every web user in public mode — too expensive for page load.
+              healWebchatWiringsForUser(requestUser.userId, requestUser.displayName);
               json(res, 200, {
                 ...buildWebchatBootstrap(requestUser.userId, requestUser.displayName),
                 authMode: opts.authMode,

@@ -1459,6 +1459,43 @@ describe('App', () => {
     expect(screen.getByRole('heading', { name: 'Lobby' })).toBeInTheDocument();
   });
 
+  it('ignores bootstrap websocket events scoped to another user', async () => {
+    sessionStorage.setItem('webchat_token', 'secret');
+    const MockWebSocket = createWebSocketMock();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    const ws = await waitForWebSocket(MockWebSocket);
+    await act(async () => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: 'bootstrap',
+          forUserId: 'web:basic:other',
+          bootstrap: {
+            user: { id: 'web:basic:other', displayName: 'Other' },
+            rooms: [
+              ...bootstrapFixture.rooms,
+              {
+                platformId: 'dm:leaked',
+                name: 'Leaked',
+                kind: 'dm',
+                folder: 'leaked',
+                threads: [{ id: 'main', title: 'Main' }],
+              },
+            ],
+            agents: [
+              ...bootstrapFixture.agents,
+              { folder: 'leaked', name: 'Leaked', mention: '@leaked' },
+            ],
+          },
+        }),
+      } as MessageEvent);
+    });
+
+    expect(screen.queryByRole('button', { name: 'Leaked' })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Lobby' })).toBeInTheDocument();
+  });
+
   it('ignores duplicate websocket messages', async () => {
     vi.stubGlobal(
       'fetch',

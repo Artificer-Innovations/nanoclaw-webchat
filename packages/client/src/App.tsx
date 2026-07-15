@@ -292,6 +292,8 @@ export function App() {
         }
         if (event.type === 'bootstrap') {
           const next = event.bootstrap;
+          // Defensive: ignore payloads scoped to another user (server fan-out should already filter).
+          if (event.forUserId && event.forUserId !== bootstrap.user.id) return;
           // WS connects only after bootstrap is loaded, so prev is always set here.
           setBootstrap((prev) => softMergeBootstrap(prev!, next));
           setThreadsByRoom((prev) => mergeThreadsFromBootstrapRooms(prev, next.rooms));

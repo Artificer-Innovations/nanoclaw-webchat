@@ -32,6 +32,7 @@ import {
 import {
   buildWebchatBootstrap,
   ensurePublicWebOwner,
+  healWebchatWiringsForUser,
   readTeamFolder,
   revokeLegacyLocalWebApprovers,
   syncWebchatWirings,
@@ -537,6 +538,71 @@ describe('ensureUserWebchatWirings', () => {
     ensureUserWebchatWirings(userId, 'Alice');
 
     expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, `inbox:${encodeUserSuffix(userId)}`)).toBeDefined();
+    expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, WEB_LOBBY_PLATFORM_ID)).toBeUndefined();
+  });
+
+  it('healWebchatWiringsForUser syncs lobby and only that user (not all web users)', () => {
+    process.env.WEBCHAT_AUTH_MODE = 'public';
+    readEnvFileMock.mockReturnValue({
+      WEBCHAT_ENABLED: 'true',
+      WEBCHAT_USER_ID: 'web:local',
+      WEBCHAT_DISPLAY_NAME: 'Local',
+      WEBCHAT_AUTH_MODE: 'public',
+    });
+
+    upsertUser({
+      id: 'web:basic:bob',
+      kind: 'web',
+      display_name: 'Bob',
+      created_at: now(),
+    });
+    createAgentGroup({
+      id: 'ag-sarah',
+      name: 'Sarah',
+      folder: 'sarah',
+      agent_provider: null,
+      created_at: now(),
+    });
+
+    healWebchatWiringsForUser('web:basic:alice', 'Alice');
+
+    expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, WEB_LOBBY_PLATFORM_ID)).toBeDefined();
+    expect(
+      getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, `inbox:${encodeUserSuffix('web:basic:alice')}`),
+    ).toBeDefined();
+    expect(
+      getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, `dm:sarah:${encodeUserSuffix('web:basic:alice')}`),
+    ).toBeDefined();
+    expect(
+      getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, `inbox:${encodeUserSuffix('web:basic:bob')}`),
+    ).toBeUndefined();
+  });
+
+  it('healWebchatWiringsForUser is a no-op when webchat is disabled', () => {
+    process.env.WEBCHAT_ENABLED = 'false';
+    readEnvFileMock.mockReturnValue({ WEBCHAT_ENABLED: 'false' });
+    createAgentGroup({
+      id: 'ag-sarah',
+      name: 'Sarah',
+      folder: 'sarah',
+      agent_provider: null,
+      created_at: now(),
+    });
+    healWebchatWiringsForUser('web:basic:alice', 'Alice');
+    expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, WEB_LOBBY_PLATFORM_ID)).toBeUndefined();
+  });
+
+  it('healWebchatWiringsForUser respects WEBCHAT_ENABLED from env file when process env is unset', () => {
+    delete process.env.WEBCHAT_ENABLED;
+    readEnvFileMock.mockReturnValue({ WEBCHAT_ENABLED: 'false' });
+    createAgentGroup({
+      id: 'ag-sarah',
+      name: 'Sarah',
+      folder: 'sarah',
+      agent_provider: null,
+      created_at: now(),
+    });
+    healWebchatWiringsForUser('web:basic:alice', 'Alice');
     expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, WEB_LOBBY_PLATFORM_ID)).toBeUndefined();
   });
 

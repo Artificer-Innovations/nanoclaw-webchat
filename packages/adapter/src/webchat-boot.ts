@@ -11,6 +11,12 @@ import { refreshWebchatAfterAgentChange } from './webchat-live.js';
  * Re-register create_agent handlers so new agent groups get webchat lobby/DM
  * wirings + a live bootstrap push without requiring a host restart.
  *
+ * Host `registerDeliveryAction` / `registerApprovalHandler` REPLACE prior
+ * handlers for the same key (Map.set, with a warn log). Agent-to-agent modules
+ * register the bare handlers at import time; we overwrite them with wrappers
+ * that call those same functions then refresh webchat. Hosts that never call
+ * `startWebChat` keep the original bare handlers.
+ *
  * Uses dynamic imports so hosts without agent-to-agent modules (test fixtures)
  * still boot cleanly.
  */

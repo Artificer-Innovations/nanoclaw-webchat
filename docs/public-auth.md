@@ -176,6 +176,8 @@ Default OAuth scopes are `read:user user:email`.
 
 **Admitted users are owners.** Public-mode login (basic or OIDC) grants the global `owner` role for that web identity so the same person can approve inbox cards (`create_agent`, package installs, and so on). You do not need to discover opaque ids like `web:github:2093195` ahead of time — the allowlist is the privilege gate. An empty OIDC allowlist therefore admits *and* owns anyone who completes OAuth; keep allowlist rules tight on internet-facing hosts.
 
+> **Multi-user follow-up:** every admitted user becomes a global owner (`agent_group_id: null`). That is intentional for solo and trusted-team hosts, but a broad domain allowlist (`WEBCHAT_OIDC_ALLOWED_EMAIL_DOMAINS`) would make every matching employee an org-wide owner with no member tier. Track a privilege-tier before advertising domain-allowlist multi-user deployments.
+
 ### 3. Generic OIDC (Google, Okta, etc.)
 
 Use `"protocol": "oidc"` and set `"issuer"` to the provider's issuer URL (the discovery document is fetched automatically):

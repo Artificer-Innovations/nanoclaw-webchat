@@ -52,6 +52,7 @@ vi.mock('../webchat-sync.js', () => ({
   }),
   readTeamFolder: () => null,
   ensureUserWebchatWirings: vi.fn(),
+  healWebchatWiringsForUser: vi.fn(),
   syncWebchatWirings: vi.fn(),
   WEB_INBOX_PLATFORM_ID: 'inbox',
 }));
@@ -3396,6 +3397,23 @@ describe('web channel adapter', () => {
     expect(index.body).not.toContain('name="webchat-token"');
   });
 
+  it('basic login returns 500 without session cookie when wiring throws', async () => {
+    const ensureWirings = vi.mocked(webchatSync.ensureUserWebchatWirings);
+    ensureWirings.mockImplementationOnce(() => {
+      throw new Error('wiring failed');
+    });
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const login = await httpPostJsonNoAuth('/api/auth/login/basic', {
+      username: 'alice',
+      password: 'hunter2',
+    });
+    expect(login.status).toBe(500);
+    expect(login.headers['set-cookie']).toBeUndefined();
+  });
+
   it('openDM returns per-user inbox in public mode', async () => {
     adapter = createWebAdapter(publicAdapterOptions(testPort));
     resetWebchatAuthSchemaForTests();
@@ -4855,12 +4873,12 @@ describe('web channel adapter', () => {
     expect((dm.body as { messages: unknown[] }).messages).toHaveLength(1);
   });
 
-  it('GET bootstrap syncs webchat wirings', async () => {
+  it('GET bootstrap heals wirings for the requesting user only', async () => {
     await adapter.setup(setup);
-    const syncSpy = vi.mocked(webchatSync.syncWebchatWirings);
-    syncSpy.mockClear();
+    const healSpy = vi.mocked(webchatSync.healWebchatWiringsForUser);
+    healSpy.mockClear();
     await httpGet('/api/bootstrap');
-    expect(syncSpy).toHaveBeenCalled();
+    expect(healSpy).toHaveBeenCalledWith('web:local', 'Local');
   });
 
   it('broadcasts bootstrap fanout to open websockets', async () => {
