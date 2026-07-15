@@ -53,6 +53,8 @@ async function installAgentGroupLiveRefresh(): Promise<void> {
         }
       });
       log.info('Webchat groups-delete live refresh installed');
+    } else {
+      log.debug('Webchat groups-delete live refresh skipped (no cli_command handler)');
     }
 
     log.info('Webchat create_agent live refresh installed');

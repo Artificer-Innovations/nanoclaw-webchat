@@ -1,11 +1,19 @@
 import crypto from 'crypto';
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import fs from 'fs';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+vi.mock('./config.js', async () => {
+  const actual = await vi.importActual<typeof import('./config.js')>('./config.js');
+  return { ...actual, DATA_DIR: '/tmp/nanoclaw-webchat-mcp-oauth-test' };
+});
 
 import { authConfigForTests } from './webchat-auth-config.js';
 import {
   createWebchatMcpOAuthBackend,
   MCP_DEFAULT_SCOPE,
   MCP_OAUTH_CLIENT_TTL_SECONDS,
+  mcpRedirectUriMatches,
+  mcpResourceUrlMatches,
   purgeStaleMcpOAuthClients,
   resetWebchatMcpOAuthForTests,
   verifyMcpAccessToken,
@@ -17,6 +25,7 @@ import {
   WEBCHAT_SESSION_COOKIE,
 } from './webchat-auth-sessions.js';
 
+const TEST_DATA = '/tmp/nanoclaw-webchat-mcp-oauth-test';
 const PUBLIC_BASE = 'http://127.0.0.1:3200';
 const RESOURCE_URL = `${PUBLIC_BASE}/mcp`;
 const SESSION_SECRET = 'a'.repeat(32);
@@ -84,12 +93,13 @@ async function mintCode(opts?: { challenge?: string; redirectUri?: string }) {
 describe('webchat-mcp-oauth', () => {
   beforeEach(() => {
     resetWebchatAuthSchemaForTests();
+    if (fs.existsSync(TEST_DATA)) fs.rmSync(TEST_DATA, { recursive: true, force: true });
+    fs.mkdirSync(TEST_DATA, { recursive: true });
     resetWebchatMcpOAuthForTests();
   });
 
   afterEach(() => {
     resetWebchatAuthSchemaForTests();
-    resetWebchatMcpOAuthForTests();
   });
 
   it('issues and verifies user-scoped JWT access tokens', async () => {
@@ -178,6 +188,34 @@ describe('webchat-mcp-oauth', () => {
         redirectUri: REDIRECT,
       }),
     ).resolves.toMatchObject({ token_type: 'bearer' });
+  });
+
+  it('rejects loopback resources with a different port', async () => {
+    const { backend: b, client, code } = await mintCode();
+    await expect(
+      b.exchangeAuthorizationCode(client, code, 'http://localhost:9999/mcp', {
+        codeVerifier: 'verifier',
+        redirectUri: REDIRECT,
+      }),
+    ).rejects.toThrow(/Invalid resource/);
+  });
+
+  it('matches IPv6 loopback redirect URIs by port-only difference', () => {
+    expect(
+      mcpRedirectUriMatches('http://[::1]:8787/callback', 'http://[::1]:9999/callback'),
+    ).toBe(true);
+    // Same host only — do not alias ::1 ↔ 127.0.0.1 for redirect_uri (RFC 8252).
+    expect(
+      mcpRedirectUriMatches('http://[::1]:8787/callback', 'http://127.0.0.1:8787/callback'),
+    ).toBe(false);
+  });
+
+  it('matches IPv6 loopback resource aliases with the same port', () => {
+    expect(mcpResourceUrlMatches('http://[::1]:3200/mcp', 'http://127.0.0.1:3200/mcp')).toBe(true);
+    expect(mcpResourceUrlMatches('http://localhost:3200/mcp', 'http://[::1]:3200/mcp')).toBe(true);
+    expect(mcpResourceUrlMatches('http://[::1]:9999/mcp', 'http://127.0.0.1:3200/mcp')).toBe(
+      false,
+    );
   });
 
   it('purges stale oauth clients', async () => {

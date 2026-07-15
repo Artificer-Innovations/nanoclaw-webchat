@@ -334,8 +334,10 @@ export function shouldMirrorApprovalToOrigin(
     const approval = getPendingApproval(questionId);
     const originOwner = ownerUserIdFromPhysical(origin.platformId);
     if (originOwner === null) return false;
-    // create_agent / install leave approver_user_id null; still mirror into the
-    // requesting room when that room's owner can authorize the card.
+    // Missing approval record OR null approver_user_id (create_agent / install):
+    // still mirror into the requesting room when that room's owner can authorize.
+    // (Previously only null approver was intended; missing records are rare on this
+    // internal path and use the same owner/admin gate.)
     if (!approval?.approver_user_id) {
       return isOwner(originOwner) || isGlobalAdmin(originOwner);
     }

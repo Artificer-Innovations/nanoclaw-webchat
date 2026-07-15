@@ -135,11 +135,17 @@ function verifyPkceS256(codeVerifier: string, codeChallenge: string): boolean {
   return crypto.timingSafeEqual(Buffer.from(computed), Buffer.from(codeChallenge));
 }
 
-const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+/**
+ * IPv6 loopback hostnames vary by runtime: Node's WHATWG URL currently keeps
+ * brackets (`[::1]`), while some environments omit them (`::1`). Accept both.
+ */
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 
 /**
- * RFC 8252 §7.3 — loopback redirect URIs may differ only by port.
- * (Same rule as MCP SDK authorize handler.)
+ * RFC 8252 §7.3 — loopback redirect URIs of the same host may differ by port.
+ * Identical URIs also match. Cross-host aliases (localhost vs 127.0.0.1) are
+ * intentionally NOT accepted here — that belongs only on the resource (aud) check.
+ * (Same same-host/any-port rule as the MCP SDK authorize handler.)
  */
 export function mcpRedirectUriMatches(requested: string, registered: string): boolean {
   if (requested === registered) return true;
@@ -171,7 +177,12 @@ export function mcpResourceUrlMatches(requested: string, expected: string): bool
   } catch {
     return false;
   }
-  if (req.protocol !== exp.protocol || req.pathname !== exp.pathname || req.search !== exp.search) {
+  if (
+    req.protocol !== exp.protocol ||
+    req.port !== exp.port ||
+    req.pathname !== exp.pathname ||
+    req.search !== exp.search
+  ) {
     return false;
   }
   if (req.hostname === exp.hostname) return true;
