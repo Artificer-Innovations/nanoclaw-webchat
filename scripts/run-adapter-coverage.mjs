@@ -27,6 +27,7 @@ const ADAPTER_TESTS = [
   'src/webchat-auth.test.ts',
   'src/webchat-auth-jwt.test.ts',
   'src/webchat-auth-config.test.ts',
+  'src/webchat-mcp-oauth.test.ts',
   'src/webchat-room-scope.test.ts',
 ];
 

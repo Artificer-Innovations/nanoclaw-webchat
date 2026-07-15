@@ -2,6 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   clearLegacyThreads,
   connectWebSocket,
+  consumeStashedReturnTo,
+  getReturnToParam,
+  redirectToReturnTo,
+  resolveSafeReturnTo,
+  stashReturnToForOidc,
   createThread,
   deleteThread,
   detectPublicAuthMode,
@@ -992,6 +997,69 @@ describe('api', () => {
       await expect(disengageAgent('token', 'lobby', 'main', 'sarah')).rejects.toThrow(
         'disengage failed: 500',
       );
+    });
+  });
+
+  describe('returnTo helpers', () => {
+    it('reads and validates returnTo targets', () => {
+      vi.stubGlobal('location', {
+        protocol: 'http:',
+        host: 'localhost:3200',
+        origin: 'http://localhost:3200',
+        search: '?returnTo=%2Fauthorize%3Fclient%3D1',
+        assign: vi.fn(),
+      });
+      expect(getReturnToParam()).toBe('/authorize?client=1');
+      expect(resolveSafeReturnTo('/inbox')).toBe('/inbox');
+      expect(resolveSafeReturnTo('http://localhost:3200/inbox?q=1')).toBe('/inbox?q=1');
+      expect(resolveSafeReturnTo('https://evil.example/phish')).toBeNull();
+      expect(resolveSafeReturnTo('//evil.example/phish')).toBeNull();
+      expect(resolveSafeReturnTo('')).toBeNull();
+    });
+
+    it('returns null when window is unavailable', () => {
+      const originalWindow = globalThis.window;
+      vi.stubGlobal('window', undefined);
+      expect(getReturnToParam()).toBeNull();
+      vi.stubGlobal('window', originalWindow);
+    });
+
+    it('falls back to root-relative paths when URL parsing fails', () => {
+      vi.stubGlobal('location', {
+        protocol: 'http:',
+        host: 'localhost:3200',
+        search: '',
+      });
+      expect(resolveSafeReturnTo('/fallback-path')).toBe('/fallback-path');
+      expect(resolveSafeReturnTo('evil')).toBeNull();
+    });
+
+    it('redirects to safe returnTo targets', () => {
+      const assign = vi.fn();
+      vi.stubGlobal('location', {
+        protocol: 'http:',
+        host: 'localhost:3200',
+        origin: 'http://localhost:3200',
+        search: '',
+        assign,
+      });
+      expect(redirectToReturnTo('/authorize')).toBe(true);
+      expect(assign).toHaveBeenCalledWith('/authorize');
+      expect(redirectToReturnTo('https://evil.example/phish')).toBe(false);
+    });
+
+    it('stashes and consumes returnTo for OIDC login', () => {
+      vi.stubGlobal('location', {
+        protocol: 'http:',
+        host: 'localhost:3200',
+        origin: 'http://localhost:3200',
+        search: '?returnTo=%2Fauthorize',
+        assign: vi.fn(),
+      });
+      stashReturnToForOidc();
+      expect(sessionStorage.getItem('webchat_return_to')).toBe('/authorize');
+      expect(consumeStashedReturnTo()).toBe('/authorize');
+      expect(sessionStorage.getItem('webchat_return_to')).toBeNull();
     });
   });
 });

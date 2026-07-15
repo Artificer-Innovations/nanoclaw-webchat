@@ -33,10 +33,15 @@ import {
   buildWebchatBootstrap,
   readTeamFolder,
   syncWebchatWirings,
+  ensureUserWebchatWirings,
   WEB_CHANNEL_TYPE,
   WEB_INBOX_PLATFORM_ID,
   WEB_LOBBY_PLATFORM_ID,
 } from './webchat-sync.js';
+import { encodeUserSuffix } from './webchat-room-scope.js';
+import { upsertUser, getUser } from './modules/permissions/db/users.js';
+import * as agentGroupMembers from './modules/permissions/db/agent-group-members.js';
+import { log } from './log.js';
 import { appendMessage, createThread, ensureWebchatSchema, MAIN_THREAD } from './webchat-store.js';
 
 const readEnvFileMock = vi.mocked(readEnvFile);
@@ -65,6 +70,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   delete process.env.WEBCHAT_ENABLED;
   delete process.env.WEBCHAT_TEAM_FOLDER;
   delete process.env.WEBCHAT_USER_ID;
@@ -125,6 +131,25 @@ describe('buildWebchatBootstrap', () => {
 
     const payload = buildWebchatBootstrap('web:local', 'Local');
     expect(payload.agents[0]).toMatchObject({ folder: 'team-coord', name: 'Team', mention: '@team' });
+  });
+
+  it('lists per-user DM storage ids in public auth mode', () => {
+    readEnvFileMock.mockReturnValue({
+      WEBCHAT_AUTH_MODE: 'public',
+      WEBCHAT_ENABLED: 'true',
+    });
+    createAgentGroup({
+      id: 'ag-sarah',
+      name: 'Sarah',
+      folder: 'sarah',
+      agent_provider: null,
+      created_at: now(),
+    });
+    const userId = 'web:basic:alice';
+    const payload = buildWebchatBootstrap(userId, 'Alice');
+    const dm = payload.rooms.find((r) => r.kind === 'dm');
+    expect(dm?.platformId).toBe('dm:sarah');
+    expect(payload.rooms.find((r) => r.kind === 'inbox')?.platformId).toBe('inbox');
   });
 });
 
@@ -335,5 +360,178 @@ describe('syncWebchatWirings', () => {
     updateMessagingGroup(dmSarah.id, { is_group: 1 });
     syncWebchatWirings();
     expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, 'dm:sarah')!.is_group).toBe(0);
+  });
+
+  it('backfills per-user inbox and DM wirings for web users in public auth mode', () => {
+    readEnvFileMock.mockReturnValue({
+      WEBCHAT_ENABLED: 'true',
+      WEBCHAT_AUTH_MODE: 'public',
+    });
+    createAgentGroup({
+      id: 'ag-sarah',
+      name: 'Sarah',
+      folder: 'sarah',
+      agent_provider: null,
+      created_at: now(),
+    });
+
+    const userId = 'web:basic:alice';
+    upsertUser({
+      id: userId,
+      kind: 'web',
+      display_name: 'Alice',
+      created_at: now(),
+    });
+    upsertUser({
+      id: 'phone:+1555',
+      kind: 'phone',
+      display_name: 'Phone User',
+      created_at: now(),
+    });
+    const bobId = 'web:basic:bob';
+    upsertUser({
+      id: bobId,
+      kind: 'web',
+      display_name: null,
+      created_at: now(),
+    });
+
+    syncWebchatWirings();
+
+    const suffix = encodeUserSuffix(userId);
+    const bobSuffix = encodeUserSuffix(bobId);
+    expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, WEB_LOBBY_PLATFORM_ID)).toBeDefined();
+    expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, WEB_INBOX_PLATFORM_ID)).toBeUndefined();
+    expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, 'dm:sarah')).toBeUndefined();
+    expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, `inbox:${suffix}`)).toBeDefined();
+    expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, `dm:sarah:${suffix}`)).toBeDefined();
+    expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, `inbox:${bobSuffix}`)).toBeDefined();
+    expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, `dm:sarah:${bobSuffix}`)).toBeDefined();
+    expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, `inbox:${encodeUserSuffix('phone:+1555')}`)).toBeUndefined();
+    expect(getUser(bobId)?.display_name).toBeNull();
+  });
+
+  it('continues backfill when wiring fails for one web user', async () => {
+    readEnvFileMock.mockReturnValue({
+      WEBCHAT_ENABLED: 'true',
+      WEBCHAT_AUTH_MODE: 'public',
+    });
+    createAgentGroup({
+      id: 'ag-sarah',
+      name: 'Sarah',
+      folder: 'sarah',
+      agent_provider: null,
+      created_at: now(),
+    });
+
+    const okId = 'web:basic:alice';
+    const failId = 'web:basic:fail';
+    upsertUser({ id: okId, kind: 'web', display_name: 'Alice', created_at: now() });
+    upsertUser({ id: failId, kind: 'web', display_name: 'Fail', created_at: now() });
+
+    const { addMember: realAddMember } = await vi.importActual<typeof agentGroupMembers>(
+      './modules/permissions/db/agent-group-members.js',
+    );
+    vi.spyOn(agentGroupMembers, 'addMember').mockImplementation((row) => {
+      if (row.user_id === failId) throw new Error('constraint');
+      return realAddMember(row);
+    });
+
+    syncWebchatWirings();
+
+    const okSuffix = encodeUserSuffix(okId);
+    expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, `dm:sarah:${okSuffix}`)).toBeDefined();
+    expect(vi.mocked(log.error)).toHaveBeenCalledWith(
+      'Webchat sync: failed to wire user',
+      expect.objectContaining({ userId: failId }),
+    );
+  });
+});
+
+describe('ensureUserWebchatWirings', () => {
+  it('creates per-user inbox and DM messaging groups', () => {
+    createAgentGroup({
+      id: 'ag-sarah',
+      name: 'Sarah',
+      folder: 'sarah',
+      agent_provider: null,
+      created_at: now(),
+    });
+    createAgentGroup({
+      id: 'ag-diego',
+      name: 'Diego',
+      folder: 'diego',
+      agent_provider: null,
+      created_at: now(),
+    });
+    syncWebchatWirings();
+
+    const userId = 'web:basic:alice';
+    ensureUserWebchatWirings(userId, 'Alice');
+
+    const suffix = encodeUserSuffix(userId);
+    expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, `inbox:${suffix}`)).toBeDefined();
+    expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, `dm:sarah:${suffix}`)).toBeDefined();
+    expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, `dm:diego:${suffix}`)).toBeDefined();
+  });
+
+  it('uses team lobby pattern when team folder matches agent', () => {
+    process.env.WEBCHAT_TEAM_FOLDER = 'team-coord';
+    createAgentGroup({
+      id: 'ag-team',
+      name: 'Coordinator',
+      folder: 'team-coord',
+      agent_provider: null,
+      created_at: now(),
+    });
+    syncWebchatWirings();
+
+    const userId = 'web:basic:bob';
+    ensureUserWebchatWirings(userId, 'Bob');
+
+    const lobby = getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, WEB_LOBBY_PLATFORM_ID)!;
+    const wiring = getMessagingGroupAgents(lobby.id).find((a) => a.agent_group_id === 'ag-team');
+    expect(wiring?.engage_pattern).toBe('@(team|team-coord)\\b');
+  });
+
+  it('uses default lobby pattern for non-team agents when team folder is set', () => {
+    process.env.WEBCHAT_TEAM_FOLDER = 'team-coord';
+    createAgentGroup({
+      id: 'ag-team',
+      name: 'Coordinator',
+      folder: 'team-coord',
+      agent_provider: null,
+      created_at: now(),
+    });
+    createAgentGroup({
+      id: 'ag-sarah',
+      name: 'Sarah',
+      folder: 'sarah',
+      agent_provider: null,
+      created_at: now(),
+    });
+    syncWebchatWirings();
+
+    ensureUserWebchatWirings('web:basic:alice', 'Alice');
+
+    const lobby = getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, WEB_LOBBY_PLATFORM_ID)!;
+    const sarahWiring = getMessagingGroupAgents(lobby.id).find((a) => a.agent_group_id === 'ag-sarah');
+    expect(sarahWiring?.engage_pattern).toBe('@sarah\\b');
+  });
+
+  it('skips lobby wiring when lobby messaging group has not been bootstrapped', () => {
+    createAgentGroup({
+      id: 'ag-sarah',
+      name: 'Sarah',
+      folder: 'sarah',
+      agent_provider: null,
+      created_at: now(),
+    });
+
+    const userId = 'web:basic:alice';
+    ensureUserWebchatWirings(userId, 'Alice');
+
+    expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, `inbox:${encodeUserSuffix(userId)}`)).toBeDefined();
+    expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, WEB_LOBBY_PLATFORM_ID)).toBeUndefined();
   });
 });

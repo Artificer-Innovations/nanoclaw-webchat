@@ -42,6 +42,10 @@
     "./types": {
       "types": "./dist/types.d.ts",
       "import": "./dist/types.js"
+    },
+    "./mcp-http": {
+      "types": "./dist/mcp/mcp-http.d.ts",
+      "import": "./dist/mcp/mcp-http.js"
     }
   },
   "scripts": {
@@ -59,6 +63,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
     "busboy": "^1.6.0",
+    "express": "^5.2.1",
     "zod": "^3.25.67"
   },
   "engines": {
