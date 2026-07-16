@@ -314,12 +314,12 @@ function redirect(res: http.ServerResponse, location: string): void {
   res.end();
 }
 
+import { normalizeWebchatPublicPath } from './webchat-public-path.js';
+
 /** Normalize public path prefix for home redirects and Back links (empty → `/`). */
 function webchatHomePath(publicPath?: string): string {
-  const raw = (publicPath ?? '').trim();
-  if (!raw || raw === '/') return '/';
-  const normalized = raw.startsWith('/') ? raw.replace(/\/+$/, '') : `/${raw.replace(/\/+$/, '')}`;
-  return `${normalized}/`;
+  const normalized = normalizeWebchatPublicPath(publicPath);
+  return normalized ? `${normalized}/` : '/';
 }
 
 function htmlPage(res: http.ServerResponse, status: number, title: string, body: string): void {
