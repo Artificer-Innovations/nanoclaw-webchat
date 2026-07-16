@@ -3,6 +3,7 @@ import {
   fetchAuthConfig,
   loginBasic,
   startOidcLogin,
+  stashReturnToForOidc,
   type AuthConfigResponse,
 } from './api';
 
@@ -107,7 +108,10 @@ export function Login({ onSuccess }: LoginProps) {
               type="button"
               className="login-provider-btn"
               disabled={submitting}
-              onClick={() => startOidcLogin(provider.id)}
+              onClick={() => {
+                stashReturnToForOidc();
+                startOidcLogin(provider.id);
+              }}
             >
               {provider.label}
             </button>

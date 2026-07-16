@@ -1,6 +1,6 @@
 {
   "name": "nanoclaw-webchat",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Web chat interface for NanoClaw AI agent framework",
   "type": "module",
   "license": "MIT",
@@ -42,6 +42,10 @@
     "./types": {
       "types": "./dist/types.d.ts",
       "import": "./dist/types.js"
+    },
+    "./mcp-http": {
+      "types": "./dist/mcp/mcp-http.d.ts",
+      "import": "./dist/mcp/mcp-http.js"
     }
   },
   "scripts": {
@@ -59,6 +63,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
     "busboy": "^1.6.0",
+    "express": "^5.2.1",
     "zod": "^3.25.67"
   },
   "engines": {

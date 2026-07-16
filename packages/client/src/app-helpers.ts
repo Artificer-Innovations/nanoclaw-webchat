@@ -26,6 +26,59 @@ export function defaultRoomThreads(_platformId: string): ThreadMeta[] {
   return DEFAULT_ROOM_THREADS;
 }
 
+/**
+ * Apply a live bootstrap refresh without resetting the active conversation.
+ * Replaces room/agent lists from the server (drops deleted DMs/agents).
+ */
+export function softMergeBootstrap(
+  prev: BootstrapPayload,
+  next: BootstrapPayload,
+): BootstrapPayload {
+  const authMode = next.authMode ?? prev.authMode;
+  return {
+    user: next.user,
+    rooms: next.rooms,
+    agents: next.agents,
+    ...(authMode !== undefined ? { authMode } : {}),
+  };
+}
+
+/**
+ * Add thread lists for newly discovered rooms; drop maps for rooms that no
+ * longer appear in bootstrap (e.g. after groups-delete).
+ */
+export function mergeThreadsFromBootstrapRooms(
+  prev: Record<string, ThreadMeta[]>,
+  rooms: WebChatRoom[],
+): Record<string, ThreadMeta[]> {
+  const next: Record<string, ThreadMeta[]> = {};
+  for (const room of rooms) {
+    next[room.platformId] =
+      prev[room.platformId] ??
+      (room.threads?.length ? room.threads : [...DEFAULT_ROOM_THREADS]);
+  }
+  return next;
+}
+
+/**
+ * If the active room was deleted (no longer in bootstrap), fall back to lobby
+ * (then inbox, then first room).
+ */
+export function resolveRoomAfterBootstrap(
+  current: WebChatRoom | null,
+  rooms: WebChatRoom[],
+): { room: WebChatRoom | null; leftDeletedRoom: boolean } {
+  if (current && rooms.some((r) => r.platformId === current.platformId)) {
+    return { room: current, leftDeletedRoom: false };
+  }
+  const fallback =
+    rooms.find((r) => r.kind === 'lobby') ??
+    rooms.find((r) => r.kind === 'inbox') ??
+    rooms[0] ??
+    null;
+  return { room: fallback, leftDeletedRoom: current != null };
+}
+
 export function threadsForRoom(
   threadsByRoom: Record<string, ThreadMeta[]>,
   platformId: string,

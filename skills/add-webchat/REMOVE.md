@@ -13,6 +13,7 @@ pnpm exec nanoclaw-webchat uninstall
 ```bash
 rm -f src/channels/web.ts src/channels/web.test.ts src/channels/web-registration.test.ts
 rm -f src/webchat-sync.ts src/webchat-sync.test.ts src/webchat-boot.ts src/webchat-wiring.test.ts
+rm -f src/webchat-live.ts src/webchat-live.test.ts
 rm -f src/webchat-store.ts src/webchat-store.test.ts src/webchat-thread-cleanup.ts
 rm -f src/webchat-routing.ts src/webchat-routing.test.ts
 rm -f src/webchat-mentions.ts src/webchat-mentions.test.ts

@@ -12,9 +12,12 @@ import {
   markMessagesSeen,
   mergeUnreadDeltas,
   migrateLegacyThreads,
+  mergeThreadsFromBootstrapRooms,
   reconcileOptimisticMessage,
   resolveActiveThreadTitle,
   seedSyncCursors,
+  softMergeBootstrap,
+  resolveRoomAfterBootstrap,
   syncInactiveUnread,
   takePendingOptimisticId,
   dropPendingOptimisticId,
@@ -83,6 +86,7 @@ import type { BootstrapPayload, ThreadMeta, WebChatAttachment, WebChatMessage, W
 import { Login } from './Login';
 import {
   connectWebSocket,
+  consumeStashedReturnTo,
   createThread,
   deleteThread,
   detectPublicAuthMode,
@@ -90,9 +94,11 @@ import {
   fetchAuthMe,
   fetchBootstrap,
   fetchMessages,
+  getReturnToParam,
   getStoredToken,
   isLocalTokenMode,
   logoutSession,
+  redirectToReturnTo,
   renameThread,
   sendMessage,
   storeToken,
@@ -213,7 +219,14 @@ export function App() {
   useEffect(() => {
     if (authMode !== 'public') return;
     void fetchAuthMe()
-      .then((me) => setPublicAuthed(me != null))
+      .then((me) => {
+        if (me != null) {
+          const stashed = consumeStashedReturnTo();
+          if (redirectToReturnTo(stashed)) return;
+          if (redirectToReturnTo(getReturnToParam())) return;
+        }
+        setPublicAuthed(me != null);
+      })
       .catch(() => setPublicAuthed(false));
   }, [authMode]);
 
@@ -275,6 +288,30 @@ export function App() {
             setMessages((prev) =>
               applyMessageUpdate(prev, msg, roomRef.current, threadIdRef.current),
             );
+          }
+          return;
+        }
+        if (event.type === 'bootstrap') {
+          const next = event.bootstrap;
+          // Defensive: ignore payloads scoped to another user (server fan-out should already filter).
+          if (event.forUserId && event.forUserId !== bootstrap.user.id) return;
+          // WS connects only after bootstrap is loaded, so prev is always set here.
+          setBootstrap((prev) => softMergeBootstrap(prev!, next));
+          setThreadsByRoom((prev) => mergeThreadsFromBootstrapRooms(prev, next.rooms));
+          syncCursorRef.current = seedSyncCursors(
+            syncCursorRef.current,
+            next.rooms,
+            threadsMapFromRooms(next.rooms),
+          );
+          const { room: nextRoom, leftDeletedRoom } = resolveRoomAfterBootstrap(
+            roomRef.current,
+            next.rooms,
+          );
+          if (leftDeletedRoom) {
+            setRoom(nextRoom);
+            setThreadId('main');
+            setMessages([]);
+            setSelectedAttachment(null);
           }
           return;
         }
@@ -859,6 +896,7 @@ export function App() {
     return (
       <Login
         onSuccess={() => {
+          if (redirectToReturnTo(getReturnToParam())) return;
           setPublicAuthed(true);
         }}
       />

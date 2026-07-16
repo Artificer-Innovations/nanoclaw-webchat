@@ -131,6 +131,7 @@ describe('web channel factory', () => {
       WEBCHAT_AUTH_BASIC_ENABLED: 'true',
       WEBCHAT_BASIC_PASSWORD: 'pass',
       WEBCHAT_BASIC_ALLOWED_USERNAMES: 'alice',
+      WEBCHAT_PUBLIC_BASE_URL: 'http://127.0.0.1:39995',
     });
     delete process.env.WEBCHAT_ENABLED;
     delete process.env.WEBCHAT_SECRET;

@@ -9,8 +9,17 @@ import path from 'path';
 import Database from 'better-sqlite3';
 
 import { DATA_DIR } from './config.js';
+import { normalizeWebchatPublicPath } from './webchat-public-path.js';
 
 export const MAIN_THREAD = 'main';
+
+/** Configured public path prefix for attachment URLs (set by the web adapter). */
+let configuredPublicPath = '';
+
+/** Wire WEBCHAT_PUBLIC_PATH into the store (same pattern as setWebchatBootstrapBroadcaster). */
+export function setWebchatPublicPath(publicPath: string | undefined | null): void {
+  configuredPublicPath = normalizeWebchatPublicPath(publicPath);
+}
 
 const WEBCHAT_SCHEMA = `
 CREATE TABLE IF NOT EXISTS web_threads (
@@ -396,8 +405,15 @@ export function deleteMessageFiles(messageId: string): void {
   }
 }
 
+/**
+ * Public URL for a stored attachment. When a public path prefix is configured
+ * (WEBCHAT_PUBLIC_PATH / setWebchatPublicPath), the SPA rewrite makes the client
+ * only accept `/webchat/api/attachments/...` — unprefixed `/api/attachments/...`
+ * fails client-side and 404s at the edge (wrong route).
+ */
 export function attachmentApiPath(messageId: string, storageName: string): string {
-  return `/api/attachments/${encodeURIComponent(messageId)}/${encodeURIComponent(storageName)}`;
+  const prefix = configuredPublicPath;
+  return `${prefix}/api/attachments/${encodeURIComponent(messageId)}/${encodeURIComponent(storageName)}`;
 }
 
 function storedToApiAttachments(messageId: string, stored: StoredAttachmentMeta[]): WebchatAttachmentInput[] {
@@ -556,7 +572,7 @@ export function getEngagedAgents(platformId: string, threadId: string): string[]
       .prepare(
         `SELECT agent_folder FROM web_thread_engaged
          WHERE platform_id = ? AND thread_id = ?
-         ORDER BY engaged_at ASC`,
+         ORDER BY engaged_at ASC, agent_folder ASC`,
       )
       .all(platformId, threadId) as Array<{ agent_folder: string }>;
     return rows.map((r) => r.agent_folder);

@@ -81,9 +81,12 @@ export const ADAPTER_COPY_RULES: AdapterCopyRule[] = [
   { source: 'webchat-sync.ts', dest: 'src/webchat-sync.ts' },
   { source: 'webchat-sync.test.ts', dest: 'src/webchat-sync.test.ts' },
   { source: 'webchat-boot.ts', dest: 'src/webchat-boot.ts' },
+  { source: 'webchat-live.ts', dest: 'src/webchat-live.ts' },
+  { source: 'webchat-live.test.ts', dest: 'src/webchat-live.test.ts' },
   { source: 'webchat-wiring.test.ts', dest: 'src/webchat-wiring.test.ts' },
   { source: 'webchat-store.ts', dest: 'src/webchat-store.ts' },
   { source: 'webchat-store.test.ts', dest: 'src/webchat-store.test.ts' },
+  { source: 'webchat-public-path.ts', dest: 'src/webchat-public-path.ts' },
   { source: 'webchat-uploads.ts', dest: 'src/webchat-uploads.ts' },
   { source: 'webchat-uploads.test.ts', dest: 'src/webchat-uploads.test.ts' },
   { source: 'webchat-serve-attachment.ts', dest: 'src/webchat-serve-attachment.ts' },
@@ -102,6 +105,8 @@ export const ADAPTER_COPY_RULES: AdapterCopyRule[] = [
   { source: 'webchat-auth.test.ts', dest: 'src/webchat-auth.test.ts' },
   { source: 'webchat-room-scope.ts', dest: 'src/webchat-room-scope.ts' },
   { source: 'webchat-room-scope.test.ts', dest: 'src/webchat-room-scope.test.ts' },
+  { source: 'webchat-mcp-oauth.ts', dest: 'src/webchat-mcp-oauth.ts' },
+  { source: 'webchat-mcp-oauth.test.ts', dest: 'src/webchat-mcp-oauth.test.ts' },
 ];
 
 export const WEBCHAT_BARREL_IMPORT = "import './web.js';";
@@ -113,6 +118,7 @@ export const VERIFY_TESTS = [
   'src/channels/web-registration.test.ts',
   'src/channels/web.test.ts',
   'src/webchat-sync.test.ts',
+  'src/webchat-live.test.ts',
   'src/webchat-wiring.test.ts',
   'src/webchat-auth.test.ts',
   'src/webchat-auth-jwt.test.ts',

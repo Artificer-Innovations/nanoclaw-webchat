@@ -57,9 +57,18 @@ In both modes, attachment URLs may accept `?token=` for browser fetches that can
 
 ## MCP server
 
-The bundled MCP server (`nanoclaw-webchat-mcp`) reads `WEBCHAT_SECRET` from its environment and calls the REST API (typically on localhost). Treat MCP config files like credentials.
+**Local mode:** the stdio MCP server (`nanoclaw-webchat-mcp`) reads `WEBCHAT_SECRET` from its environment and calls the REST API (typically on localhost). Treat MCP config files like credentials.
 
-In public mode, MCP continues to use bearer auth and bypasses per-user room scoping — it is intended for operator automation, not as a multi-user client.
+**Public mode:** the adapter co-hosts HTTP MCP at `/mcp` with OAuth login. MCP clients receive **per-user bearer tokens** scoped to the logged-in account (same inbox/DM isolation as the browser). Tokens are HMAC-signed JWTs (`typ=MCP+JWT`) using `WEBCHAT_SESSION_SECRET`, expire after **24 hours** by default (`WEBCHAT_MCP_TOKEN_TTL_SECONDS`), and do not yet support refresh grants.
+
+| Credential | Scope | Use |
+|------------|-------|-----|
+| MCP OAuth access token | Single authenticated user | Cursor / remote MCP clients in public mode |
+| `WEBCHAT_SECRET` | Admin/service (local operator visibility) | stdio MCP, automation, host wiring |
+
+Do not share `WEBCHAT_SECRET` with end users when MCP OAuth is available. Rotating `WEBCHAT_SESSION_SECRET` is a **hard cut** for every active browser session **and** MCP access token at once (not a graceful rollover).
+
+Rate-limit `/authorize`, `/token`, and `/register` at your reverse proxy — those OAuth endpoints hit SQLite before authentication.
 
 ## What we do not provide
 

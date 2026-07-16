@@ -18,6 +18,7 @@ const ADAPTER_TESTS = [
   'src/channels/web-registration.test.ts',
   'src/channels/web.test.ts',
   'src/webchat-sync.test.ts',
+  'src/webchat-live.test.ts',
   'src/webchat-wiring.test.ts',
   'src/webchat-store.test.ts',
   'src/webchat-uploads.test.ts',
@@ -27,6 +28,7 @@ const ADAPTER_TESTS = [
   'src/webchat-auth.test.ts',
   'src/webchat-auth-jwt.test.ts',
   'src/webchat-auth-config.test.ts',
+  'src/webchat-mcp-oauth.test.ts',
   'src/webchat-room-scope.test.ts',
 ];
 

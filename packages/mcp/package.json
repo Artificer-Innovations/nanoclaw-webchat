@@ -14,9 +14,11 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
     "@nanoclaw-webchat/shared": "workspace:*",
+    "express": "^5.2.1",
     "zod": "^3.25.67"
   },
   "devDependencies": {
+    "@types/express": "^5.0.0",
     "@types/node": "^22.15.30",
     "@vitest/coverage-v8": "^4.1.9",
     "typescript": "^5.8.3",

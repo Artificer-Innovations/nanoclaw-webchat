@@ -240,4 +240,35 @@ describe('WebchatClient', () => {
     expect(err).toBeInstanceOf(Error);
     expect((err as Error).message).toBe('messages/lobby/main request timed out after 5s');
   });
+
+  it('fetchBootstrap sends accessToken bearer when configured', async () => {
+    const tokenClient = new WebchatClient({
+      apiBase: 'http://127.0.0.1:3200',
+      accessToken: 'user-token',
+    });
+    vi.mocked(fetch).mockResolvedValue(mockOkResponse(bootstrapFixture));
+    await tokenClient.fetchBootstrap();
+    expect(fetch).toHaveBeenCalledWith(
+      'http://127.0.0.1:3200/api/bootstrap',
+      expect.objectContaining({
+        headers: { Authorization: 'Bearer user-token' },
+      }),
+    );
+  });
+
+  it('requires secret or accessToken', () => {
+    expect(() => new WebchatClient({ apiBase: 'http://127.0.0.1:3200' })).toThrow(
+      /secret or accessToken/,
+    );
+  });
+
+  it('throws when auth credentials are cleared after construction', async () => {
+    const client = new WebchatClient({
+      apiBase: 'http://127.0.0.1:3200',
+      secret: 'secret',
+    });
+    (client as unknown as { auth: { secret?: string; accessToken?: string } }).auth = {};
+    vi.mocked(fetch).mockResolvedValue(mockOkResponse(bootstrapFixture));
+    await expect(client.fetchBootstrap()).rejects.toThrow(/secret or accessToken/);
+  });
 });

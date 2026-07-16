@@ -66,6 +66,10 @@ You will need:
 | `WEBCHAT_OIDC_ALLOWED_EMAILS` | optional | Comma-separated exact emails |
 | `WEBCHAT_OIDC_ALLOWED_SUBS` | optional | Comma-separated `providerId:numericSub` (e.g. `github:12345678`) |
 | `WEBCHAT_OIDC_REQUIRED_GROUP` | optional | OIDC `groups` claim must include this value |
+| `WEBCHAT_MCP_HTTP_ENABLED` | no | `true`/`false`. Defaults to `true` in public mode, `false` in local mode. Enables co-hosted Streamable HTTP MCP at `/mcp` with OAuth login |
+| `WEBCHAT_MCP_TOKEN_TTL_SECONDS` | no | MCP access-token lifetime in seconds (default `86400` / 24h). Refresh grants are not supported yet |
+| `WEBCHAT_PUBLIC_BASE_URL` | when MCP HTTP enabled | Canonical public origin (e.g. `https://chat.example.com`). Derived from `WEBCHAT_OIDC_REDIRECT_URI` when unset |
+| `WEBCHAT_PUBLIC_PATH` | no | Public URL path prefix (e.g. `/webchat`) when a reverse proxy strips that prefix before the adapter. Rewrites absolute `/api` and `/assets` in served HTML/JS; OIDC success redirects to `${WEBCHAT_PUBLIC_PATH}/`. Do not set this to `/api` or `/assets`. `WEBCHAT_PUBLIC_BASE_URL` / `WEBCHAT_OIDC_REDIRECT_URI` remain origin-based (register the browser-facing callback under the prefix, e.g. `https://host/webchat/api/auth/callback`) |
 
 Generate secrets:
 
@@ -171,6 +175,10 @@ Default OAuth scopes are `read:user user:email`.
 
 **Access is gated by the allowlist, not by signing in.** With no `WEBCHAT_OIDC_ALLOWED_*` rules set, any account that completes the provider flow is admitted. Set at least one allowlist rule before exposing the host.
 
+**Admitted users are owners.** Public-mode login (basic or OIDC) grants the global `owner` role for that web identity so the same person can approve inbox cards (`create_agent`, package installs, and so on). You do not need to discover opaque ids like `web:github:2093195` ahead of time — the allowlist is the privilege gate. An empty OIDC allowlist therefore admits *and* owns anyone who completes OAuth; keep allowlist rules tight on internet-facing hosts. Startup logs a warning when OIDC is enabled with no allowlist rules.
+
+> **Multi-user follow-up:** every admitted user becomes a global owner (`agent_group_id: null`). That is intentional for solo and trusted-team hosts, but a broad domain allowlist (`WEBCHAT_OIDC_ALLOWED_EMAIL_DOMAINS`) would make every matching employee an org-wide owner with no member tier. Track a privilege-tier before advertising domain-allowlist multi-user deployments.
+
 ### 3. Generic OIDC (Google, Okta, etc.)
 
 Use `"protocol": "oidc"` and set `"issuer"` to the provider's issuer URL (the discovery document is fetched automatically):
@@ -208,16 +216,55 @@ Enable both `WEBCHAT_AUTH_BASIC_ENABLED=true` and `WEBCHAT_AUTH_OIDC_ENABLED=tru
 
 The MCP server and other automation can still call the REST API with `Authorization: Bearer <WEBCHAT_SECRET>`. Treat that token as an admin/service credential, not an end-user session.
 
+## MCP OAuth (Cursor and remote MCP clients)
+
+In public mode, the web adapter co-hosts a **Streamable HTTP MCP** endpoint at `/mcp` on the same port as the UI. MCP clients (such as Cursor) discover OAuth via [Protected Resource Metadata](https://www.rfc-editor.org/rfc/rfc9728) and log in through the same browser session as the web UI.
+
+| Mode | MCP transport | Auth |
+|------|---------------|------|
+| Local (default) | stdio `nanoclaw-webchat-mcp` | `WEBCHAT_SECRET` in env |
+| Public | URL `https://<your-host>/mcp` | OAuth (browser login) |
+| Public automation | REST API directly | `WEBCHAT_SECRET` admin bearer |
+
+**Cursor config (public mode):**
+
+```json
+{
+  "mcpServers": {
+    "nanoclaw-webchat": {
+      "url": "https://chat.example.com/mcp"
+    }
+  }
+}
+```
+
+No secrets in the config — Cursor runs the OAuth flow and receives a per-user bearer token scoped to that login.
+
+**Requirements:**
+
+- `WEBCHAT_PUBLIC_BASE_URL` must match the URL users and MCP clients reach (including TLS termination at your reverse proxy)
+- MCP HTTP is enabled by default in public mode (`WEBCHAT_MCP_HTTP_ENABLED=false` to disable)
+- Access tokens last 24 hours by default (`WEBCHAT_MCP_TOKEN_TTL_SECONDS`); there is no refresh grant yet, so clients re-authorize when the token expires
+- Rate-limit `/authorize`, `/token`, and `/register` at the reverse proxy (they hit SQLite before user auth)
+- Local stdio MCP (`nanoclaw-webchat-mcp` with `WEBCHAT_SECRET`) is unchanged for solo dev
+- Rotating `WEBCHAT_SESSION_SECRET` invalidates browser sessions and MCP tokens together
+
+OAuth endpoints (same origin as the UI): `/authorize`, `/token`, `/register`, `/.well-known/oauth-authorization-server`, `/.well-known/oauth-protected-resource/mcp`.
+
+When a new agent group is created (approved `create_agent` or `ncl groups create`), webchat re-syncs lobby/`@folder` and per-user DM wirings and pushes a soft bootstrap refresh over WebSocket so the new DM appears without restarting the host. A full page reload also heals wirings via `/api/bootstrap`.
+
 ## Migrating an existing deployment from local to public
 
 Public mode scopes inbox and DM rooms per user under new internal room ids. Messages created in local mode live under the single local inbox id, so they will not appear once a host switches to public mode. To the newly scoped users, prior inbox and DM history looks empty.
+
+Public sync also revokes owner/admin on the legacy local identity (`web:local` / `WEBCHAT_USER_ID`) so approval cards route to real logged-in users instead of the old shared inbox.
 
 The lobby is shared in both modes, so lobby messages are not affected by per-user scoping. If you need the local inbox or DM history after the switch, export or copy it first, or keep a local-mode instance available for reference. New messages created in public mode are stored correctly under each user's scope.
 
 ## Production checklist
 
 1. **HTTPS** terminate TLS at your reverse proxy. In public mode, session cookies are marked `Secure` by default (this no longer depends on `NODE_ENV`). For local HTTP dev without TLS, opt out explicitly with `WEBCHAT_SESSION_INSECURE_COOKIES=true`, or force the behavior either way with `WEBCHAT_SECURE_COOKIES`.
-2. **Allowlist** set `WEBCHAT_OIDC_ALLOWED_*` or keep basic auth to a fixed username list. With no allowlist rules, any user who completes OAuth is admitted.
+2. **Allowlist** set `WEBCHAT_OIDC_ALLOWED_*` or keep basic auth to a fixed username list. With no allowlist rules, any user who completes OAuth is admitted — and, in public mode, becomes an owner who can approve privileged actions.
 3. **Secrets** store `WEBCHAT_SESSION_SECRET`, `WEBCHAT_SECRET`, OAuth client secrets, and `WEBCHAT_BASIC_PASSWORD` in your secret manager, not in git. `WEBCHAT_SESSION_SECRET` must be at least 32 characters; the host refuses to start otherwise.
 4. **Bind address** use `WEBCHAT_BIND_ADDRESS=0.0.0.0` only when the host firewall and network policy restrict who can reach the port.
 5. **Upgrade** after updating the npm package, run `pnpm exec nanoclaw-webchat upgrade` so auth adapter files stay in sync.
@@ -234,6 +281,8 @@ The lobby is shared in both modes, so lobby messages are not affected by per-use
 | Everyone still labeled "You" in lobby | Hard refresh after upgrade, and confirm messages persist `senderName` / `senderId` (upgrade the adapter) |
 | Inbox/DM history empty after switching from local to public | Expected. Public mode scopes those rooms per user under new ids. See [Migrating an existing deployment](#migrating-an-existing-deployment-from-local-to-public) |
 | OIDC login fails with an unsupported-algorithm error | The provider signs id_tokens with something other than RS256 or ES256. Those two are supported; anything else is rejected |
+| Approve shows success but agent is not created | Stale card targeted at legacy `web:local`. Sign out/in once after upgrade, then re-request `create_agent`. UI should return **403 not authorized** for wrong-identity clicks |
+| New agent DM missing until host restart | Upgrade adapter (live rewire). Hard refresh also heals via `/api/bootstrap`. Confirm `WEBCHAT_ENABLED=true` |
 
 ## Auth HTTP endpoints
 

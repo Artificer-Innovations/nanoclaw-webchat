@@ -17,7 +17,22 @@ import { getDb, hasTable } from '../db/connection.js';
 import { getMessagingGroup, getMessagingGroupByPlatform } from '../db/messaging-groups.js';
 import { getPendingApproval, getSession } from '../db/sessions.js';
 import { log } from '../log.js';
-import { buildWebchatBootstrap, ensureUserWebchatWirings, readTeamFolder, WEB_INBOX_PLATFORM_ID } from '../webchat-sync.js';
+import {
+  bootstrapPayloadForUser,
+  setWebchatBootstrapBroadcaster,
+} from '../webchat-live.js';
+import {
+  buildWebchatBootstrap,
+  ensureUserWebchatWirings,
+  healWebchatWiringsForUser,
+  readTeamFolder,
+  WEB_INBOX_PLATFORM_ID,
+} from '../webchat-sync.js';
+import {
+  hasAdminPrivilege,
+  isGlobalAdmin,
+  isOwner,
+} from '../modules/permissions/db/user-roles.js';
 import type { PublicAuthConfig } from '../webchat-auth-config.js';
 import { loadWebAdapterAuthConfig } from '../webchat-auth-config.js';
 import {
@@ -27,6 +42,12 @@ import {
   resolveSessionUser,
 } from '../webchat-auth.js';
 import { ensureWebchatAuthSchema } from '../webchat-auth-sessions.js';
+import {
+  createWebchatMcpOAuthBackend,
+  verifyMcpAccessToken,
+  type McpAccessTokenUser,
+  type WebchatMcpOAuthBackend,
+} from '../webchat-mcp-oauth.js';
 import {
   assertRoomAccess,
   inboxPlatformForUser,
@@ -71,6 +92,7 @@ import {
   markBackfillDelivered,
   moveAttachmentIntoMessage,
   removeEngagedAgent,
+  setWebchatPublicPath,
   upsertThread,
   findMessageByQuestionId,
   answerCardsByQuestionId,
@@ -82,6 +104,7 @@ import {
   type WebchatCardOption,
   type WebchatStoredMessage,
 } from '../webchat-store.js';
+import { resolveWebchatPublicPath } from '../webchat-public-path.js';
 import {
   acceptChunk,
   CHUNK_SIZE,
@@ -97,6 +120,7 @@ import { routeInbound } from '../router.js';
 import { registerChannelAdapter } from './channel-registry.js';
 import type { ChannelAdapter, ChannelSetup, InboundMessage, OutboundFile, OutboundMessage } from './adapter.js';
 
+export { resolveWebchatPublicPath };
 const CHANNEL_TYPE = 'web';
 const MAX_ATTACHMENTS = 10;
 const MAX_LEGACY_ATTACHMENT_BYTES = 5 * 1024 * 1024;
@@ -133,11 +157,16 @@ type InboundAttachment =
 interface WebAdapterOptions {
   port: number;
   bindAddress?: string;
+  /** Public URL path prefix (e.g. `/webchat`) for reverse-proxy stripPrefix mounts. */
+  publicPath?: string;
   authMode: 'local' | 'public';
   authToken: string;
   userId: string;
   displayName: string;
   publicAuth?: PublicAuthConfig;
+  mcpHttpEnabled?: boolean;
+  publicBaseUrl?: string;
+  mcpTokenTtlSeconds?: number;
 }
 
 interface TrackedWsClient {
@@ -247,6 +276,80 @@ function resolveApprovalSessionOrigin(questionId: string): ApprovalSessionOrigin
   } catch (err) {
     log.warn('resolveApprovalSessionOrigin failed', { questionId, err });
     return undefined;
+  }
+}
+
+function isInboxDeliveryPlatform(platformId: string): boolean {
+  return platformId === WEB_INBOX_PLATFORM_ID || platformId.startsWith(`${WEB_INBOX_PLATFORM_ID}:`);
+}
+
+/**
+ * Host pending_approvals authz (mirrors nanoclaw approvals response-handler).
+ * Non-approval ask_question cards (no pending row) are allowed through.
+ */
+export function isAuthorizedApprovalActor(actorUserId: string, questionId: string): boolean {
+  try {
+    const db = getDb();
+    if (!hasTable(db, 'pending_approvals')) return true;
+    const approval = getPendingApproval(questionId);
+    if (!approval) return true;
+
+    if (approval.approver_user_id) {
+      return actorUserId === approval.approver_user_id;
+    }
+
+    const agentGroupId =
+      approval.agent_group_id ??
+      (approval.session_id ? getSession(approval.session_id)?.agent_group_id : null);
+
+    if (!agentGroupId) {
+      return isOwner(actorUserId) || isGlobalAdmin(actorUserId);
+    }
+
+    return hasAdminPrivilege(actorUserId, agentGroupId);
+  } catch (err) {
+    log.warn('isAuthorizedApprovalActor failed', { questionId, actorUserId, err });
+    return false;
+  }
+}
+
+/**
+ * Mirror inbox approval cards into the requesting session only when the session
+ * room belongs to the named approver (public). Local mode keeps prior behavior.
+ * Exported for unit tests.
+ */
+export function shouldMirrorApprovalToOrigin(
+  origin: ApprovalSessionOrigin,
+  questionId: string,
+  deliveryPlatformId: string,
+  publicMode: boolean,
+): boolean {
+  if (
+    origin.platformId === WEB_INBOX_PLATFORM_ID ||
+    origin.platformId === deliveryPlatformId
+  ) {
+    return false;
+  }
+
+  if (!publicMode) return true;
+
+  try {
+    const db = getDb();
+    if (!hasTable(db, 'pending_approvals')) return false;
+    const approval = getPendingApproval(questionId);
+    const originOwner = ownerUserIdFromPhysical(origin.platformId);
+    if (originOwner === null) return false;
+    // Missing approval record OR null approver_user_id (create_agent / install):
+    // still mirror into the requesting room when that room's owner can authorize.
+    // (Previously only null approver was intended; missing records are rare on this
+    // internal path and use the same owner/admin gate.)
+    if (!approval?.approver_user_id) {
+      return isOwner(originOwner) || isGlobalAdmin(originOwner);
+    }
+    return originOwner === approval.approver_user_id;
+  } catch (err) {
+    log.warn('shouldMirrorApprovalToOrigin failed', { questionId, err });
+    return false;
   }
 }
 
@@ -385,6 +488,37 @@ function staticMimeType(filePath: string): string {
   }
 }
 
+/**
+ * Rewrite absolute SPA roots (`/api/…`, `/assets/…`) so browsers request them under
+ * a public path prefix (e.g. `/webchat`). Needed when a reverse proxy stripPrefix
+ * forwards `/webchat` to the adapter root — otherwise `/api` and `/assets` miss the mount.
+ *
+ * Intentionally loose: every literal `/api/` or `/assets/` substring is rewritten
+ * (including those in comments or error-message strings), not only path-start uses.
+ */
+export function rewriteWebchatPublicPaths(content: string, publicPath: string): string {
+  const prefix = publicPath.replace(/\/+$/, '');
+  if (!prefix || prefix === '/') return content;
+  const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  let out = content.replace(/\/api\//g, `${prefix}/api/`).replace(/\/assets\//g, `${prefix}/assets/`);
+  // Collapse doubles if content was already prefixed (nested `/api/` match).
+  out = out.replace(new RegExp(`(?:${escaped})+(?=/api/|/assets/)`, 'g'), prefix);
+  return out;
+}
+
+function isRewritableStaticText(filePath: string): boolean {
+  switch (path.extname(filePath).toLowerCase()) {
+    case '.html':
+    case '.js':
+    case '.css':
+    case '.svg':
+    case '.json':
+      return true;
+    default:
+      return false;
+  }
+}
+
 function toStoredAttachments(attachments: WebChatAttachment[]): WebchatAttachmentInput[] {
   return attachments.map((a) => ({
     name: a.name,
@@ -436,6 +570,8 @@ function lobbyAgentFolders(): { folders: string[]; teamFolder: string | null; ag
 
 const agentDeliveryChains = new Map<string, Promise<void>>();
 const pendingJoinStubByThread = new Map<string, string>();
+/** Cached rewritten text assets when WEBCHAT_PUBLIC_PATH is set (cleared in tests). */
+const rewrittenStaticCache = new Map<string, string>();
 
 function deliveryChainKey(platformId: string, threadId: string, folder: string): string {
   return `${platformId}|${threadId}|${folder}`;
@@ -467,6 +603,9 @@ export async function flushWebAgentDeliveryChains(): Promise<void> {
 export function clearWebAdapterTestState(): void {
   agentDeliveryChains.clear();
   pendingJoinStubByThread.clear();
+  rewrittenStaticCache.clear();
+  setWebchatPublicPath(null);
+  setWebchatBootstrapBroadcaster(null);
 }
 
 function agentRefsForFolders(folders: readonly string[], allAgents: readonly AgentNameRef[]): AgentNameRef[] {
@@ -765,19 +904,70 @@ async function fanOutPeerReply(
 
 const MAX_BODY_BYTES = 20 * 1024 * 1024;
 
+interface WebchatAuthedRequest extends http.IncomingMessage {
+  webchatMcpUser?: McpAccessTokenUser;
+}
+
+interface WebchatAuthedResponse extends http.ServerResponse {
+  webchatMcpUser?: McpAccessTokenUser;
+}
+
+function attachMcpUser(
+  req: http.IncomingMessage,
+  res: http.ServerResponse | undefined,
+  mcpUser: McpAccessTokenUser,
+): void {
+  (req as WebchatAuthedRequest).webchatMcpUser = mcpUser;
+  if (res) {
+    (res as WebchatAuthedResponse).webchatMcpUser = mcpUser;
+  }
+}
+
+function readMcpUser(
+  req: http.IncomingMessage,
+  res?: http.ServerResponse,
+): McpAccessTokenUser | undefined {
+  return (
+    (res ? (res as WebchatAuthedResponse).webchatMcpUser : undefined) ??
+    (req as WebchatAuthedRequest).webchatMcpUser
+  );
+}
+
+function parseBearerAuthorization(header: string | undefined): string | null {
+  if (!header?.startsWith('Bearer ')) return null;
+  const token = header.slice('Bearer '.length).trim();
+  return token || null;
+}
+
+function internalApiBase(port: number, bindAddress?: string): string {
+  const host =
+    bindAddress === '0.0.0.0' || bindAddress === '::' || !bindAddress ? '127.0.0.1' : bindAddress;
+  return `http://${host}:${port}`;
+}
+
 export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
+  setWebchatPublicPath(opts.publicPath);
   let server: http.Server | null = null;
   let wss: WebSocketServer | null = null;
   let setupConfig: ChannelSetup | null = null;
   let assetDir: string | null = null;
   let cachedIndexHtml: string | null = null;
   const wsClients = new Set<TrackedWsClient>();
+  let mcpHttpListener: import('node:http').RequestListener | null = null;
+  let mcpHttpPathMatches: ((pathname: string) => boolean) | null = null;
+  let mcpOAuthBackend: WebchatMcpOAuthBackend | null = null;
+  let mcpResourceServerUrl: string | null = null;
 
   function isPublicMode(): boolean {
     return opts.authMode === 'public' && opts.publicAuth != null;
   }
 
-  function resolveRequestUser(req: http.IncomingMessage): { userId: string; displayName: string } {
+  function resolveRequestUser(
+    req: http.IncomingMessage,
+    res?: http.ServerResponse,
+  ): { userId: string; displayName: string } {
+    const mcpUser = readMcpUser(req, res);
+    if (mcpUser) return { userId: mcpUser.userId, displayName: mcpUser.displayName };
     if (isPublicMode()) {
       const session = resolveSessionUser(opts.publicAuth!, req);
       if (session) return session;
@@ -806,9 +996,28 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
     }
   }
 
-  function checkAuth(req: http.IncomingMessage, url: URL): boolean {
+  function checkAuth(req: http.IncomingMessage, url: URL, res?: http.ServerResponse): boolean {
     const header = req.headers.authorization;
-    if (header === `Bearer ${opts.authToken}`) return true;
+    const bearerHeader = typeof header === 'string' ? header : undefined;
+    const bearer = parseBearerAuthorization(bearerHeader);
+
+    if (isPublicMode()) {
+      if (bearer && mcpResourceServerUrl) {
+        const mcpUser = verifyMcpAccessToken(bearer, {
+          publicAuth: opts.publicAuth!,
+          resourceServerUrl: mcpResourceServerUrl,
+          publicBaseUrl: opts.publicBaseUrl ?? new URL(mcpResourceServerUrl).origin,
+        });
+        if (mcpUser) {
+          attachMcpUser(req, res, mcpUser);
+          return true;
+        }
+      }
+      if (isPublicAuthPath(url.pathname) && isPublicAuthExemptPath(url.pathname)) return true;
+      if (resolveSessionUser(opts.publicAuth!, req) != null) return true;
+    }
+
+    if (bearerHeader === `Bearer ${opts.authToken}`) return true;
     // Browser img/fetch cannot set Authorization; ?token= is accepted for /api/ws and
     // /api/attachments (weaker — may appear in logs/history/referrer).
     if (url.pathname === '/api/ws' || url.pathname.startsWith('/api/attachments/')) {
@@ -817,8 +1026,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
     }
 
     if (isPublicMode()) {
-      if (isPublicAuthPath(url.pathname) && isPublicAuthExemptPath(url.pathname)) return true;
-      return resolveSessionUser(opts.publicAuth!, req) != null;
+      return false;
     }
 
     return false;
@@ -828,7 +1036,9 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
     const payload = JSON.stringify(event);
     for (const client of wsClients) {
       if (client.ws.readyState !== WebSocket.OPEN) continue;
-      if (isPublicMode() && client.userId) {
+      if (isPublicMode()) {
+        // Unscoped clients (null userId) must not receive private room traffic.
+        if (!client.userId) continue;
         if (
           !shouldDeliverWsEvent(
             event as {
@@ -933,6 +1143,9 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
       if (!isPublicMode()) {
         html = injectWebchatTokenMeta(html, opts.authToken);
       }
+      if (opts.publicPath) {
+        html = rewriteWebchatPublicPaths(html, opts.publicPath);
+      }
       cachedIndexHtml = html;
     }
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -961,7 +1174,18 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
     if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
       return serveIndexHtml(res);
     }
-    res.writeHead(200, { 'Content-Type': staticMimeType(filePath) });
+    const mime = staticMimeType(filePath);
+    if (opts.publicPath && isRewritableStaticText(filePath)) {
+      let body = rewrittenStaticCache.get(filePath);
+      if (body === undefined) {
+        body = rewriteWebchatPublicPaths(fs.readFileSync(filePath, 'utf8'), opts.publicPath);
+        rewrittenStaticCache.set(filePath, body);
+      }
+      res.writeHead(200, { 'Content-Type': mime });
+      res.end(body);
+      return true;
+    }
+    res.writeHead(200, { 'Content-Type': mime });
     res.end(fs.readFileSync(filePath));
     return true;
   }
@@ -1296,6 +1520,12 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
       return;
     }
 
+    if (!isAuthorizedApprovalActor(actorUserId, questionId)) {
+      log.warn('Ignoring unauthorized webchat approval click', { questionId, actorUserId });
+      json(res, 403, { error: 'not authorized' });
+      return;
+    }
+
     const selectedLabel = selectedOption.selectedLabel ?? selectedOption.label;
     const result = answerCardsByQuestionId(questionId, value, selectedLabel);
     if (!result.ok) {
@@ -1410,6 +1640,31 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
       ensureWebchatSchema();
       if (isPublicMode()) ensureWebchatAuthSchema();
 
+      if (isPublicMode() && opts.publicBaseUrl && opts.publicAuth) {
+        mcpResourceServerUrl = new URL('/mcp', `${opts.publicBaseUrl}/`).href;
+        mcpOAuthBackend = createWebchatMcpOAuthBackend({
+          publicAuth: opts.publicAuth,
+          publicBaseUrl: opts.publicBaseUrl,
+          resourceServerUrl: mcpResourceServerUrl,
+          tokenTtlSeconds: opts.mcpTokenTtlSeconds,
+        });
+        if (opts.mcpHttpEnabled) {
+          try {
+            const mcpHttp = await import('nanoclaw-webchat/mcp-http');
+            const delegate = mcpHttp.createMcpHttpDelegate({
+              apiBase: internalApiBase(opts.port, opts.bindAddress),
+              publicBaseUrl: opts.publicBaseUrl,
+              oauthBackend: mcpOAuthBackend,
+            });
+            mcpHttpListener = delegate.listener;
+            mcpHttpPathMatches = mcpHttp.mcpHttpPathMatches;
+          } catch (err) {
+            log.error('Web channel: failed to initialize MCP HTTP transport', { err });
+            throw err;
+          }
+        }
+      }
+
       try {
         const pkg = await import('nanoclaw-webchat');
         // Must be set before the HTTP server accepts requests; setup() throws if missing.
@@ -1423,6 +1678,11 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
       server = http.createServer(async (req, res) => {
         try {
           const url = new URL(req.url ?? '/', `http://127.0.0.1:${opts.port}`);
+
+          if (mcpHttpListener && mcpHttpPathMatches?.(url.pathname)) {
+            mcpHttpListener(req, res);
+            return;
+          }
 
           if (url.pathname === '/api/ws') {
             res.writeHead(426).end();
@@ -1438,18 +1698,22 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
                 opts.publicAuth!,
                 json,
                 (user) => ensureUserWebchatWirings(user.userId, user.displayName),
+                opts.publicPath,
               );
               if (handled) return;
             }
 
-            if (!checkAuth(req, url)) {
+            if (!checkAuth(req, url, res)) {
               json(res, 401, { error: 'Unauthorized' });
               return;
             }
 
-            const requestUser = resolveRequestUser(req);
+            const requestUser = resolveRequestUser(req, res);
 
             if (req.method === 'GET' && url.pathname === '/api/bootstrap') {
+              // Heal lobby + this user's DMs only (CLI create, etc.). Full syncWebchatWirings
+              // walks every web user in public mode — too expensive for page load.
+              healWebchatWiringsForUser(requestUser.userId, requestUser.displayName);
               json(res, 200, {
                 ...buildWebchatBootstrap(requestUser.userId, requestUser.displayName),
                 authMode: opts.authMode,
@@ -1638,8 +1902,12 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
           return;
         }
         wss!.handleUpgrade(req, socket, head, (ws) => {
+          const mcpUser = readMcpUser(req);
           const sessionUser = isPublicMode() ? resolveSessionUser(opts.publicAuth!, req) : null;
-          const client: TrackedWsClient = { ws, userId: sessionUser?.userId ?? null };
+          const client: TrackedWsClient = {
+            ws,
+            userId: mcpUser?.userId ?? sessionUser?.userId ?? null,
+          };
           wsClients.add(client);
           ws.on('close', () => wsClients.delete(client));
         });
@@ -1653,10 +1921,26 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
         });
       });
 
+      setWebchatBootstrapBroadcaster(() => {
+        for (const client of wsClients) {
+          if (client.ws.readyState !== WebSocket.OPEN) continue;
+          const userId = client.userId ?? opts.userId;
+          const bootstrap = bootstrapPayloadForUser(userId);
+          // Per-client payload: forUserId matches the recipient, so no extra filter needed.
+          const event: Record<string, unknown> = { type: 'bootstrap', bootstrap };
+          if (isPublicMode()) {
+            event.forUserId = userId;
+          }
+          client.ws.send(JSON.stringify(event));
+        }
+      });
+
       config.onMetadata('lobby', 'Web Lobby', true);
     },
 
     async teardown(): Promise<void> {
+      setWebchatBootstrapBroadcaster(null);
+      setWebchatPublicPath(null);
       for (const client of wsClients) {
         try {
           client.ws.close();
@@ -1686,8 +1970,9 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
       if (askQuestion) {
         const card = buildAskQuestionCard(askQuestion);
         const text = cardFallbackText(card.title, card.question);
-        const origin =
-          platformId === WEB_INBOX_PLATFORM_ID ? resolveApprovalSessionOrigin(askQuestion.questionId) : undefined;
+        const origin = isInboxDeliveryPlatform(platformId)
+          ? resolveApprovalSessionOrigin(askQuestion.questionId)
+          : undefined;
         const senderName = extractSenderName(message.content) ?? origin?.agentName;
         const id = `web-out-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
         persistAndBroadcast({
@@ -1703,8 +1988,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
 
         if (
           origin &&
-          origin.platformId !== WEB_INBOX_PLATFORM_ID &&
-          origin.platformId !== platformId
+          shouldMirrorApprovalToOrigin(origin, askQuestion.questionId, platformId, isPublicMode())
         ) {
           const mirrorId = `web-out-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
           persistAndBroadcast({
@@ -1754,12 +2038,17 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
       return id;
     },
 
-    /** Host approval DMs land in the shared Inbox room (local) or per-user inbox (public). */
+    /**
+     * Host approval DMs land in the shared Inbox room (local) or per-user inbox (public).
+     *
+     * Host `ensureUserDm` strips the channel prefix before calling openDM — for
+     * `web:basic:alice` we receive `basic:alice`, not `web:basic:alice`. Reconstruct
+     * the web user id so public deliveries hit `inbox:<encoded>` (what the UI loads).
+     */
     async openDM(userHandle: string): Promise<string> {
-      if (isPublicMode() && userHandle.startsWith('web:')) {
-        return inboxPlatformForUser(userHandle);
-      }
-      return WEB_INBOX_PLATFORM_ID;
+      if (!isPublicMode()) return WEB_INBOX_PLATFORM_ID;
+      const userId = userHandle.startsWith('web:') ? userHandle : `web:${userHandle}`;
+      return inboxPlatformForUser(userId);
     },
 
     async setTyping(platformId: string, threadId: string | null): Promise<void> {
@@ -1783,17 +2072,22 @@ registerChannelAdapter('web', {
     const cfg = loadWebAdapterAuthConfig();
     if (!cfg) return null;
 
-    const env = readEnvFile(['WEBCHAT_PORT']);
+    const env = readEnvFile(['WEBCHAT_PORT', 'WEBCHAT_PUBLIC_PATH']);
     const port = resolveWebchatPort(env);
+    const publicPath = resolveWebchatPublicPath(env);
 
     return createWebAdapter({
       port,
       bindAddress: cfg.bindAddress,
+      publicPath: publicPath || undefined,
       authMode: cfg.mode,
       authToken: cfg.authToken,
       userId: cfg.localUserId,
       displayName: cfg.localDisplayName,
       publicAuth: cfg.public,
+      mcpHttpEnabled: cfg.mcpHttpEnabled,
+      publicBaseUrl: cfg.publicBaseUrl,
+      mcpTokenTtlSeconds: cfg.mcpTokenTtlSeconds,
     });
   },
 });

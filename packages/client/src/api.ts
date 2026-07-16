@@ -74,6 +74,44 @@ export async function detectPublicAuthMode(): Promise<boolean> {
   }
 }
 
+const RETURN_TO_STORAGE_KEY = 'webchat_return_to';
+
+export function getReturnToParam(): string | null {
+  if (typeof window === 'undefined') return null;
+  return new URLSearchParams(window.location.search).get('returnTo');
+}
+
+/** Accept same-origin absolute URLs or root-relative paths only. */
+export function resolveSafeReturnTo(raw: string | null | undefined): string | null {
+  if (!raw?.trim()) return null;
+  try {
+    const url = new URL(raw, window.location.origin);
+    if (url.origin !== window.location.origin) return null;
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    if (raw.startsWith('/') && !raw.startsWith('//')) return raw;
+    return null;
+  }
+}
+
+export function redirectToReturnTo(raw: string | null | undefined): boolean {
+  const target = resolveSafeReturnTo(raw);
+  if (!target) return false;
+  window.location.assign(target);
+  return true;
+}
+
+export function stashReturnToForOidc(): void {
+  const returnTo = getReturnToParam();
+  if (returnTo) sessionStorage.setItem(RETURN_TO_STORAGE_KEY, returnTo);
+}
+
+export function consumeStashedReturnTo(): string | null {
+  const value = sessionStorage.getItem(RETURN_TO_STORAGE_KEY);
+  if (value) sessionStorage.removeItem(RETURN_TO_STORAGE_KEY);
+  return value;
+}
+
 export async function loginBasic(username: string, password: string): Promise<void> {
   const res = await fetch('/api/auth/login/basic', {
     method: 'POST',
@@ -96,6 +134,9 @@ export function resolveWebSocketUrl(
   token: string,
   env: Pick<ImportMetaEnv, 'DEV' | 'VITE_WEBCHAT_API_TARGET'> = import.meta.env,
 ): string {
+  // Keep the socket under `/api/…`. WEBCHAT_PUBLIC_PATH rewrites only `/api/` and
+  // `/assets/` substrings in served JS — a path outside those prefixes would break
+  // path-mounted deploys (UI loads, live channel never connects).
   if (env.DEV) {
     const target = env.VITE_WEBCHAT_API_TARGET ?? DEFAULT_WEBCHAT_API_TARGET;
     const backend = new URL(target);
