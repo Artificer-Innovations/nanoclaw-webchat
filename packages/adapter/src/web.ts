@@ -92,6 +92,7 @@ import {
   markBackfillDelivered,
   moveAttachmentIntoMessage,
   removeEngagedAgent,
+  setWebchatPublicPath,
   upsertThread,
   findMessageByQuestionId,
   answerCardsByQuestionId,
@@ -103,6 +104,7 @@ import {
   type WebchatCardOption,
   type WebchatStoredMessage,
 } from '../webchat-store.js';
+import { resolveWebchatPublicPath } from '../webchat-public-path.js';
 import {
   acceptChunk,
   CHUNK_SIZE,
@@ -118,6 +120,7 @@ import { routeInbound } from '../router.js';
 import { registerChannelAdapter } from './channel-registry.js';
 import type { ChannelAdapter, ChannelSetup, InboundMessage, OutboundFile, OutboundMessage } from './adapter.js';
 
+export { resolveWebchatPublicPath };
 const CHANNEL_TYPE = 'web';
 const MAX_ATTACHMENTS = 10;
 const MAX_LEGACY_ATTACHMENT_BYTES = 5 * 1024 * 1024;
@@ -595,6 +598,7 @@ export function clearWebAdapterTestState(): void {
   agentDeliveryChains.clear();
   pendingJoinStubByThread.clear();
   rewrittenStaticCache.clear();
+  setWebchatPublicPath(null);
   setWebchatBootstrapBroadcaster(null);
 }
 
@@ -936,6 +940,7 @@ function internalApiBase(port: number, bindAddress?: string): string {
 }
 
 export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
+  setWebchatPublicPath(opts.publicPath);
   let server: http.Server | null = null;
   let wss: WebSocketServer | null = null;
   let setupConfig: ChannelSetup | null = null;
@@ -1929,6 +1934,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
 
     async teardown(): Promise<void> {
       setWebchatBootstrapBroadcaster(null);
+      setWebchatPublicPath(null);
       for (const client of wsClients) {
         try {
           client.ws.close();
@@ -2048,13 +2054,6 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
 export function resolveWebchatPort(env: Record<string, string | undefined>): number {
   const portStr = process.env.WEBCHAT_PORT || env.WEBCHAT_PORT || '3200';
   return parseInt(portStr, 10);
-}
-
-/** Public path prefix for reverse-proxy mounts (e.g. `/webchat`). Empty when unset. */
-export function resolveWebchatPublicPath(env: Record<string, string | undefined>): string {
-  const raw = (process.env.WEBCHAT_PUBLIC_PATH || env.WEBCHAT_PUBLIC_PATH || '').trim();
-  if (!raw || raw === '/') return '';
-  return raw.startsWith('/') ? raw.replace(/\/+$/, '') : `/${raw.replace(/\/+$/, '')}`;
 }
 
 registerChannelAdapter('web', {

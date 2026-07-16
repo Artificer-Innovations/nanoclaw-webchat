@@ -34,6 +34,7 @@ import {
   markBackfillDelivered,
   moveAttachmentIntoMessage,
   removeEngagedAgent,
+  setWebchatPublicPath,
   updateMessageCard,
   upsertThread,
   webchatDbPath,
@@ -104,16 +105,16 @@ describe('webchat-store', () => {
     expect(fs.readFileSync(filePath!)).toEqual(Buffer.from('png-bytes'));
   });
 
-  it('attachmentApiPath prefixes WEBCHAT_PUBLIC_PATH for reverse-proxy mounts', () => {
-    const prev = process.env.WEBCHAT_PUBLIC_PATH;
+  it('attachmentApiPath uses setWebchatPublicPath for reverse-proxy mounts', () => {
     try {
-      process.env.WEBCHAT_PUBLIC_PATH = '/webchat/';
+      setWebchatPublicPath('/webchat/');
       expect(attachmentApiPath('msg-1', '0-calc.html')).toBe('/webchat/api/attachments/msg-1/0-calc.html');
-      process.env.WEBCHAT_PUBLIC_PATH = '';
+      setWebchatPublicPath('');
+      expect(attachmentApiPath('msg-1', '0-calc.html')).toBe('/api/attachments/msg-1/0-calc.html');
+      setWebchatPublicPath(null);
       expect(attachmentApiPath('msg-1', '0-calc.html')).toBe('/api/attachments/msg-1/0-calc.html');
     } finally {
-      if (prev === undefined) delete process.env.WEBCHAT_PUBLIC_PATH;
-      else process.env.WEBCHAT_PUBLIC_PATH = prev;
+      setWebchatPublicPath(null);
     }
   });
 

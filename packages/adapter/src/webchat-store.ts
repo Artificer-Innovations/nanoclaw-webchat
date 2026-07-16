@@ -9,8 +9,17 @@ import path from 'path';
 import Database from 'better-sqlite3';
 
 import { DATA_DIR } from './config.js';
+import { normalizeWebchatPublicPath } from './webchat-public-path.js';
 
 export const MAIN_THREAD = 'main';
+
+/** Configured public path prefix for attachment URLs (set by the web adapter). */
+let configuredPublicPath = '';
+
+/** Wire WEBCHAT_PUBLIC_PATH into the store (same pattern as setWebchatBootstrapBroadcaster). */
+export function setWebchatPublicPath(publicPath: string | undefined | null): void {
+  configuredPublicPath = normalizeWebchatPublicPath(publicPath);
+}
 
 const WEBCHAT_SCHEMA = `
 CREATE TABLE IF NOT EXISTS web_threads (
@@ -397,14 +406,13 @@ export function deleteMessageFiles(messageId: string): void {
 }
 
 /**
- * Public URL for a stored attachment. When WEBCHAT_PUBLIC_PATH is set (e.g.
- * `/webchat` + reverse-proxy stripPrefix), the SPA rewrite makes the client only
- * accept `/webchat/api/attachments/...` — unprefixed `/api/attachments/...`
+ * Public URL for a stored attachment. When a public path prefix is configured
+ * (WEBCHAT_PUBLIC_PATH / setWebchatPublicPath), the SPA rewrite makes the client
+ * only accept `/webchat/api/attachments/...` — unprefixed `/api/attachments/...`
  * fails client-side and 404s at the edge (wrong route).
  */
 export function attachmentApiPath(messageId: string, storageName: string): string {
-  const raw = (process.env.WEBCHAT_PUBLIC_PATH || '').trim().replace(/\/+$/, '');
-  const prefix = !raw || raw === '/' ? '' : raw.startsWith('/') ? raw : `/${raw}`;
+  const prefix = configuredPublicPath;
   return `${prefix}/api/attachments/${encodeURIComponent(messageId)}/${encodeURIComponent(storageName)}`;
 }
 
