@@ -396,8 +396,16 @@ export function deleteMessageFiles(messageId: string): void {
   }
 }
 
+/**
+ * Public URL for a stored attachment. When WEBCHAT_PUBLIC_PATH is set (e.g.
+ * `/webchat` + reverse-proxy stripPrefix), the SPA rewrite makes the client only
+ * accept `/webchat/api/attachments/...` — unprefixed `/api/attachments/...`
+ * fails client-side and 404s at the edge (wrong route).
+ */
 export function attachmentApiPath(messageId: string, storageName: string): string {
-  return `/api/attachments/${encodeURIComponent(messageId)}/${encodeURIComponent(storageName)}`;
+  const raw = (process.env.WEBCHAT_PUBLIC_PATH || '').trim().replace(/\/+$/, '');
+  const prefix = !raw || raw === '/' ? '' : raw.startsWith('/') ? raw : `/${raw}`;
+  return `${prefix}/api/attachments/${encodeURIComponent(messageId)}/${encodeURIComponent(storageName)}`;
 }
 
 function storedToApiAttachments(messageId: string, stored: StoredAttachmentMeta[]): WebchatAttachmentInput[] {
