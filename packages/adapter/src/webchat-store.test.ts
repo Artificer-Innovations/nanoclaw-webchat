@@ -14,6 +14,7 @@ import {
   addEngagedAgents,
   appendMessage,
   appendMessageWithAttachmentMeta,
+  attachmentApiPath,
   backfillThreadSeqForExistingMessages,
   createThread,
   deleteThreadData,
@@ -101,6 +102,19 @@ describe('webchat-store', () => {
     const filePath = getMessageAttachmentPath('web-att', '0-photo.png');
     expect(filePath).toBeTruthy();
     expect(fs.readFileSync(filePath!)).toEqual(Buffer.from('png-bytes'));
+  });
+
+  it('attachmentApiPath prefixes WEBCHAT_PUBLIC_PATH for reverse-proxy mounts', () => {
+    const prev = process.env.WEBCHAT_PUBLIC_PATH;
+    try {
+      process.env.WEBCHAT_PUBLIC_PATH = '/webchat/';
+      expect(attachmentApiPath('msg-1', '0-calc.html')).toBe('/webchat/api/attachments/msg-1/0-calc.html');
+      process.env.WEBCHAT_PUBLIC_PATH = '';
+      expect(attachmentApiPath('msg-1', '0-calc.html')).toBe('/api/attachments/msg-1/0-calc.html');
+    } finally {
+      if (prev === undefined) delete process.env.WEBCHAT_PUBLIC_PATH;
+      else process.env.WEBCHAT_PUBLIC_PATH = prev;
+    }
   });
 
   it('rejects path traversal in attachment lookup', () => {
