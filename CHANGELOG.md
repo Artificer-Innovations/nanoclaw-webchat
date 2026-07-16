@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.0
+
+### Minor Changes
+
+- Add MCP OAuth 2.1 for co-hosted Streamable HTTP MCP at `/mcp`, issuing per-user bearer tokens from public auth sessions while keeping stdio MCP + `WEBCHAT_SECRET` for local admin.
+
+- [#43](https://github.com/Artificer-Innovations/nanoclaw-webchat/pull/43) [`340e726`](https://github.com/Artificer-Innovations/nanoclaw-webchat/commit/340e7260b5a56ed84a9a149d55aa0d232e87ff5a) Thanks [@ZappoMan](https://github.com/ZappoMan)! - Add `WEBCHAT_PUBLIC_PATH` so reverse-proxy path mounts (e.g. `/webchat` with stripPrefix) rewrite `/api` and `/assets` in served SPA assets and post-login redirects.
+
+### Patch Changes
+
+- Fix public-mode create-agent approvals (global owner + authz pre-check) and re-sync live channel wirings after agent bootstrap.
+
+- Backfill per-user inbox and DM wirings on boot in public auth mode so existing users see agent DMs without re-login.
+
+- Fix MCP OAuth session stickiness (bearer `expiresAt`, loopback localhost/`127.0.0.1` matching) and refresh connected clients on agent create and delete.
+
+- [#44](https://github.com/Artificer-Innovations/nanoclaw-webchat/pull/44) [`3a0e6ef`](https://github.com/Artificer-Innovations/nanoclaw-webchat/commit/3a0e6ef5f82ca34d5b88615c01886e015f01dde5) Thanks [@ZappoMan](https://github.com/ZappoMan)! - Prefix attachment API URLs with `WEBCHAT_PUBLIC_PATH` so open/download works under reverse-proxy path mounts.
+
 ## 0.2.1
 
 ### Patch Changes
