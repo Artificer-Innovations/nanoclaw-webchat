@@ -22,24 +22,31 @@ import { refreshWebchatAfterAgentChange } from './webchat-live.js';
  */
 async function installAgentGroupLiveRefresh(): Promise<void> {
   try {
-    const { registerDeliveryAction } = await import('./delivery.js');
+    const { registerDeliveryAction, reenterGuardedDeliveryAction } = await import('./delivery.js');
+    const { notifyAgent } = await import('./modules/approvals/index.js');
     const { registerApprovalHandler, getApprovalHandler } = await import(
       './modules/approvals/primitive.js'
     );
-    const { applyCreateAgent, handleCreateAgent } = await import(
+    const { createAgent, requestCreateAgentHold, validateCreateAgent } = await import(
       './modules/agent-to-agent/create-agent.js'
     );
+    const { agentsCreate } = await import('./modules/agent-to-agent/guard.js');
 
-    registerDeliveryAction('create_agent', async (content, session) => {
-      await handleCreateAgent(content, session);
-      // Idempotent even when the handler only queued an approval.
-      refreshWebchatAfterAgentChange();
-    });
+    registerDeliveryAction(
+      'create_agent',
+      async (content, session) => {
+        await createAgent(content, session);
+        refreshWebchatAfterAgentChange();
+      },
+      {
+        guardAction: agentsCreate,
+        precheck: validateCreateAgent,
+        requestHold: requestCreateAgentHold,
+        onDeny: (_content, session, reason) => notifyAgent(session, `create_agent denied: ${reason}`),
+      },
+    );
 
-    registerApprovalHandler('create_agent', async (ctx) => {
-      await applyCreateAgent(ctx);
-      refreshWebchatAfterAgentChange();
-    });
+    registerApprovalHandler('create_agent', reenterGuardedDeliveryAction('create_agent'));
 
     // Wrap CLI delete (and only delete) so approved `ncl groups delete` drops
     // DMs from connected browsers. Must keep the original handler's notify path.
