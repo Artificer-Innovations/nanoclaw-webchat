@@ -2,6 +2,8 @@
  * Session and OAuth state persistence in webchat.db.
  */
 import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
 
 import Database from 'better-sqlite3';
 
@@ -83,7 +85,9 @@ let authDb: Database.Database | null = null;
 
 function getAuthDb(): Database.Database {
   if (authDb) return authDb;
-  const db = new Database(webchatDbPath());
+  const dbPath = webchatDbPath();
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
   db.pragma('wal_autocheckpoint = 1000');
   db.pragma('busy_timeout = 5000');

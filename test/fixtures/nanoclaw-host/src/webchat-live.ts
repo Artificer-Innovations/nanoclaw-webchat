@@ -1,8 +1,8 @@
 /**
- * Live refresh after agent-group changes (create_agent, CLI groups create, etc.).
+ * Live refresh after agent-group changes (create_agent, groups-delete, etc.).
  *
  * Re-syncs lobby/DM wirings and nudges connected webchat clients to soft-merge
- * an updated bootstrap payload so new DMs appear without a host restart.
+ * an updated bootstrap payload so DMs appear/disappear without a host restart.
  */
 import { log } from './log.js';
 import { getUser } from './modules/permissions/db/users.js';

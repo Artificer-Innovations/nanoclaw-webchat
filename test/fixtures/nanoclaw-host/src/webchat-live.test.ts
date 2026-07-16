@@ -120,6 +120,24 @@ describe('refreshWebchatAfterAgentChange', () => {
       expect.objectContaining({ err: expect.any(Error) }),
     );
   });
+
+  it('logs and returns when sync throws', async () => {
+    const sync = await import('./webchat-sync.js');
+    const spy = vi.spyOn(sync, 'syncWebchatWirings').mockImplementation(() => {
+      throw new Error('sync down');
+    });
+    const broadcast = vi.fn();
+    setWebchatBootstrapBroadcaster(broadcast);
+
+    refreshWebchatAfterAgentChange();
+
+    expect(vi.mocked(log.error)).toHaveBeenCalledWith(
+      'Webchat live refresh: sync failed',
+      expect.objectContaining({ err: expect.any(Error) }),
+    );
+    expect(broadcast).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
 });
 
 describe('bootstrapPayloadForUser', () => {
@@ -141,5 +159,23 @@ describe('bootstrapPayloadForUser', () => {
     const payload = bootstrapPayloadForUser('web:basic:alice');
     expect(payload.user).toEqual({ id: 'web:basic:alice', displayName: 'Alice' });
     expect(payload.rooms.some((r) => r.kind === 'dm' && r.folder === 'sarah')).toBe(true);
+  });
+
+  it('falls back to userId when the user is missing or has a blank display name', () => {
+    expect(bootstrapPayloadForUser('web:missing').user).toEqual({
+      id: 'web:missing',
+      displayName: 'web:missing',
+    });
+
+    upsertUser({
+      id: 'web:basic:blank',
+      kind: 'web',
+      display_name: '   ',
+      created_at: now(),
+    });
+    expect(bootstrapPayloadForUser('web:basic:blank').user).toEqual({
+      id: 'web:basic:blank',
+      displayName: 'web:basic:blank',
+    });
   });
 });

@@ -332,9 +332,15 @@ export function shouldMirrorApprovalToOrigin(
     const db = getDb();
     if (!hasTable(db, 'pending_approvals')) return false;
     const approval = getPendingApproval(questionId);
-    if (!approval?.approver_user_id) return false;
     const originOwner = ownerUserIdFromPhysical(origin.platformId);
     if (originOwner === null) return false;
+    // Missing approval record OR null approver_user_id (create_agent / install):
+    // still mirror into the requesting room when that room's owner can authorize.
+    // (Previously only null approver was intended; missing records are rare on this
+    // internal path and use the same owner/admin gate.)
+    if (!approval?.approver_user_id) {
+      return isOwner(originOwner) || isGlobalAdmin(originOwner);
+    }
     return originOwner === approval.approver_user_id;
   } catch (err) {
     log.warn('shouldMirrorApprovalToOrigin failed', { questionId, err });
@@ -959,7 +965,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
         const mcpUser = verifyMcpAccessToken(bearer, {
           publicAuth: opts.publicAuth!,
           resourceServerUrl: mcpResourceServerUrl,
-          publicBaseUrl: opts.publicBaseUrl,
+          publicBaseUrl: opts.publicBaseUrl ?? new URL(mcpResourceServerUrl).origin,
         });
         if (mcpUser) {
           attachMcpUser(req, res, mcpUser);
@@ -1975,12 +1981,17 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
       return id;
     },
 
-    /** Host approval DMs land in the shared Inbox room (local) or per-user inbox (public). */
+    /**
+     * Host approval DMs land in the shared Inbox room (local) or per-user inbox (public).
+     *
+     * Host `ensureUserDm` strips the channel prefix before calling openDM — for
+     * `web:basic:alice` we receive `basic:alice`, not `web:basic:alice`. Reconstruct
+     * the web user id so public deliveries hit `inbox:<encoded>` (what the UI loads).
+     */
     async openDM(userHandle: string): Promise<string> {
-      if (isPublicMode() && userHandle.startsWith('web:')) {
-        return inboxPlatformForUser(userHandle);
-      }
-      return WEB_INBOX_PLATFORM_ID;
+      if (!isPublicMode()) return WEB_INBOX_PLATFORM_ID;
+      const userId = userHandle.startsWith('web:') ? userHandle : `web:${userHandle}`;
+      return inboxPlatformForUser(userId);
     },
 
     async setTyping(platformId: string, threadId: string | null): Promise<void> {

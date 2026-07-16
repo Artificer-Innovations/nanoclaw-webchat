@@ -17,6 +17,7 @@ import {
   resolveActiveThreadTitle,
   seedSyncCursors,
   softMergeBootstrap,
+  resolveRoomAfterBootstrap,
   syncInactiveUnread,
   takePendingOptimisticId,
   dropPendingOptimisticId,
@@ -302,6 +303,16 @@ export function App() {
             next.rooms,
             threadsMapFromRooms(next.rooms),
           );
+          const { room: nextRoom, leftDeletedRoom } = resolveRoomAfterBootstrap(
+            roomRef.current,
+            next.rooms,
+          );
+          if (leftDeletedRoom) {
+            setRoom(nextRoom);
+            setThreadId('main');
+            setMessages([]);
+            setSelectedAttachment(null);
+          }
           return;
         }
         if (event.type !== 'message') return;
