@@ -63,6 +63,22 @@ CREATE TABLE IF NOT EXISTS web_thread_backfill_delivered (
 
 /** Applied after thread_seq column migration (existing DBs lack the column until ALTER). */
 const WEBCHAT_THREAD_SEQ_SCHEMA = `
+CREATE TABLE IF NOT EXISTS web_activity (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  platform_id TEXT NOT NULL,
+  thread_id TEXT NOT NULL,
+  turn_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  timestamp TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  tool TEXT,
+  payload_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_web_activity_room
+  ON web_activity(platform_id, thread_id, id DESC);
+
 CREATE TABLE IF NOT EXISTS web_thread_seq (
   platform_id  TEXT NOT NULL,
   thread_id    TEXT NOT NULL,
@@ -953,6 +969,108 @@ export function updateMessageCard(messageId: string, card: WebchatAskQuestionCar
     db.prepare('UPDATE web_messages SET card_json = ? WHERE id = ?').run(JSON.stringify(card), messageId);
 
     return rowToMessage({ ...row, card_json: JSON.stringify(card) }, row.platform_id, row.thread_id);
+  } finally {
+    db.close();
+  }
+}
+
+const MAX_ACTIVITY_TURNS = 50;
+
+export interface StoredActivityEvent {
+  turnId: string;
+  seq: number;
+  timestamp: string;
+  kind: string;
+  summary: string;
+  tool?: string;
+  phase?: string;
+  replaceKey?: string;
+  keepalive?: boolean;
+}
+
+export function appendActivityEvent(
+  platformId: string,
+  threadId: string,
+  event: StoredActivityEvent,
+): void {
+  const db = openDb();
+  try {
+    db.prepare(
+      `INSERT INTO web_activity (platform_id, thread_id, turn_id, seq, timestamp, kind, summary, tool, payload_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      platformId,
+      threadId,
+      event.turnId,
+      event.seq,
+      event.timestamp,
+      event.kind,
+      event.summary,
+      event.tool ?? null,
+      JSON.stringify(event),
+    );
+
+    // Keep latest MAX_ACTIVITY_TURNS distinct turn_ids per room
+    const turns = db
+      .prepare(
+        `SELECT turn_id FROM web_activity
+         WHERE platform_id = ? AND thread_id = ?
+         GROUP BY turn_id
+         ORDER BY MAX(id) DESC`,
+      )
+      .all(platformId, threadId) as Array<{ turn_id: string }>;
+    if (turns.length > MAX_ACTIVITY_TURNS) {
+      const drop = turns.slice(MAX_ACTIVITY_TURNS).map((t) => t.turn_id);
+      for (const turnId of drop) {
+        db.prepare(
+          `DELETE FROM web_activity WHERE platform_id = ? AND thread_id = ? AND turn_id = ?`,
+        ).run(platformId, threadId, turnId);
+      }
+    }
+  } finally {
+    db.close();
+  }
+}
+
+export function getActivityEvents(
+  platformId: string,
+  threadId: string,
+  limit = 200,
+): StoredActivityEvent[] {
+  const db = openDb();
+  try {
+    const rows = db
+      .prepare(
+        `SELECT payload_json FROM web_activity
+         WHERE platform_id = ? AND thread_id = ?
+         ORDER BY id DESC
+         LIMIT ?`,
+      )
+      .all(platformId, threadId, limit) as Array<{ payload_json: string }>;
+    return rows
+      .map((r) => {
+        try {
+          return JSON.parse(r.payload_json) as StoredActivityEvent;
+        } catch {
+          return null;
+        }
+      })
+      .filter((e): e is StoredActivityEvent => e != null)
+      .reverse();
+  } finally {
+    db.close();
+  }
+}
+
+export function clearActivityTurn(platformId: string, threadId: string, turnId?: string): void {
+  const db = openDb();
+  try {
+    if (turnId) {
+      db.prepare(
+        `DELETE FROM web_activity WHERE platform_id = ? AND thread_id = ? AND turn_id = ?`,
+      ).run(platformId, threadId, turnId);
+    }
+    // turn_end keeps history by default — clear is optional; no-op without turnId
   } finally {
     db.close();
   }

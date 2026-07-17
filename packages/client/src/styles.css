@@ -1972,3 +1972,66 @@ body.attachment-drawer-resizing * {
     padding-left: 52px;
   }
 }
+
+/* Agent activity trace (nanoclaw-agenttrace companion) */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.activity-toggle {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.activity-toggle:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.activity-panel {
+  max-height: 160px;
+  overflow-y: auto;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  padding: 8px 16px;
+  font-size: 12px;
+}
+
+.activity-row {
+  display: flex;
+  gap: 10px;
+  padding: 3px 0;
+  color: var(--muted);
+}
+
+.activity-kind {
+  flex: 0 0 110px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--accent);
+  font-size: 10px;
+  padding-top: 2px;
+}
+
+.activity-summary {
+  flex: 1;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+}
+
+.typing-indicator {
+  padding: 6px 16px;
+  font-size: 12px;
+  color: var(--muted);
+  font-style: italic;
+  border-bottom: 1px solid var(--border);
+}

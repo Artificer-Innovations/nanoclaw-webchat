@@ -82,7 +82,14 @@ import {
   sidebarWidthFromKeyboard,
 } from './sidebar-layout';
 import { defaultThreadTitle, isAutoThreadTitle, titleFromMessage } from './thread-names';
-import type { BootstrapPayload, ThreadMeta, WebChatAttachment, WebChatMessage, WebChatRoom } from './types';
+import type {
+  AgentActivityEvent,
+  BootstrapPayload,
+  ThreadMeta,
+  WebChatAttachment,
+  WebChatMessage,
+  WebChatRoom,
+} from './types';
 import { Login } from './Login';
 import {
   connectWebSocket,
@@ -91,6 +98,7 @@ import {
   deleteThread,
   detectPublicAuthMode,
   disengageAgent,
+  fetchActivity,
   fetchAuthMe,
   fetchBootstrap,
   fetchMessages,
@@ -126,6 +134,10 @@ export function App() {
   const [expandedRooms, setExpandedRooms] = useState<Set<string>>(() => new Set());
   const [threadId, setThreadId] = useState('main');
   const [messages, setMessages] = useState<WebChatMessage[]>([]);
+  const [activityEvents, setActivityEvents] = useState<AgentActivityEvent[]>([]);
+  const [activityOpen, setActivityOpen] = useState(false);
+  const [typingUntil, setTypingUntil] = useState(0);
+  const [, setTypingTick] = useState(0);
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
   const [engagedAgentsByThread, setEngagedAgentsByThread] = useState<Record<string, string[]>>({});
   const [draft, setDraft] = useState('');
@@ -242,8 +254,22 @@ export function App() {
   }, [room?.platformId]);
 
   useEffect(() => {
+    if (typingUntil <= Date.now()) return;
+    const id = setInterval(() => setTypingTick((n) => n + 1), 500);
+    return () => clearInterval(id);
+  }, [typingUntil]);
+
+  useEffect(() => {
     if (!sessionReady || !room) return;
     let cancelled = false;
+    setActivityEvents([]);
+    void fetchActivity(authToken, room.platformId, threadId)
+      .then((events) => {
+        if (!cancelled) setActivityEvents(events);
+      })
+      .catch(() => {
+        /* activity endpoint may be absent on older hosts */
+      });
     fetchMessages(authToken, room.platformId, threadId)
       .then(({ messages: msgs, engagedAgents }) => {
         if (!cancelled) {
@@ -280,6 +306,43 @@ export function App() {
             ...prev,
             [unreadKey(event.platformId, event.threadId)]: event.agents,
           }));
+          return;
+        }
+        if (event.type === 'typing') {
+          if (
+            roomRef.current &&
+            event.platformId === roomRef.current.platformId &&
+            event.threadId === threadIdRef.current
+          ) {
+            setTypingUntil(Date.now() + 4000);
+          }
+          return;
+        }
+        if (event.type === 'activity') {
+          if (
+            roomRef.current &&
+            event.platformId === roomRef.current.platformId &&
+            event.threadId === threadIdRef.current
+          ) {
+            setActivityEvents((prev) => {
+              const next = [...prev, event.event];
+              return next.length > 200 ? next.slice(-200) : next;
+            });
+            setTypingUntil(Date.now() + 4000);
+            if (event.event.kind === 'turn_start') setActivityOpen(true);
+          }
+          return;
+        }
+        if (event.type === 'activity_clear') {
+          if (
+            roomRef.current &&
+            event.platformId === roomRef.current.platformId &&
+            event.threadId === threadIdRef.current
+          ) {
+            if (event.turnId) {
+              setActivityEvents((prev) => prev.filter((e) => e.turnId !== event.turnId));
+            }
+          }
           return;
         }
         if (event.type === 'message_update') {
@@ -1007,7 +1070,34 @@ export function App() {
                 {room.name}
                 {activeThreadTitle ? ` — ${activeThreadTitle}` : ''}
               </h2>
+              {activityEvents.length > 0 ? (
+                <button
+                  type="button"
+                  className="activity-toggle"
+                  onClick={() => setActivityOpen((o) => !o)}
+                  aria-expanded={activityOpen}
+                >
+                  {activityOpen ? 'Hide activity' : `Activity (${activityEvents.length})`}
+                </button>
+              ) : null}
             </header>
+
+            {activityOpen && activityEvents.length > 0 ? (
+              <div className="activity-panel" aria-label="Agent activity">
+                {activityEvents.map((ev, i) => (
+                  <div key={`${ev.turnId}-${ev.seq}-${i}`} className="activity-row">
+                    <span className="activity-kind">{ev.kind.replace(/_/g, ' ')}</span>
+                    <span className="activity-summary">{ev.summary}</span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            {typingUntil > Date.now() ? (
+              <div className="typing-indicator" aria-live="polite">
+                Agent is working…
+              </div>
+            ) : null}
 
             <div className="messages" ref={messagesRef} onScroll={handleMessagesScroll}>
               {messages.map((m) => {

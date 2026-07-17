@@ -1418,6 +1418,49 @@ describe('web channel adapter', () => {
     expect(received[0]).toMatchObject({ type: 'typing', platformId: 'lobby', threadId: 'thread_abc' });
   });
 
+  it('broadcasts and persists activity via publishActivity', async () => {
+    await adapter.setup(setup);
+    const event = {
+      turnId: 'turn-1',
+      seq: 1,
+      timestamp: new Date().toISOString(),
+      kind: 'tool_start' as const,
+      summary: 'Running Bash',
+      tool: 'Bash',
+    };
+    const received: unknown[] = [];
+    await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${testPort}/api/ws?token=${SECRET}`);
+      ws.on('open', async () => {
+        await (
+          adapter as unknown as {
+            publishActivity: (
+              platformId: string,
+              threadId: string | null,
+              ev: typeof event,
+            ) => Promise<void>;
+          }
+        ).publishActivity('lobby', 'thread_abc', event);
+      });
+      ws.on('message', (data) => {
+        received.push(JSON.parse(data.toString()));
+        ws.close();
+        resolve();
+      });
+      ws.on('error', reject);
+    });
+    expect(received[0]).toMatchObject({
+      type: 'activity',
+      platformId: 'lobby',
+      threadId: 'thread_abc',
+      event: { kind: 'tool_start', summary: 'Running Bash', tool: 'Bash' },
+    });
+    const { status, body } = await httpGet('/api/rooms/lobby/threads/thread_abc/activity');
+    expect(status).toBe(200);
+    const parsed = body as { events: Array<{ turnId: string }> };
+    expect(parsed.events.some((e) => e.turnId === 'turn-1')).toBe(true);
+  });
+
   it('serves static assets with correct Content-Type', async () => {
     const assetDir = '/tmp/nanoclaw-webchat-test-assets';
     fs.writeFileSync(path.join(assetDir, 'app.js'), 'console.log("x")');

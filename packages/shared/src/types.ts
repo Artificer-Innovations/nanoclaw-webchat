@@ -105,6 +105,33 @@ export interface WsTypingEvent {
   threadId: string;
 }
 
+/** Portable activity event from nanoclaw-agenttrace (duck-typed publishActivity). */
+export interface AgentActivityEvent {
+  turnId: string;
+  seq: number;
+  timestamp: string;
+  kind: string;
+  summary: string;
+  phase?: string;
+  tool?: string;
+  replaceKey?: string;
+  keepalive?: boolean;
+}
+
+export interface WsActivityEvent {
+  type: 'activity';
+  platformId: string;
+  threadId: string;
+  event: AgentActivityEvent;
+}
+
+export interface WsActivityClearEvent {
+  type: 'activity_clear';
+  platformId: string;
+  threadId: string;
+  turnId?: string;
+}
+
 export interface ThreadMessagesPayload {
   messages: WebChatMessage[];
   engagedAgents: string[];
@@ -133,6 +160,8 @@ export interface WsBootstrapEvent {
 export type WsEvent =
   | WsMessageEvent
   | WsTypingEvent
+  | WsActivityEvent
+  | WsActivityClearEvent
   | WsEngagedEvent
   | WsMessageUpdateEvent
   | WsBootstrapEvent;

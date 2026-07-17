@@ -75,13 +75,16 @@ import {
 import { implicitMentionedFolders, mentionedAgentFolders, type ImplicitMentionAgent } from '../webchat-mentions.js';
 import {
   addEngagedAgents,
+  appendActivityEvent,
   appendMessage,
   appendMessageWithAttachmentMeta,
+  clearActivityTurn,
   createThread,
   deleteThreadData,
   deleteMessageFiles,
   ensureWebchatSchema,
   enrichMessagesWithAttachmentData,
+  getActivityEvents,
   getEngagedAgents,
   getMessageAttachmentPath,
   getMessages,
@@ -98,6 +101,7 @@ import {
   answerCardsByQuestionId,
   revertCardsByQuestionId,
   writeAttachmentFiles,
+  type StoredActivityEvent,
   type StoredAttachmentMeta,
   type WebchatAskQuestionCard,
   type WebchatAttachmentInput,
@@ -1721,6 +1725,28 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
               return;
             }
 
+            const activityMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/threads\/([^/]+)\/activity$/);
+            if (activityMatch && req.method === 'GET') {
+              const logicalPlatformId = decodeURIComponent(activityMatch[1]!);
+              const activityThreadId = decodeURIComponent(activityMatch[2]!);
+              const storagePlatformId = tryResolveStoragePlatformId(
+                logicalPlatformId,
+                requestUser.userId,
+                res,
+              );
+              if (storagePlatformId === undefined) return;
+              const events = getActivityEvents(storagePlatformId, activityThreadId);
+              const clientEvents = isPublicMode()
+                ? events
+                : events;
+              json(res, 200, {
+                platformId: isPublicMode() ? toLogicalPlatformId(storagePlatformId) : storagePlatformId,
+                threadId: activityThreadId,
+                events: clientEvents,
+              });
+              return;
+            }
+
             const attMatch = url.pathname.match(/^\/api\/attachments\/([^/]+)\/([^/]+)$/);
             if (attMatch && req.method === 'GET') {
               const messageId = decodeURIComponent(attMatch[1]!);
@@ -2052,12 +2078,69 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
     },
 
     async setTyping(platformId: string, threadId: string | null): Promise<void> {
-      broadcast({
-        type: 'typing',
-        platformId,
-        threadId: threadId ?? MAIN_THREAD,
-      });
+      broadcast(
+        wsEventForClient(
+          {
+            type: 'typing',
+            platformId: isPublicMode() ? toLogicalPlatformId(platformId) : platformId,
+            threadId: threadId ?? MAIN_THREAD,
+          },
+          platformId,
+        ),
+      );
     },
+
+    async publishActivity(
+      platformId: string,
+      threadId: string | null,
+      event: StoredActivityEvent,
+    ): Promise<void> {
+      const tid = threadId ?? MAIN_THREAD;
+      appendActivityEvent(platformId, tid, event);
+      broadcast(
+        wsEventForClient(
+          {
+            type: 'activity',
+            platformId: isPublicMode() ? toLogicalPlatformId(platformId) : platformId,
+            threadId: tid,
+            event,
+          },
+          platformId,
+        ),
+      );
+    },
+
+    async clearActivity(
+      platformId: string,
+      threadId: string | null,
+      turnId?: string,
+    ): Promise<void> {
+      const tid = threadId ?? MAIN_THREAD;
+      if (turnId) clearActivityTurn(platformId, tid, turnId);
+      broadcast(
+        wsEventForClient(
+          {
+            type: 'activity_clear',
+            platformId: isPublicMode() ? toLogicalPlatformId(platformId) : platformId,
+            threadId: tid,
+            turnId,
+          },
+          platformId,
+        ),
+      );
+    },
+    // Duck-typed for nanoclaw-agenttrace — not on ChannelAdapter until trunk adopts it.
+  } as ChannelAdapter & {
+    publishActivity: (
+      platformId: string,
+      threadId: string | null,
+      event: StoredActivityEvent,
+    ) => Promise<void>;
+    clearActivity: (
+      platformId: string,
+      threadId: string | null,
+      turnId?: string,
+    ) => Promise<void>;
   };
 }
 

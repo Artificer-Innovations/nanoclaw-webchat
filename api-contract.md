@@ -267,6 +267,36 @@ Optional typing events:
 { "type": "typing", "platformId": "lobby", "threadId": "thread_abc" }
 ```
 
+Agent activity (from nanoclaw-agenttrace via duck-typed `publishActivity`):
+
+```json
+{
+  "type": "activity",
+  "platformId": "lobby",
+  "threadId": "main",
+  "event": {
+    "turnId": "msg-…",
+    "seq": 3,
+    "timestamp": "2026-07-16T21:00:00.000Z",
+    "kind": "tool_start",
+    "summary": "Running Bash",
+    "tool": "Bash"
+  }
+}
+```
+
+```json
+{ "type": "activity_clear", "platformId": "lobby", "threadId": "main", "turnId": "msg-…" }
+```
+
+### `GET /api/rooms/:platformId/threads/:threadId/activity`
+
+Returns persisted activity events for the room/thread (last 50 turns).
+
+```json
+{ "platformId": "lobby", "threadId": "main", "events": [ /* AgentActivityEvent[] */ ] }
+```
+
 Engaged-agent updates (lobby threads — when agents are @'d or removed via UI):
 
 ```json

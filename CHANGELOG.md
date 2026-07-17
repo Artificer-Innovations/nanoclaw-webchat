@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.1
+
+### Added
+
+- **Agent activity timeline** — WebSocket `activity` / `activity_clear` events, `GET …/activity`, duck-typed `publishActivity` / `clearActivity` for [nanoclaw-agenttrace](https://github.com/Artificer-Innovations/nanoclaw-agenttrace). Collapsed activity panel + typing indicator in the client.
+- Persist last 50 activity turns per room in `webchat.db`.
+
 ## 0.3.0
 
 ### Minor Changes

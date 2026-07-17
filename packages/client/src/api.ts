@@ -1,4 +1,5 @@
 import type {
+  AgentActivityEvent,
   AuthConfigResponse,
   BootstrapPayload,
   SendMessageResult,
@@ -170,6 +171,18 @@ export async function fetchMessages(
     messages: data.messages,
     engagedAgents: data.engagedAgents ?? [],
   };
+}
+
+export async function fetchActivity(
+  token: string,
+  platformId: string,
+  threadId: string,
+): Promise<AgentActivityEvent[]> {
+  const path = `/api/rooms/${encodeURIComponent(platformId)}/threads/${encodeURIComponent(threadId)}/activity`;
+  const res = await apiFetch(path, {}, token);
+  if (!res.ok) throw new Error(`activity failed: ${res.status}`);
+  const data = (await res.json()) as { events?: AgentActivityEvent[] };
+  return data.events ?? [];
 }
 
 export interface UploadAttachmentResult {
