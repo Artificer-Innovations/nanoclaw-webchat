@@ -1746,14 +1746,13 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
                 res,
               );
               if (storagePlatformId === undefined) return;
+              // Activity payloads are agent-status (name/folder/summary) — no
+              // storage-only fields to redact in public mode beyond platformId remap.
               const events = getActivityEvents(storagePlatformId, activityThreadId);
-              const clientEvents = isPublicMode()
-                ? events
-                : events;
               json(res, 200, {
                 platformId: isPublicMode() ? toLogicalPlatformId(storagePlatformId) : storagePlatformId,
                 threadId: activityThreadId,
-                events: clientEvents,
+                events,
               });
               return;
             }
@@ -2130,7 +2129,8 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
       turnId?: string,
     ): Promise<void> {
       const tid = threadId ?? MAIN_THREAD;
-      if (turnId) clearActivityTurn(platformId, tid, turnId);
+      // turnId set → clear that turn; omitted → clear all activity for the room.
+      clearActivityTurn(platformId, tid, turnId);
       broadcast(
         wsEventForClient(
           {

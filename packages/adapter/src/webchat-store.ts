@@ -975,6 +975,8 @@ export function updateMessageCard(messageId: string, card: WebchatAskQuestionCar
 }
 
 const MAX_ACTIVITY_TURNS = 50;
+/** Only replay in-flight / very recent activity on room open (WS reconnect during a turn). */
+const ACTIVITY_REPLAY_MAX_AGE_MS = 3 * 60 * 1000;
 
 export interface StoredActivityEvent {
   turnId: string;
@@ -988,6 +990,30 @@ export interface StoredActivityEvent {
   keepalive?: boolean;
   agentName?: string;
   agentFolder?: string;
+}
+
+function pruneActivityTurns(
+  db: ReturnType<typeof openDb>,
+  platformId: string,
+  threadId: string,
+): void {
+  const cutoff = new Date(Date.now() - ACTIVITY_REPLAY_MAX_AGE_MS).toISOString();
+  db.prepare(
+    `DELETE FROM web_activity WHERE platform_id = ? AND thread_id = ? AND timestamp < ?`,
+  ).run(platformId, threadId, cutoff);
+
+  // Evict oldest turns beyond the cap in one statement (latest N by MAX(id)).
+  db.prepare(
+    `DELETE FROM web_activity
+     WHERE platform_id = ? AND thread_id = ?
+       AND turn_id NOT IN (
+         SELECT turn_id FROM web_activity
+         WHERE platform_id = ? AND thread_id = ?
+         GROUP BY turn_id
+         ORDER BY MAX(id) DESC
+         LIMIT ?
+       )`,
+  ).run(platformId, threadId, platformId, threadId, MAX_ACTIVITY_TURNS);
 }
 
 export function appendActivityEvent(
@@ -1012,22 +1038,9 @@ export function appendActivityEvent(
       JSON.stringify(event),
     );
 
-    // Keep latest MAX_ACTIVITY_TURNS distinct turn_ids per room
-    const turns = db
-      .prepare(
-        `SELECT turn_id FROM web_activity
-         WHERE platform_id = ? AND thread_id = ?
-         GROUP BY turn_id
-         ORDER BY MAX(id) DESC`,
-      )
-      .all(platformId, threadId) as Array<{ turn_id: string }>;
-    if (turns.length > MAX_ACTIVITY_TURNS) {
-      const drop = turns.slice(MAX_ACTIVITY_TURNS).map((t) => t.turn_id);
-      for (const turnId of drop) {
-        db.prepare(
-          `DELETE FROM web_activity WHERE platform_id = ? AND thread_id = ? AND turn_id = ?`,
-        ).run(platformId, threadId, turnId);
-      }
+    // Cap check only when a new turn starts — mid-turn events can't add a turn_id.
+    if (event.seq === 0 || event.kind === 'turn_start') {
+      pruneActivityTurns(db, platformId, threadId);
     }
   } finally {
     db.close();
@@ -1041,14 +1054,15 @@ export function getActivityEvents(
 ): StoredActivityEvent[] {
   const db = openDb();
   try {
+    const cutoff = new Date(Date.now() - ACTIVITY_REPLAY_MAX_AGE_MS).toISOString();
     const rows = db
       .prepare(
         `SELECT payload_json FROM web_activity
-         WHERE platform_id = ? AND thread_id = ?
+         WHERE platform_id = ? AND thread_id = ? AND timestamp >= ?
          ORDER BY id DESC
          LIMIT ?`,
       )
-      .all(platformId, threadId, limit) as Array<{ payload_json: string }>;
+      .all(platformId, threadId, cutoff, limit) as Array<{ payload_json: string }>;
     return rows
       .map((r) => {
         try {
@@ -1071,8 +1085,12 @@ export function clearActivityTurn(platformId: string, threadId: string, turnId?:
       db.prepare(
         `DELETE FROM web_activity WHERE platform_id = ? AND thread_id = ? AND turn_id = ?`,
       ).run(platformId, threadId, turnId);
+    } else {
+      db.prepare(`DELETE FROM web_activity WHERE platform_id = ? AND thread_id = ?`).run(
+        platformId,
+        threadId,
+      );
     }
-    // turn_end keeps history by default — clear is optional; no-op without turnId
   } finally {
     db.close();
   }

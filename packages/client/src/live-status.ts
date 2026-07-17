@@ -105,15 +105,26 @@ export function applyTypingToLiveStatus(
   return next;
 }
 
+/** Drop orphan activity rows (no turn_end) after this age so reconnect ghosts don't stick. */
+export const LIVE_ACTIVITY_MAX_AGE_MS = 90_000;
+
 export function pruneExpiredLiveStatus(
   prev: Record<string, LiveAgentStatus>,
   now = Date.now(),
 ): Record<string, LiveAgentStatus> {
+  let changed = false;
   const next: Record<string, LiveAgentStatus> = {};
   for (const [key, row] of Object.entries(prev)) {
     const typing = row.typingUntil > now;
-    if (typing || row.event) next[key] = row;
+    const eventAgeMs = row.event ? now - Date.parse(row.event.timestamp) : Infinity;
+    const eventFresh = Boolean(row.event) && Number.isFinite(eventAgeMs) && eventAgeMs < LIVE_ACTIVITY_MAX_AGE_MS;
+    if (typing || eventFresh) {
+      next[key] = row;
+    } else {
+      changed = true;
+    }
   }
+  if (!changed && Object.keys(next).length === Object.keys(prev).length) return prev;
   return next;
 }
 

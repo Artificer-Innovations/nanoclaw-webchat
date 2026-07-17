@@ -1974,13 +1974,6 @@ body.attachment-drawer-resizing * {
 }
 
 /* Live agent activity + typing (nanoclaw-agenttrace companion) */
-.header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
 .msg--live {
   opacity: 0.92;
   align-items: center;

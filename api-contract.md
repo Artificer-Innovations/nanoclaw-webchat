@@ -297,9 +297,11 @@ Agent activity (from nanoclaw-agenttrace via duck-typed `publishActivity`):
 { "type": "activity_clear", "platformId": "lobby", "threadId": "main", "turnId": "msg-…" }
 ```
 
+Omit `turnId` to clear **all** live activity for that room/thread. With `turnId`, only that turn is cleared.
+
 ### `GET /api/rooms/:platformId/threads/:threadId/activity`
 
-Returns persisted activity events for the room/thread (last 50 turns).
+Returns recent in-flight activity for reconnect (events newer than ~3 minutes, capped at 50 turns). Not a durable history log.
 
 ```json
 { "platformId": "lobby", "threadId": "main", "events": [ /* AgentActivityEvent[] */ ] }

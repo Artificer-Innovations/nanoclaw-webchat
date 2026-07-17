@@ -3,7 +3,9 @@ import {
   applyActivityClearToLiveStatus,
   applyActivityToLiveStatus,
   applyTypingToLiveStatus,
+  LIVE_ACTIVITY_MAX_AGE_MS,
   liveStatusList,
+  pruneExpiredLiveStatus,
 } from './live-status';
 import type { AgentActivityEvent, WebChatAgent } from './types';
 
@@ -72,5 +74,42 @@ describe('live-status', () => {
     );
     state = applyActivityClearToLiveStatus(state, 'a');
     expect(liveStatusList(state).map((r) => r.folder)).toEqual(['diego']);
+  });
+
+  it('clears all when turnId omitted', () => {
+    const state = applyActivityToLiveStatus(
+      {},
+      ev({ kind: 'tool_start', summary: 'A', agentFolder: 'sarah' }),
+      agents,
+    );
+    expect(Object.keys(applyActivityClearToLiveStatus(state, undefined))).toHaveLength(0);
+  });
+
+  it('prune returns same reference when nothing expired', () => {
+    const state = applyActivityToLiveStatus(
+      {},
+      ev({ kind: 'tool_start', summary: 'A', agentFolder: 'sarah' }),
+      agents,
+      1_000,
+    );
+    expect(pruneExpiredLiveStatus(state, 1_500)).toBe(state);
+  });
+
+  it('prune drops stale event-only rows (orphan turn without turn_end)', () => {
+    const oldTs = new Date(Date.now() - LIVE_ACTIVITY_MAX_AGE_MS - 1_000).toISOString();
+    const state = applyActivityToLiveStatus(
+      {},
+      ev({
+        kind: 'tool_start',
+        summary: 'A',
+        agentFolder: 'sarah',
+        timestamp: oldTs,
+      }),
+      agents,
+      Date.now() - LIVE_ACTIVITY_MAX_AGE_MS - 1_000,
+    );
+    // typing window already expired; event older than max age → drop
+    const pruned = pruneExpiredLiveStatus(state, Date.now());
+    expect(pruned).toEqual({});
   });
 });
