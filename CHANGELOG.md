@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0
+
+### Minor Changes
+
+- Add live agent activity timeline for nanoclaw-agenttrace (per-agent rows, typing keepalives, cleaned stream text), and skip peer fan-out for provider session-limit / error notices so quota messages do not amplify across lobby agents.
+
+### Patch Changes
+
+- 55f524f: Fix `webchat-boot` create_agent live refresh for current NanoClaw guarded delivery APIs (`createAgent`, `validateCreateAgent`, `requestCreateAgentHold`, `reenterGuardedDeliveryAction`) instead of removed `applyCreateAgent` / `handleCreateAgent` exports.
+
 ## 0.3.0
 
 ### Minor Changes
