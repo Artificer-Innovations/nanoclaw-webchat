@@ -1,11 +1,34 @@
 import type { AgentActivityEvent, WebChatAgent } from './types';
+import { cleanPartialChunk } from './format-live-activity';
 
 export interface LiveAgentStatus {
   key: string;
   name: string;
   folder?: string;
   event?: AgentActivityEvent;
+  /**
+   * Accumulated partial_text for this agent/turn (stream deltas + snapshots).
+   * Prefer this over `event.summary` when rendering message-like live rows.
+   */
+  partialText?: string;
   typingUntil: number;
+}
+
+/** Cap accumulated live draft so reconnect/UI stays bounded. */
+export const MAX_LIVE_PARTIAL_CHARS = 6_000;
+
+/**
+ * Merge a new partial_text chunk into prior accumulated text.
+ * Handles both cumulative snapshots (new starts with prev) and raw deltas (append).
+ */
+export function coalescePartialText(prev: string | undefined, chunk: string): string {
+  const next = chunk;
+  if (!next) return (prev ?? '').slice(-MAX_LIVE_PARTIAL_CHARS);
+  if (!prev) return next.slice(-MAX_LIVE_PARTIAL_CHARS);
+  if (next.startsWith(prev)) return next.slice(-MAX_LIVE_PARTIAL_CHARS);
+  if (prev.startsWith(next)) return prev;
+  if (prev.endsWith(next)) return prev;
+  return (prev + next).slice(-MAX_LIVE_PARTIAL_CHARS);
 }
 
 export function liveAgentKey(event: Pick<AgentActivityEvent, 'agentFolder' | 'agentName' | 'turnId'>): string {
@@ -40,6 +63,42 @@ export function applyActivityToLiveStatus(
     delete next[key];
     return next;
   }
+
+  const existing = prev[key];
+  const typingUntil = Math.max(existing?.typingUntil ?? 0, now + 4000);
+
+  // Keepalives only refresh the typing indicator — never become the sticky
+  // "Working" row by themselves (idle warm containers used to leave ghosts).
+  if (event.kind === 'keepalive') {
+    return {
+      ...prev,
+      [key]: {
+        key,
+        name,
+        folder: event.agentFolder ?? existing?.folder,
+        event: existing?.event,
+        partialText: existing?.partialText,
+        typingUntil,
+      },
+    };
+  }
+
+  if (event.kind === 'partial_text') {
+    const chunk = cleanPartialChunk(event.summary);
+    const sameTurn = existing?.event?.turnId === event.turnId;
+    return {
+      ...prev,
+      [key]: {
+        key,
+        name,
+        folder: event.agentFolder,
+        event,
+        partialText: coalescePartialText(sameTurn ? existing?.partialText : undefined, chunk),
+        typingUntil,
+      },
+    };
+  }
+
   return {
     ...prev,
     [key]: {
@@ -47,7 +106,7 @@ export function applyActivityToLiveStatus(
       name,
       folder: event.agentFolder,
       event,
-      typingUntil: Math.max(prev[key]?.typingUntil ?? 0, now + 4000),
+      typingUntil,
     },
   };
 }
@@ -87,6 +146,7 @@ export function applyTypingToLiveStatus(
       name: 'Agent',
       typingUntil: until,
       event: next[key]?.event,
+      partialText: next[key]?.partialText,
     };
     return next;
   }
@@ -99,6 +159,7 @@ export function applyTypingToLiveStatus(
       name: match?.name ?? existing?.name ?? folder,
       folder,
       event: existing?.event,
+      partialText: existing?.partialText,
       typingUntil: until,
     };
   }
@@ -143,10 +204,12 @@ export function clearLiveStatusForSender(
   senderFolder: string | undefined,
 ): Record<string, LiveAgentStatus> {
   if (!senderName && !senderFolder) return prev;
+  const nameNorm = senderName?.trim().toLowerCase();
   const next: Record<string, LiveAgentStatus> = {};
   for (const [key, row] of Object.entries(prev)) {
     if (senderFolder && row.folder === senderFolder) continue;
-    if (senderName && row.name === senderName) continue;
+    if (nameNorm && row.name.trim().toLowerCase() === nameNorm) continue;
+    if (nameNorm && row.folder?.toLowerCase() === nameNorm) continue;
     next[key] = row;
   }
   return next;

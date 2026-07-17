@@ -1976,7 +1976,12 @@ body.attachment-drawer-resizing * {
 /* Live agent activity + typing (nanoclaw-agenttrace companion) */
 .msg--live {
   opacity: 0.92;
-  align-items: center;
+  align-items: flex-start;
+}
+
+.msg--live .typing-bubble {
+  align-self: center;
+  margin-top: 0.2em;
 }
 
 .msg-live-activity {
@@ -2002,6 +2007,32 @@ body.attachment-drawer-resizing * {
   white-space: pre-wrap;
   word-break: break-word;
   min-width: 0;
+}
+
+.msg-live-activity .formatted-message--live {
+  color: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  min-width: 0;
+  word-break: break-word;
+}
+
+.msg-live-activity .formatted-message--live p {
+  margin: 0.15em 0;
+}
+
+.msg-live-activity .formatted-message--live p:first-child {
+  margin-top: 0;
+}
+
+.msg-live-activity .formatted-message--live p:last-child {
+  margin-bottom: 0;
+}
+
+.msg-live-activity .formatted-message--live pre,
+.msg-live-activity .formatted-message--live .code-block {
+  font-size: 0.8em;
+  opacity: 0.95;
 }
 
 .typing-bubble {

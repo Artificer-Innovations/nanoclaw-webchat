@@ -3,6 +3,7 @@ import {
   applyActivityClearToLiveStatus,
   applyActivityToLiveStatus,
   applyTypingToLiveStatus,
+  coalescePartialText,
   LIVE_ACTIVITY_MAX_AGE_MS,
   liveStatusList,
   pruneExpiredLiveStatus,
@@ -108,8 +109,86 @@ describe('live-status', () => {
       agents,
       Date.now() - LIVE_ACTIVITY_MAX_AGE_MS - 1_000,
     );
-    // typing window already expired; event older than max age → drop
     const pruned = pruneExpiredLiveStatus(state, Date.now());
     expect(pruned).toEqual({});
+  });
+
+  it('coalesces partial_text deltas into one draft', () => {
+    let state = applyActivityToLiveStatus(
+      {},
+      ev({
+        kind: 'partial_text',
+        summary: '<message>Hello',
+        agentFolder: 'sarah',
+        agentName: 'Sarah',
+        seq: 1,
+      }),
+      agents,
+    );
+    state = applyActivityToLiveStatus(
+      state,
+      ev({
+        kind: 'partial_text',
+        summary: ' **world**',
+        agentFolder: 'sarah',
+        agentName: 'Sarah',
+        seq: 2,
+      }),
+      agents,
+    );
+    expect(state.sarah?.partialText).toBe('Hello **world**');
+  });
+
+  it('uses cumulative snapshot when new partial starts with previous', () => {
+    expect(coalescePartialText('Hello', 'Hello world')).toBe('Hello world');
+  });
+
+  it('clears partial draft when a tool event arrives', () => {
+    let state = applyActivityToLiveStatus(
+      {},
+      ev({ kind: 'partial_text', summary: 'Draft…', agentFolder: 'sarah', agentName: 'Sarah' }),
+      agents,
+    );
+    expect(state.sarah?.partialText).toBe('Draft…');
+    state = applyActivityToLiveStatus(
+      state,
+      ev({ kind: 'tool_start', summary: 'Running Bash', tool: 'Bash', agentFolder: 'sarah', agentName: 'Sarah' }),
+      agents,
+    );
+    expect(state.sarah?.partialText).toBeUndefined();
+    expect(state.sarah?.event?.kind).toBe('tool_start');
+  });
+
+  it('treats keepalive as typing-only (does not sticky Working text)', () => {
+    const state = applyActivityToLiveStatus(
+      {},
+      ev({
+        kind: 'keepalive',
+        summary: 'Working',
+        keepalive: true,
+        agentFolder: 'sarah',
+        agentName: 'Sarah',
+      }),
+      agents,
+      1_000,
+    );
+    expect(state.sarah?.event).toBeUndefined();
+    expect(state.sarah?.typingUntil).toBe(5_000);
+    expect(liveStatusList(state, 1_500)).toHaveLength(1);
+    expect(liveStatusList(state, 6_000)).toHaveLength(0);
+  });
+
+  it('turn_end clears prior turn_start on replay', () => {
+    let state = applyActivityToLiveStatus(
+      {},
+      ev({ kind: 'turn_start', summary: 'Working…', agentFolder: 'sarah', agentName: 'Sarah' }),
+      agents,
+    );
+    state = applyActivityToLiveStatus(
+      state,
+      ev({ kind: 'turn_end', summary: 'Done', agentFolder: 'sarah', agentName: 'Sarah' }),
+      agents,
+    );
+    expect(liveStatusList(state)).toHaveLength(0);
   });
 });

@@ -5,6 +5,8 @@ export type LiveActivityIcon = 'thinking' | 'tool' | 'message' | 'generic';
 export interface FormattedLiveActivity {
   icon: LiveActivityIcon;
   text: string;
+  /** Use FormattedMessage (GFM) instead of plain text. */
+  markdown: boolean;
 }
 
 const TAG_RE = /<\/?([a-zA-Z][\w:-]*)\b[^>]*>/g;
@@ -20,14 +22,22 @@ function decodeBasicEntities(input: string): string {
 
 function stripTags(input: string): { tags: string[]; text: string } {
   const tags: string[] = [];
-  const text = input
-    .replace(TAG_RE, (_match, name: string) => {
-      tags.push(name.toLowerCase());
-      return ' ';
-    })
-    .replace(/\s+/g, ' ')
-    .trim();
+  const text = input.replace(TAG_RE, (_match, name: string) => {
+    tags.push(name.toLowerCase());
+    return '';
+  });
   return { tags, text };
+}
+
+function normalizePlain(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+function normalizeStructured(text: string): string {
+  return text
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 function iconFromTags(tags: string[]): LiveActivityIcon | null {
@@ -56,6 +66,19 @@ function iconFromEvent(event: AgentActivityEvent | undefined, text: string): Liv
   return 'generic';
 }
 
+function wantsMarkdown(icon: LiveActivityIcon, event?: AgentActivityEvent): boolean {
+  return icon === 'message' || event?.kind === 'partial_text';
+}
+
+/**
+ * Strip XML wrappers from a stream chunk without trimming edges —
+ * leading/trailing spaces matter when appending deltas.
+ */
+export function cleanPartialChunk(summary: string): string {
+  const decoded = decodeBasicEntities(summary);
+  return stripTags(decoded).text.replace(/\r\n/g, '\n');
+}
+
 /** Strip XML-ish wrappers and pick an icon for live activity display. */
 export function formatLiveActivity(
   summary: string | undefined,
@@ -64,11 +87,13 @@ export function formatLiveActivity(
   const raw = summary?.trim();
   if (!raw) return null;
   const decoded = decodeBasicEntities(raw);
-  const { tags, text } = stripTags(decoded);
-  const cleaned = text || decoded.replace(TAG_RE, ' ').replace(/\s+/g, ' ').trim();
+  const { tags, text: stripped } = stripTags(decoded);
+  const fallback = decodeBasicEntities(raw).replace(TAG_RE, '').trim();
+  const icon = iconFromTags(tags) ?? iconFromEvent(event, normalizePlain(stripped || fallback));
+  const markdown = wantsMarkdown(icon, event);
+  const cleaned = markdown
+    ? normalizeStructured(stripped || fallback)
+    : normalizePlain(stripped || fallback);
   if (!cleaned) return null;
-  return {
-    icon: iconFromTags(tags) ?? iconFromEvent(event, cleaned),
-    text: cleaned,
-  };
+  return { icon, text: cleaned, markdown };
 }

@@ -288,7 +288,8 @@ export function App() {
         if (cancelled || !bootstrap) return;
         let next: Record<string, LiveAgentStatus> = {};
         for (const event of events) {
-          if (event.kind === 'turn_end') continue;
+          // Include turn_end so completed turns clear — skipping them left
+          // turn_start / tool / keepalive ghosts after refresh/reconnect.
           next = applyActivityToLiveStatus(next, event, bootstrap.agents);
         }
         setLiveByAgent(next);
@@ -1139,13 +1140,19 @@ export function App() {
               })}
               {liveAgentRows.map((row) => {
                 const typing = row.typingUntil > Date.now();
-                const formatted = formatLiveActivity(row.event?.summary, row.event);
+                const formatted = formatLiveActivity(
+                  row.partialText ?? row.event?.summary,
+                  row.event,
+                );
+                const displayText = row.partialText ?? formatted?.text;
+                const useMarkdown =
+                  Boolean(row.partialText) || Boolean(formatted?.markdown);
                 const ActivityIcon =
                   formatted?.icon === 'thinking'
                     ? ThinkingBubbleIcon
                     : formatted?.icon === 'tool'
                       ? ToolGearIcon
-                      : formatted?.icon === 'message'
+                      : formatted?.icon === 'message' || useMarkdown
                         ? MessageActivityIcon
                         : null;
                 return (
@@ -1163,21 +1170,28 @@ export function App() {
                     <span className="msg-sender" style={{ color: senderColor(row.name) }}>
                       {row.name}
                     </span>
-                    {typing || !formatted ? (
-                      <div className="typing-bubble" aria-hidden={Boolean(formatted) && !typing}>
+                    {typing || !displayText ? (
+                      <div className="typing-bubble" aria-hidden={Boolean(displayText) && !typing}>
                         <span />
                         <span />
                         <span />
                       </div>
                     ) : null}
-                    {formatted ? (
+                    {displayText ? (
                       <div className="msg-text msg-live-activity">
                         {ActivityIcon ? (
                           <span className="msg-live-activity-icon" aria-hidden="true">
                             <ActivityIcon />
                           </span>
                         ) : null}
-                        <span className="msg-live-activity-text">{formatted.text}</span>
+                        {useMarkdown ? (
+                          <FormattedMessage
+                            text={displayText}
+                            className="formatted-message formatted-message--live"
+                          />
+                        ) : (
+                          <span className="msg-live-activity-text">{displayText}</span>
+                        )}
                       </div>
                     ) : null}
                   </div>

@@ -2109,7 +2109,11 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
       event: StoredActivityEvent,
     ): Promise<void> {
       const tid = threadId ?? MAIN_THREAD;
-      appendActivityEvent(platformId, tid, event);
+      // Keepalives are ephemeral typing pulses — don't persist (avoids
+      // reconnect ghosts of "Working" after the turn already finished).
+      if (!event.keepalive) {
+        appendActivityEvent(platformId, tid, event);
+      }
       broadcast(
         wsEventForClient(
           {
