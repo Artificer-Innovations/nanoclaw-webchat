@@ -33,6 +33,11 @@ describe('formatLiveActivity', () => {
     expect(out).toEqual({ icon: 'thinking', text: 'Hmm', markdown: false });
   });
 
+  it('decodes double-encoded entities before stripping wrappers', () => {
+    const out = formatLiveActivity('&amp;lt;internal&amp;gt;Hmm&amp;lt;/internal&amp;gt;');
+    expect(out).toEqual({ icon: 'thinking', text: 'Hmm', markdown: false });
+  });
+
   it('uses tool icon for tool_start events', () => {
     const out = formatLiveActivity('Running Bash', ev({ kind: 'tool_start', summary: 'Running Bash', tool: 'Bash' }));
     expect(out).toEqual({ icon: 'tool', text: 'Running Bash', markdown: false });
