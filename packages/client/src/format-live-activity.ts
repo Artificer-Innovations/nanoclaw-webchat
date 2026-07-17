@@ -88,12 +88,9 @@ export function formatLiveActivity(
   if (!raw) return null;
   const decoded = decodeBasicEntities(raw);
   const { tags, text: stripped } = stripTags(decoded);
-  const fallback = decodeBasicEntities(raw).replace(TAG_RE, '').trim();
-  const icon = iconFromTags(tags) ?? iconFromEvent(event, normalizePlain(stripped || fallback));
+  const icon = iconFromTags(tags) ?? iconFromEvent(event, normalizePlain(stripped));
   const markdown = wantsMarkdown(icon, event);
-  const cleaned = markdown
-    ? normalizeStructured(stripped || fallback)
-    : normalizePlain(stripped || fallback);
+  const cleaned = markdown ? normalizeStructured(stripped) : normalizePlain(stripped);
   if (!cleaned) return null;
   return { icon, text: cleaned, markdown };
 }

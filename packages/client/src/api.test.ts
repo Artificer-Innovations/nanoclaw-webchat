@@ -14,6 +14,7 @@ import {
   fetchAuthConfig,
   fetchAuthMe,
   fetchBootstrap,
+  fetchActivity,
   fetchMessages,
   getStoredToken,
   isLocalTokenMode,
@@ -997,6 +998,38 @@ describe('api', () => {
       await expect(disengageAgent('token', 'lobby', 'main', 'sarah')).rejects.toThrow(
         'disengage failed: 500',
       );
+    });
+  });
+
+  describe('fetchActivity', () => {
+    it('returns events from the activity endpoint', async () => {
+      const events = [
+        {
+          turnId: 't1',
+          seq: 1,
+          timestamp: '2026-07-17T00:00:00.000Z',
+          kind: 'tool_start',
+          summary: 'Bash',
+        },
+      ];
+      vi.mocked(fetch).mockResolvedValue({
+        ok: true,
+        json: async () => ({ platformId: 'lobby-1', threadId: 'main', events }),
+      } as Response);
+      await expect(fetchActivity('tok', 'lobby-1', 'main')).resolves.toEqual(events);
+    });
+
+    it('defaults to an empty list when events is omitted', async () => {
+      vi.mocked(fetch).mockResolvedValue({
+        ok: true,
+        json: async () => ({ platformId: 'lobby-1', threadId: 'main' }),
+      } as Response);
+      await expect(fetchActivity('tok', 'lobby-1', 'main')).resolves.toEqual([]);
+    });
+
+    it('throws when the activity endpoint fails', async () => {
+      vi.mocked(fetch).mockResolvedValue({ ok: false, status: 500 } as Response);
+      await expect(fetchActivity('tok', 'lobby-1', 'main')).rejects.toThrow(/activity failed/);
     });
   });
 
