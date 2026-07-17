@@ -1,5 +1,5 @@
 import type { AgentActivityEvent, WebChatAgent } from './types';
-import { cleanPartialChunk } from './format-live-activity';
+import { cleanPartialChunk, cleanStreamDelta } from './format-live-activity';
 
 export interface LiveAgentStatus {
   key: string;
@@ -84,8 +84,15 @@ export function applyActivityToLiveStatus(
   }
 
   if (event.kind === 'partial_text') {
-    const chunk = cleanPartialChunk(event.summary);
+    // Per-delta: strip complete tags only — keep incomplete opens and orphan
+    // tails so `<mes` + `sage>Hello` can reassemble into `<message>Hello`.
+    const chunk = cleanStreamDelta(event.summary);
     const sameTurn = existing?.event?.turnId === event.turnId;
+    // Keep incomplete opens in storage so the next delta can finish the tag;
+    // App display runs formatLiveActivity which strips incomplete trails.
+    const merged = coalescePartialText(sameTurn ? existing?.partialText : undefined, chunk);
+    // After coalesce, strip wrappers that became complete + leftover orphans.
+    const partialText = cleanPartialChunk(merged);
     return {
       ...prev,
       [key]: {
@@ -93,7 +100,7 @@ export function applyActivityToLiveStatus(
         name,
         folder: event.agentFolder,
         event,
-        partialText: coalescePartialText(sameTurn ? existing?.partialText : undefined, chunk),
+        partialText,
         typingUntil,
       },
     };

@@ -3927,8 +3927,33 @@ describe('App', () => {
       expect(screen.getByText('Standing by')).toBeInTheDocument();
       const diegoRow = screen.getByLabelText('Diego is working');
       expect(diegoRow.querySelector('.typing-bubble')).toBeNull();
-      expect(diegoRow.querySelector('.msg-live-activity-icon')).toBeNull();
-      expect(diegoRow.querySelector('.msg-live-activity-text')).toBeTruthy();
+      expect(diegoRow.querySelector('.msg-live-activity-icon')).toBeTruthy();
+      expect(diegoRow.querySelector('.formatted-message--live, .msg-live-activity-text')).toBeTruthy();
+
+      // Generic (non-message) activity: text without a dedicated icon.
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({
+            type: 'activity',
+            platformId: 'lobby-1',
+            threadId: 'main',
+            event: {
+              turnId: 't-plain',
+              seq: 4,
+              timestamp: new Date().toISOString(),
+              kind: 'turn_start',
+              summary: 'hello there',
+              agentName: 'Alex',
+              agentFolder: 'alex',
+            },
+          }),
+        } as MessageEvent);
+      });
+
+      expect(await screen.findByText('hello there')).toBeInTheDocument();
+      const alexRow = screen.getByLabelText('Alex is working');
+      expect(alexRow.querySelector('.msg-live-activity-icon')).toBeNull();
+      expect(alexRow.querySelector('.msg-live-activity-text')).toBeTruthy();
     } finally {
       vi.useRealTimers();
     }

@@ -140,6 +140,49 @@ describe('live-status', () => {
     expect(state.sarah?.partialText).toBe('Hello **world**');
   });
 
+  it('re-strips wrapper tags that reassemble across partial chunks', () => {
+    let state = applyActivityToLiveStatus(
+      {},
+      ev({
+        kind: 'partial_text',
+        summary: '<mes',
+        agentFolder: 'sarah',
+        agentName: 'Sarah',
+        seq: 1,
+      }),
+      agents,
+    );
+    // Mid-name open kept in storage for the next delta (display strips it).
+    expect(state.sarah?.partialText).toBe('<mes');
+    state = applyActivityToLiveStatus(
+      state,
+      ev({
+        kind: 'partial_text',
+        summary: 'sage>Hello',
+        agentFolder: 'sarah',
+        agentName: 'Sarah',
+        seq: 2,
+      }),
+      agents,
+    );
+    expect(state.sarah?.partialText).toBe('Hello');
+    expect(state.sarah?.partialText).not.toMatch(/<|>|message/i);
+  });
+
+  it('keeps incomplete trailing <message in storage for the next delta', () => {
+    const state = applyActivityToLiveStatus(
+      {},
+      ev({
+        kind: 'partial_text',
+        summary: 'Hello <message',
+        agentFolder: 'sarah',
+        agentName: 'Sarah',
+      }),
+      agents,
+    );
+    expect(state.sarah?.partialText).toBe('Hello <message');
+  });
+
   it('uses cumulative snapshot when new partial starts with previous', () => {
     expect(coalescePartialText('Hello', 'Hello world')).toBe('Hello world');
   });

@@ -1144,7 +1144,9 @@ export function App() {
                   row.partialText ?? row.event?.summary,
                   row.event,
                 );
-                const displayText = row.partialText ?? formatted?.text;
+                // Always prefer cleaned/formatted text — raw partialText can still
+                // contain wrapper tags reassembled across stream chunk boundaries.
+                const displayText = formatted?.text;
                 const useMarkdown =
                   Boolean(row.partialText) || Boolean(formatted?.markdown);
                 const ActivityIcon =

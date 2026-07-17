@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cleanPartialChunk, formatLiveActivity } from './format-live-activity';
+import { cleanPartialChunk, cleanStreamDelta, finalizeActivityText, formatLiveActivity } from './format-live-activity';
 import type { AgentActivityEvent } from './types';
 
 function ev(partial: Partial<AgentActivityEvent> & Pick<AgentActivityEvent, 'kind' | 'summary'>): AgentActivityEvent {
@@ -92,9 +92,41 @@ describe('formatLiveActivity', () => {
     expect(formatLiveActivity(undefined)).toBeNull();
   });
 
-  it('cleanPartialChunk preserves leading spaces and strips tags', () => {
+  it('cleanPartialChunk preserves leading spaces and strips complete tags', () => {
     expect(cleanPartialChunk('<message>Hello')).toBe('Hello');
     expect(cleanPartialChunk(' **world**')).toBe(' **world**');
     expect(cleanPartialChunk('a\r\nb')).toBe('a\nb');
+    // Incomplete opens are kept so the next delta can finish the tag.
+    expect(cleanPartialChunk('Hello <message')).toBe('Hello <message');
+    expect(cleanPartialChunk('<mes')).toBe('<mes');
+  });
+
+  it('cleanStreamDelta keeps orphan tails for reassembly', () => {
+    expect(cleanStreamDelta('sage>Hello')).toBe('sage>Hello');
+    expect(cleanStreamDelta('<message>Hi')).toBe('Hi');
+  });
+
+  it('finalizeActivityText drops incomplete trailing wrappers', () => {
+    expect(finalizeActivityText('Hello <message')).toBe('Hello ');
+    expect(finalizeActivityText('Hello</mess')).toBe('Hello');
+    expect(finalizeActivityText('<message to="lobby"')).toBe('');
+    expect(formatLiveActivity('Draft <message')?.text).toBe('Draft');
+  });
+
+  it('strips orphaned known-tag tails after a split open tag', () => {
+    expect(cleanPartialChunk('message>Hi')).toBe('Hi');
+    expect(cleanPartialChunk('internal>Hmm')).toBe('Hmm');
+    // Suffix orphans (missed first chunk, or mid-name split) strip too.
+    expect(cleanPartialChunk('sage>Hello world')).toBe('Hello world');
+    expect(finalizeActivityText('sage>Hello world')).toBe('Hello world');
+  });
+
+  it('formats incomplete task_progress summaries without leaking tags', () => {
+    const out = formatLiveActivity(
+      '<message>Still writing',
+      ev({ kind: 'task_progress', summary: '<message>Still writing' }),
+    );
+    expect(out?.text).toBe('Still writing');
+    expect(out?.markdown).toBe(true);
   });
 });
