@@ -203,6 +203,18 @@ function extractSenderFolder(content: unknown): string | undefined {
   return undefined;
 }
 
+function extractSkipPeerFanOut(content: unknown): boolean {
+  if (content && typeof content === 'object') {
+    return (content as { skipPeerFanOut?: unknown }).skipPeerFanOut === true;
+  }
+  return false;
+}
+
+/** Provider quota / session-limit notices must not re-enter other agents. */
+function looksLikeProviderLimitNotice(text: string): boolean {
+  return /hit your (session )?limit/i.test(text) || /rate limit/i.test(text);
+}
+
 /** Best-effort agent folders for typing events (lobby engaged set, or DM folder). */
 function resolveTypingAgentFolders(platformId: string, threadId: string): string[] {
   const engaged = getEngagedAgents(platformId, threadId);
@@ -870,6 +882,13 @@ async function fanOutPeerReply(
   outboundContent: unknown,
   threadMessageSeq?: number,
 ): Promise<void> {
+  if (extractSkipPeerFanOut(outboundContent) || looksLikeProviderLimitNotice(outboundText)) {
+    log.debug('Web peer fan-out skipped — provider error / limit notice', {
+      platformId,
+      threadIdStored,
+    });
+    return;
+  }
   const { agents } = lobbyAgentFolders();
   const engaged = getEngagedAgents(platformId, threadIdStored);
   const senderName = extractSenderName(outboundContent);

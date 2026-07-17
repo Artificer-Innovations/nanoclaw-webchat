@@ -1351,6 +1351,36 @@ describe('web channel adapter', () => {
     });
   });
 
+  it('does not fan out provider session-limit notices to peer agents', async () => {
+    await adapter.setup(setup);
+    await httpPost('/api/rooms/lobby/threads/thread_abc/messages', { text: '@sarah @diego sync' });
+    await flushAgentDeliveries();
+    captures.length = 0;
+
+    await adapter.deliver('lobby', 'thread_abc', {
+      kind: 'chat',
+      content: {
+        text: "You've hit your session limit · resets 1:10pm (America/Los_Angeles)",
+        senderName: 'Sarah',
+        senderFolder: 'sarah',
+      },
+    });
+    await flushAgentDeliveries();
+    expect(captures.some((c) => c.message.id.startsWith('web-peer-'))).toBe(false);
+
+    await adapter.deliver('lobby', 'thread_abc', {
+      kind: 'chat',
+      content: {
+        text: 'Quota exhausted',
+        senderName: 'Diego',
+        senderFolder: 'diego',
+        skipPeerFanOut: true,
+      },
+    });
+    await flushAgentDeliveries();
+    expect(captures.some((c) => c.message.id.startsWith('web-peer-'))).toBe(false);
+  });
+
   it('returns 401 for API requests without Bearer token', async () => {
     await adapter.setup(setup);
     const { status } = await httpGetText('/api/rooms/lobby/threads/main/messages', testPort);
