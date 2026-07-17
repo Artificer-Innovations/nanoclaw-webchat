@@ -267,6 +267,12 @@ Optional typing events:
 { "type": "typing", "platformId": "lobby", "threadId": "thread_abc" }
 ```
 
+When the adapter can resolve which agents are working (lobby engaged set, or DM folder), typing includes them so the UI can show one bubble per agent:
+
+```json
+{ "type": "typing", "platformId": "lobby", "threadId": "thread_abc", "agents": ["sarah", "diego"] }
+```
+
 Agent activity (from nanoclaw-agenttrace via duck-typed `publishActivity`):
 
 ```json
@@ -280,7 +286,9 @@ Agent activity (from nanoclaw-agenttrace via duck-typed `publishActivity`):
     "timestamp": "2026-07-16T21:00:00.000Z",
     "kind": "tool_start",
     "summary": "Running Bash",
-    "tool": "Bash"
+    "tool": "Bash",
+    "agentName": "Sarah",
+    "agentFolder": "sarah"
   }
 }
 ```

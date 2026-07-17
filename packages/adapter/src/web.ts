@@ -203,6 +203,17 @@ function extractSenderFolder(content: unknown): string | undefined {
   return undefined;
 }
 
+/** Best-effort agent folders for typing events (lobby engaged set, or DM folder). */
+function resolveTypingAgentFolders(platformId: string, threadId: string): string[] {
+  const engaged = getEngagedAgents(platformId, threadId);
+  if (engaged.length > 0) return engaged;
+  if (platformId.startsWith('dm:')) {
+    const folder = platformId.slice(3).split(':')[0];
+    if (folder) return [folder];
+  }
+  return [];
+}
+
 interface AskQuestionContent {
   type: 'ask_question';
   questionId: string;
@@ -2078,12 +2089,15 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
     },
 
     async setTyping(platformId: string, threadId: string | null): Promise<void> {
+      const tid = threadId ?? MAIN_THREAD;
+      const agents = resolveTypingAgentFolders(platformId, tid);
       broadcast(
         wsEventForClient(
           {
             type: 'typing',
             platformId: isPublicMode() ? toLogicalPlatformId(platformId) : platformId,
-            threadId: threadId ?? MAIN_THREAD,
+            threadId: tid,
+            ...(agents.length > 0 ? { agents } : {}),
           },
           platformId,
         ),

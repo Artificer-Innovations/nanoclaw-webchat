@@ -986,6 +986,8 @@ export interface StoredActivityEvent {
   phase?: string;
   replaceKey?: string;
   keepalive?: boolean;
+  agentName?: string;
+  agentFolder?: string;
 }
 
 export function appendActivityEvent(

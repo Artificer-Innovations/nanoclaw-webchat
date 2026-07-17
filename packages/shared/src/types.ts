@@ -103,6 +103,8 @@ export interface WsTypingEvent {
   type: 'typing';
   platformId: string;
   threadId: string;
+  /** Agent folders currently typing (when known). */
+  agents?: string[];
 }
 
 /** Portable activity event from nanoclaw-agenttrace (duck-typed publishActivity). */
@@ -116,6 +118,8 @@ export interface AgentActivityEvent {
   tool?: string;
   replaceKey?: string;
   keepalive?: boolean;
+  agentName?: string;
+  agentFolder?: string;
 }
 
 export interface WsActivityEvent {

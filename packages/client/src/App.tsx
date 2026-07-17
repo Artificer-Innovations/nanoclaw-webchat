@@ -53,7 +53,25 @@ import { formatMessageTime } from './format-message-time';
 import { FormattedMessage } from './FormattedMessage';
 import { InteractiveCard, messageHasInteractiveCard } from './InteractiveCard';
 import { engagedStateAfterSend, messageSenderLabel } from './message-sender';
-import { SendArrowIcon, PlusIcon, SidebarHideIcon, SidebarShowIcon } from './nav-icons';
+import {
+  applyActivityClearToLiveStatus,
+  applyActivityToLiveStatus,
+  applyTypingToLiveStatus,
+  clearLiveStatusForSender,
+  liveStatusList,
+  pruneExpiredLiveStatus,
+  type LiveAgentStatus,
+} from './live-status';
+import { formatLiveActivity } from './format-live-activity';
+import {
+  SendArrowIcon,
+  PlusIcon,
+  SidebarHideIcon,
+  SidebarShowIcon,
+  ThinkingBubbleIcon,
+  ToolGearIcon,
+  MessageActivityIcon,
+} from './nav-icons';
 import { senderColor } from './sender-color';
 import { SidebarSection } from './SidebarRoom';
 import { ThemeToggle } from './ThemeToggle';
@@ -83,7 +101,6 @@ import {
 } from './sidebar-layout';
 import { defaultThreadTitle, isAutoThreadTitle, titleFromMessage } from './thread-names';
 import type {
-  AgentActivityEvent,
   BootstrapPayload,
   ThreadMeta,
   WebChatAttachment,
@@ -134,10 +151,9 @@ export function App() {
   const [expandedRooms, setExpandedRooms] = useState<Set<string>>(() => new Set());
   const [threadId, setThreadId] = useState('main');
   const [messages, setMessages] = useState<WebChatMessage[]>([]);
-  const [activityEvents, setActivityEvents] = useState<AgentActivityEvent[]>([]);
-  const [activityOpen, setActivityOpen] = useState(false);
-  const [typingUntil, setTypingUntil] = useState(0);
-  const [, setTypingTick] = useState(0);
+  const [liveByAgent, setLiveByAgent] = useState<Record<string, LiveAgentStatus>>({});
+  const [, setLiveTick] = useState(0);
+  const liveAgentRows = useMemo(() => liveStatusList(liveByAgent), [liveByAgent]);
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
   const [engagedAgentsByThread, setEngagedAgentsByThread] = useState<Record<string, string[]>>({});
   const [draft, setDraft] = useState('');
@@ -254,18 +270,28 @@ export function App() {
   }, [room?.platformId]);
 
   useEffect(() => {
-    if (typingUntil <= Date.now()) return;
-    const id = setInterval(() => setTypingTick((n) => n + 1), 500);
+    const rows = liveStatusList(liveByAgent);
+    if (rows.length === 0) return;
+    const id = setInterval(() => {
+      setLiveByAgent((prev) => pruneExpiredLiveStatus(prev));
+      setLiveTick((n) => n + 1);
+    }, 400);
     return () => clearInterval(id);
-  }, [typingUntil]);
+  }, [liveByAgent]);
 
   useEffect(() => {
     if (!sessionReady || !room) return;
     let cancelled = false;
-    setActivityEvents([]);
+    setLiveByAgent({});
     void fetchActivity(authToken, room.platformId, threadId)
       .then((events) => {
-        if (!cancelled) setActivityEvents(events);
+        if (cancelled || !bootstrap) return;
+        let next: Record<string, LiveAgentStatus> = {};
+        for (const event of events) {
+          if (event.kind === 'turn_end') continue;
+          next = applyActivityToLiveStatus(next, event, bootstrap.agents);
+        }
+        setLiveByAgent(next);
       })
       .catch(() => {
         /* activity endpoint may be absent on older hosts */
@@ -294,7 +320,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [authToken, room, threadId, sessionReady]);
+  }, [authToken, room, threadId, sessionReady, bootstrap]);
 
   useEffect(() => {
     if (!sessionReady || !bootstrap) return;
@@ -314,7 +340,9 @@ export function App() {
             event.platformId === roomRef.current.platformId &&
             event.threadId === threadIdRef.current
           ) {
-            setTypingUntil(Date.now() + 4000);
+            setLiveByAgent((prev) =>
+              applyTypingToLiveStatus(prev, event.agents, bootstrap.agents),
+            );
           }
           return;
         }
@@ -324,12 +352,9 @@ export function App() {
             event.platformId === roomRef.current.platformId &&
             event.threadId === threadIdRef.current
           ) {
-            setActivityEvents((prev) => {
-              const next = [...prev, event.event];
-              return next.length > 200 ? next.slice(-200) : next;
-            });
-            setTypingUntil(Date.now() + 4000);
-            if (event.event.kind === 'turn_start') setActivityOpen(true);
+            setLiveByAgent((prev) =>
+              applyActivityToLiveStatus(prev, event.event, bootstrap.agents),
+            );
           }
           return;
         }
@@ -339,9 +364,7 @@ export function App() {
             event.platformId === roomRef.current.platformId &&
             event.threadId === threadIdRef.current
           ) {
-            if (event.turnId) {
-              setActivityEvents((prev) => prev.filter((e) => e.turnId !== event.turnId));
-            }
+            setLiveByAgent((prev) => applyActivityClearToLiveStatus(prev, event.turnId));
           }
           return;
         }
@@ -374,6 +397,7 @@ export function App() {
             setRoom(nextRoom);
             setThreadId('main');
             setMessages([]);
+            setLiveByAgent({});
             setSelectedAttachment(null);
           }
           return;
@@ -410,6 +434,11 @@ export function App() {
             trackSeenMessageId(seenIds, msg.id);
             return next;
           });
+          if (msg.direction === 'outbound') {
+            setLiveByAgent((prev) =>
+              clearLiveStatusForSender(prev, msg.senderName, undefined),
+            );
+          }
           setUnreadCounts((counts) =>
             clearUnread(counts, msg.platformId, msg.threadId),
           );
@@ -485,7 +514,7 @@ export function App() {
 
   useLayoutEffect(() => {
     const el = messagesRef.current;
-    if (!el || messages.length === 0) return;
+    if (!el || (messages.length === 0 && liveAgentRows.length === 0)) return;
     const unread = pendingScrollUnreadRef.current;
     if (unread > 0) {
       scrollToUnreadAnchor(el, unread);
@@ -496,7 +525,7 @@ export function App() {
     if (stickToBottomRef.current) {
       scrollToBottom(el);
     }
-  }, [messages, room?.platformId, threadId]);
+  }, [messages, liveAgentRows, room?.platformId, threadId]);
 
   const handleMessagesScroll = useCallback(() => {
     stickToBottomRef.current = isNearBottom(messagesRef.current);
@@ -1070,34 +1099,7 @@ export function App() {
                 {room.name}
                 {activeThreadTitle ? ` — ${activeThreadTitle}` : ''}
               </h2>
-              {activityEvents.length > 0 ? (
-                <button
-                  type="button"
-                  className="activity-toggle"
-                  onClick={() => setActivityOpen((o) => !o)}
-                  aria-expanded={activityOpen}
-                >
-                  {activityOpen ? 'Hide activity' : `Activity (${activityEvents.length})`}
-                </button>
-              ) : null}
             </header>
-
-            {activityOpen && activityEvents.length > 0 ? (
-              <div className="activity-panel" aria-label="Agent activity">
-                {activityEvents.map((ev, i) => (
-                  <div key={`${ev.turnId}-${ev.seq}-${i}`} className="activity-row">
-                    <span className="activity-kind">{ev.kind.replace(/_/g, ' ')}</span>
-                    <span className="activity-summary">{ev.summary}</span>
-                  </div>
-                ))}
-              </div>
-            ) : null}
-
-            {typingUntil > Date.now() ? (
-              <div className="typing-indicator" aria-live="polite">
-                Agent is working…
-              </div>
-            ) : null}
 
             <div className="messages" ref={messagesRef} onScroll={handleMessagesScroll}>
               {messages.map((m) => {
@@ -1132,6 +1134,52 @@ export function App() {
                         <FormattedMessage text={m.text} />
                       ) : null}
                     </div>
+                  </div>
+                );
+              })}
+              {liveAgentRows.map((row) => {
+                const typing = row.typingUntil > Date.now();
+                const formatted = formatLiveActivity(row.event?.summary, row.event);
+                const ActivityIcon =
+                  formatted?.icon === 'thinking'
+                    ? ThinkingBubbleIcon
+                    : formatted?.icon === 'tool'
+                      ? ToolGearIcon
+                      : formatted?.icon === 'message'
+                        ? MessageActivityIcon
+                        : null;
+                return (
+                  <div
+                    key={`live:${row.key}`}
+                    className="msg msg--live"
+                    aria-live="polite"
+                    aria-label={`${row.name} is working`}
+                  >
+                    <time className="msg-time" dateTime={row.event?.timestamp}>
+                      {formatMessageTime(
+                        row.event ? Date.parse(row.event.timestamp) || Date.now() : Date.now(),
+                      )}
+                    </time>
+                    <span className="msg-sender" style={{ color: senderColor(row.name) }}>
+                      {row.name}
+                    </span>
+                    {typing || !formatted ? (
+                      <div className="typing-bubble" aria-hidden={Boolean(formatted) && !typing}>
+                        <span />
+                        <span />
+                        <span />
+                      </div>
+                    ) : null}
+                    {formatted ? (
+                      <div className="msg-text msg-live-activity">
+                        {ActivityIcon ? (
+                          <span className="msg-live-activity-icon" aria-hidden="true">
+                            <ActivityIcon />
+                          </span>
+                        ) : null}
+                        <span className="msg-live-activity-text">{formatted.text}</span>
+                      </div>
+                    ) : null}
                   </div>
                 );
               })}
