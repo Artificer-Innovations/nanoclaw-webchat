@@ -206,3 +206,56 @@ export function ExternalLinkIcon() {
     </svg>
   );
 }
+
+/** Thought / internal reasoning for live activity rows. */
+export function ThinkingBubbleIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+      <path
+        d="M8 15c-2.8 0-5-1.9-5-4.3S5.2 6.4 8 6.4c.7-1.7 2.4-2.9 4.4-2.9 2.5 0 4.5 1.8 4.8 4.1 1.9.3 3.3 1.8 3.3 3.6 0 2.1-1.8 3.8-4 3.8H8z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinejoin="round"
+      />
+      <circle cx="9" cy="18.5" r="1" fill="currentColor" />
+      <circle cx="6.5" cy="20.5" r="0.75" fill="currentColor" />
+    </svg>
+  );
+}
+
+/** Tool / gear for live activity tool rows. */
+export function ToolGearIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+      <path
+        d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.75"
+      />
+      <path
+        d="M19.4 13a7.6 7.6 0 0 0 .1-2l2-1.2-2-3.4-2.3.7a7.7 7.7 0 0 0-1.7-1L15 4h-4l-.5 2.1a7.7 7.7 0 0 0-1.7 1L6.5 6.4l-2 3.4 2 1.2a7.6 7.6 0 0 0 0 2l-2 1.2 2 3.4 2.3-.7a7.7 7.7 0 0 0 1.7 1L11 20h4l.5-2.1a7.7 7.7 0 0 0 1.7-1l2.3.7 2-3.4-2-1.2z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+/** Generic message glyph for stripped <message> activity. */
+export function MessageActivityIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+      <path
+        d="M5 5h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H9l-4 3v-3H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}

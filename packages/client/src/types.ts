@@ -1,4 +1,5 @@
 export type {
+  AgentActivityEvent,
   AuthConfigResponse,
   BootstrapPayload,
   SendMessageResult,
@@ -11,6 +12,8 @@ export type {
   WebChatMessage,
   WebChatRoom,
   WebChatUser,
+  WsActivityClearEvent,
+  WsActivityEvent,
   WsEngagedEvent,
   WsEvent,
   WsMessageEvent,

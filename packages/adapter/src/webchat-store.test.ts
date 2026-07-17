@@ -39,6 +39,9 @@ import {
   upsertThread,
   webchatDbPath,
   webchatFilesDir,
+  appendActivityEvent,
+  getActivityEvents,
+  clearActivityTurn,
 } from './webchat-store.js';
 
 function resetStore(): void {
@@ -1263,5 +1266,90 @@ describe('webchat-store', () => {
     } finally {
       renameSpy.mockRestore();
     }
+  });
+
+  describe('activity events', () => {
+    function activity(
+      turnId: string,
+      seq: number,
+      extras: Partial<{
+        kind: string;
+        summary: string;
+        keepalive: boolean;
+        timestamp: string;
+        tool: string;
+      }> = {},
+    ) {
+      return {
+        turnId,
+        seq,
+        timestamp: extras.timestamp ?? new Date().toISOString(),
+        kind: extras.kind ?? 'tool_start',
+        summary: extras.summary ?? `event-${seq}`,
+        ...extras,
+      };
+    }
+
+    it('appends, lists, and clears activity by turn or room', () => {
+      appendActivityEvent('lobby', 'main', activity('t1', 1));
+      appendActivityEvent('lobby', 'main', activity('t1', 2, { kind: 'tool_end', summary: 'done' }));
+      appendActivityEvent('lobby', 'main', activity('t2', 1));
+
+      const listed = getActivityEvents('lobby', 'main');
+      expect(listed.map((e) => `${e.turnId}:${e.seq}`)).toEqual(['t1:1', 't1:2', 't2:1']);
+
+      clearActivityTurn('lobby', 'main', 't1');
+      expect(getActivityEvents('lobby', 'main').map((e) => e.turnId)).toEqual(['t2']);
+
+      clearActivityTurn('lobby', 'main');
+      expect(getActivityEvents('lobby', 'main')).toEqual([]);
+    });
+
+    it('skips corrupt payload_json rows when listing activity', () => {
+      appendActivityEvent('lobby', 'main', activity('t1', 1));
+      const db = new Database(webchatDbPath());
+      try {
+        db.prepare(
+          `INSERT INTO web_activity (platform_id, thread_id, turn_id, seq, timestamp, kind, summary, tool, payload_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+          'lobby',
+          'main',
+          't-bad',
+          1,
+          new Date().toISOString(),
+          'tool_start',
+          'bad',
+          null,
+          '{not-json',
+        );
+      } finally {
+        db.close();
+      }
+
+      const listed = getActivityEvents('lobby', 'main');
+      expect(listed).toHaveLength(1);
+      expect(listed[0]?.turnId).toBe('t1');
+    });
+
+    it('prunes stale and excess turns when a new turn starts', () => {
+      const stale = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+      appendActivityEvent(
+        'lobby',
+        'main',
+        activity('old', 0, { kind: 'turn_start', timestamp: stale, summary: 'stale' }),
+      );
+      for (let i = 0; i < 51; i += 1) {
+        appendActivityEvent(
+          'lobby',
+          'main',
+          activity(`turn-${i}`, 0, { kind: 'turn_start', summary: `t${i}` }),
+        );
+      }
+      const listed = getActivityEvents('lobby', 'main');
+      expect(listed.some((e) => e.turnId === 'old')).toBe(false);
+      expect(new Set(listed.map((e) => e.turnId)).size).toBeLessThanOrEqual(50);
+      expect(listed.some((e) => e.turnId === 'turn-50')).toBe(true);
+    });
   });
 });
