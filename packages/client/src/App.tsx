@@ -154,6 +154,8 @@ export function App() {
   const [liveByAgent, setLiveByAgent] = useState<Record<string, LiveAgentStatus>>({});
   const [, setLiveTick] = useState(0);
   const liveAgentRows = useMemo(() => liveStatusList(liveByAgent), [liveByAgent]);
+  // Only start/stop the prune clock when live rows appear or disappear.
+  const hasLiveActivity = liveAgentRows.length > 0;
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
   const [engagedAgentsByThread, setEngagedAgentsByThread] = useState<Record<string, string[]>>({});
   const [draft, setDraft] = useState('');
@@ -270,14 +272,13 @@ export function App() {
   }, [room?.platformId]);
 
   useEffect(() => {
-    const rows = liveStatusList(liveByAgent);
-    if (rows.length === 0) return;
+    if (!hasLiveActivity) return;
     const id = setInterval(() => {
       setLiveByAgent((prev) => pruneExpiredLiveStatus(prev));
       setLiveTick((n) => n + 1);
     }, 400);
     return () => clearInterval(id);
-  }, [liveByAgent]);
+  }, [hasLiveActivity]);
 
   useEffect(() => {
     if (!sessionReady || !room) return;

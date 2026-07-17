@@ -43,10 +43,12 @@ const ORPHAN_TAG_TAIL_RE = (() => {
 })();
 
 function decodeBasicEntities(input: string): string {
+  // Decode &amp; first so double-encoded wrappers like `&amp;lt;internal&amp;gt;`
+  // become `&lt;internal&gt;` then `<internal>` before TAG_RE runs.
   return input
+    .replace(/&amp;/gi, '&')
     .replace(/&lt;/gi, '<')
     .replace(/&gt;/gi, '>')
-    .replace(/&amp;/gi, '&')
     .replace(/&quot;/gi, '"')
     .replace(/&#39;|&apos;|&#x27;/gi, "'");
 }
