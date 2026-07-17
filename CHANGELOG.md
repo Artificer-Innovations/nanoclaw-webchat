@@ -4,11 +4,13 @@
 
 ### Minor Changes
 
-- Add live agent activity timeline for nanoclaw-agenttrace (per-agent rows, typing keepalives, cleaned stream text), and skip peer fan-out for provider session-limit / error notices so quota messages do not amplify across lobby agents.
+- [#49](https://github.com/Artificer-Innovations/nanoclaw-webchat/pull/49) — Live agent activity timeline for nanoclaw-agenttrace: per-agent live rows, typing bubbles, keepalive-as-typing-only, cleaned/formatted stream text, incomplete `<message>` tag reassembly, activity WS + REST replay, and coverage for activity persistence/public-mode broadcasts.
+
+- [#49](https://github.com/Artificer-Innovations/nanoclaw-webchat/pull/49) — Skip peer fan-out for provider session-limit / error notices (`skipPeerFanOut` + limit-text heuristic) so quota messages do not amplify across engaged lobby agents.
 
 ### Patch Changes
 
-- 55f524f: Fix `webchat-boot` create_agent live refresh for current NanoClaw guarded delivery APIs (`createAgent`, `validateCreateAgent`, `requestCreateAgentHold`, `reenterGuardedDeliveryAction`) instead of removed `applyCreateAgent` / `handleCreateAgent` exports.
+- [#48](https://github.com/Artificer-Innovations/nanoclaw-webchat/pull/48) — Fix `webchat-boot` create_agent live refresh for current NanoClaw guarded delivery APIs (`createAgent`, `validateCreateAgent`, `requestCreateAgentHold`, `reenterGuardedDeliveryAction`) instead of removed `applyCreateAgent` / `handleCreateAgent` exports.
 
 ## 0.3.0
 
