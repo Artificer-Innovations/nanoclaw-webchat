@@ -66,7 +66,7 @@ async function installAgentGroupLiveRefresh(): Promise<void> {
 
     log.info('Webchat create_agent live refresh installed');
   } catch (err) {
-    log.debug('Webchat agent-group live refresh unavailable', { err });
+    log.warn('Webchat agent-group live refresh unavailable', { err });
   }
 }
 

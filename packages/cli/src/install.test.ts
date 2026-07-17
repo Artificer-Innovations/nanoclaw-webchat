@@ -6,7 +6,7 @@ import { printInstallNextSteps, runInstall, runUninstall, runUpgrade, runVerify 
 import * as nativeDeps from './native-deps.js';
 import * as nodeRunner from './node-runner.js';
 import { spawnSyncMock } from './test/spawn-mock.js';
-import { resourcesDir, skillDir } from './paths.js';
+import { ADAPTER_COPY_RULES, resourcesDir, skillDir } from './paths.js';
 
 const tempDirs: string[] = [];
 
@@ -81,7 +81,7 @@ describe('install', () => {
   it('runInstall copies adapter, patches host, and scaffolds node config', () => {
     const root = makeNanoclawFixture();
     const result = runInstall(root);
-    expect(result.copied).toHaveLength(32);
+    expect(result.copied).toHaveLength(ADAPTER_COPY_RULES.length);
     expect(result.dependenciesAdded).toEqual(['busboy', '@types/busboy']);
     expect(result.dependenciesInstalled).toBe(true);
     expect(nodeRunner.runUnderProjectNode).toHaveBeenCalledWith(root, 'pnpm', ['install']);
@@ -120,7 +120,7 @@ describe('install', () => {
     const root = makeNanoclawFixture();
     runInstall(root);
     const result = runUninstall(root);
-    expect(result.removedFiles).toHaveLength(32);
+    expect(result.removedFiles).toHaveLength(ADAPTER_COPY_RULES.length);
     expect(result.barrelRemoved).toBe(true);
     expect(result.bootRemoved).toBe(true);
   });
