@@ -6,11 +6,14 @@ import {
   CaretRightIcon,
   InboxIcon,
   DoorIcon,
+  MessageActivityIcon,
   PencilIcon,
   PlusIcon,
   SendArrowIcon,
   SidebarHideIcon,
   SidebarShowIcon,
+  ThinkingBubbleIcon,
+  ToolGearIcon,
   TrashIcon,
 } from './nav-icons';
 
@@ -32,5 +35,16 @@ describe('nav-icons', () => {
       </>,
     );
     expect(container.querySelectorAll('svg')).toHaveLength(11);
+  });
+
+  it('renders live activity icons', () => {
+    const { container } = render(
+      <>
+        <ThinkingBubbleIcon />
+        <ToolGearIcon />
+        <MessageActivityIcon />
+      </>,
+    );
+    expect(container.querySelectorAll('svg')).toHaveLength(3);
   });
 });

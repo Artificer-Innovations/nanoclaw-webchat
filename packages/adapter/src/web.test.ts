@@ -1351,6 +1351,36 @@ describe('web channel adapter', () => {
     });
   });
 
+  it('does not fan out provider session-limit notices to peer agents', async () => {
+    await adapter.setup(setup);
+    await httpPost('/api/rooms/lobby/threads/thread_abc/messages', { text: '@sarah @diego sync' });
+    await flushAgentDeliveries();
+    captures.length = 0;
+
+    await adapter.deliver('lobby', 'thread_abc', {
+      kind: 'chat',
+      content: {
+        text: "You've hit your session limit · resets 1:10pm (America/Los_Angeles)",
+        senderName: 'Sarah',
+        senderFolder: 'sarah',
+      },
+    });
+    await flushAgentDeliveries();
+    expect(captures.some((c) => c.message.id.startsWith('web-peer-'))).toBe(false);
+
+    await adapter.deliver('lobby', 'thread_abc', {
+      kind: 'chat',
+      content: {
+        text: 'Quota exhausted',
+        senderName: 'Diego',
+        senderFolder: 'diego',
+        skipPeerFanOut: true,
+      },
+    });
+    await flushAgentDeliveries();
+    expect(captures.some((c) => c.message.id.startsWith('web-peer-'))).toBe(false);
+  });
+
   it('returns 401 for API requests without Bearer token', async () => {
     await adapter.setup(setup);
     const { status } = await httpGetText('/api/rooms/lobby/threads/main/messages', testPort);
@@ -1416,6 +1446,172 @@ describe('web channel adapter', () => {
       ws.on('error', reject);
     });
     expect(received[0]).toMatchObject({ type: 'typing', platformId: 'lobby', threadId: 'thread_abc' });
+  });
+
+  it('broadcasts and persists activity via publishActivity', async () => {
+    await adapter.setup(setup);
+    const event = {
+      turnId: 'turn-1',
+      seq: 1,
+      timestamp: new Date().toISOString(),
+      kind: 'tool_start' as const,
+      summary: 'Running Bash',
+      tool: 'Bash',
+    };
+    const received: unknown[] = [];
+    await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${testPort}/api/ws?token=${SECRET}`);
+      ws.on('open', async () => {
+        await (
+          adapter as unknown as {
+            publishActivity: (
+              platformId: string,
+              threadId: string | null,
+              ev: typeof event,
+            ) => Promise<void>;
+          }
+        ).publishActivity('lobby', 'thread_abc', event);
+      });
+      ws.on('message', (data) => {
+        received.push(JSON.parse(data.toString()));
+        ws.close();
+        resolve();
+      });
+      ws.on('error', reject);
+    });
+    expect(received[0]).toMatchObject({
+      type: 'activity',
+      platformId: 'lobby',
+      threadId: 'thread_abc',
+      event: { kind: 'tool_start', summary: 'Running Bash', tool: 'Bash' },
+    });
+    const { status, body } = await httpGet('/api/rooms/lobby/threads/thread_abc/activity');
+    expect(status).toBe(200);
+    const parsed = body as { events: Array<{ turnId: string }> };
+    expect(parsed.events.some((e) => e.turnId === 'turn-1')).toBe(true);
+  });
+
+  it('does not persist keepalive activity and clears by turn or room', async () => {
+    await adapter.setup(setup);
+    const duck = adapter as unknown as {
+      publishActivity: (
+        platformId: string,
+        threadId: string | null,
+        event: {
+          turnId: string;
+          seq: number;
+          timestamp: string;
+          kind: string;
+          summary: string;
+          keepalive?: boolean;
+        },
+      ) => Promise<void>;
+      clearActivity: (
+        platformId: string,
+        threadId: string | null,
+        turnId?: string,
+      ) => Promise<void>;
+    };
+
+    await duck.publishActivity('lobby', null, {
+      turnId: 'turn-keep',
+      seq: 1,
+      timestamp: new Date().toISOString(),
+      kind: 'keepalive',
+      summary: 'Working',
+      keepalive: true,
+    });
+    let listed = await httpGet('/api/rooms/lobby/threads/main/activity');
+    expect((listed.body as { events: unknown[] }).events).toEqual([]);
+
+    await duck.publishActivity('lobby', null, {
+      turnId: 'turn-keep',
+      seq: 2,
+      timestamp: new Date().toISOString(),
+      kind: 'tool_start',
+      summary: 'Bash',
+    });
+    listed = await httpGet('/api/rooms/lobby/threads/main/activity');
+    expect((listed.body as { events: Array<{ turnId: string }> }).events).toHaveLength(1);
+
+    const cleared: unknown[] = [];
+    await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${testPort}/api/ws?token=${SECRET}`);
+      ws.on('open', async () => {
+        await duck.clearActivity('lobby', null, 'turn-keep');
+      });
+      ws.on('message', (data) => {
+        cleared.push(JSON.parse(data.toString()));
+        ws.close();
+        resolve();
+      });
+      ws.on('error', reject);
+    });
+    expect(cleared[0]).toMatchObject({
+      type: 'activity_clear',
+      platformId: 'lobby',
+      threadId: 'main',
+      turnId: 'turn-keep',
+    });
+    listed = await httpGet('/api/rooms/lobby/threads/main/activity');
+    expect((listed.body as { events: unknown[] }).events).toEqual([]);
+
+    await duck.publishActivity('lobby', null, {
+      turnId: 'turn-2',
+      seq: 1,
+      timestamp: new Date().toISOString(),
+      kind: 'tool_start',
+      summary: 'Grep',
+    });
+    await duck.clearActivity('lobby', null);
+    listed = await httpGet('/api/rooms/lobby/threads/main/activity');
+    expect((listed.body as { events: unknown[] }).events).toEqual([]);
+  });
+
+  it('setTyping includes DM folder agents when nothing is engaged', async () => {
+    await adapter.setup(setup);
+    const received: unknown[] = [];
+    await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${testPort}/api/ws?token=${SECRET}`);
+      ws.on('open', async () => {
+        await adapter.setTyping!('dm:sarah', 'main');
+      });
+      ws.on('message', (data) => {
+        received.push(JSON.parse(data.toString()));
+        ws.close();
+        resolve();
+      });
+      ws.on('error', reject);
+    });
+    expect(received[0]).toMatchObject({
+      type: 'typing',
+      platformId: 'dm:sarah',
+      threadId: 'main',
+      agents: ['sarah'],
+    });
+  });
+
+  it('setTyping omits agents for malformed dm platform ids', async () => {
+    await adapter.setup(setup);
+    const received: unknown[] = [];
+    await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${testPort}/api/ws?token=${SECRET}`);
+      ws.on('open', async () => {
+        await adapter.setTyping!('dm:', 'main');
+      });
+      ws.on('message', (data) => {
+        received.push(JSON.parse(data.toString()));
+        ws.close();
+        resolve();
+      });
+      ws.on('error', reject);
+    });
+    expect(received[0]).toMatchObject({
+      type: 'typing',
+      platformId: 'dm:',
+      threadId: 'main',
+    });
+    expect(received[0]).not.toHaveProperty('agents');
   });
 
   it('serves static assets with correct Content-Type', async () => {
@@ -3509,6 +3705,65 @@ describe('web channel adapter', () => {
 
     aliceClient.ws.close();
     bobClient.ws.close();
+  });
+
+  it('broadcasts activity and typing with logical platform ids in public mode', async () => {
+    adapter = createWebAdapter(publicAdapterOptions(testPort));
+    resetWebchatAuthSchemaForTests();
+    await adapter.setup(setup);
+
+    const cookie = await loginBasicSession('alice');
+    const client = await openWsWithCookie(cookie);
+    const duck = adapter as unknown as {
+      publishActivity: (
+        platformId: string,
+        threadId: string | null,
+        event: {
+          turnId: string;
+          seq: number;
+          timestamp: string;
+          kind: string;
+          summary: string;
+        },
+      ) => Promise<void>;
+      clearActivity: (
+        platformId: string,
+        threadId: string | null,
+        turnId?: string,
+      ) => Promise<void>;
+    };
+
+    const aliceInbox = `inbox:${encodeUserSuffix('web:basic:alice')}`;
+    await adapter.setTyping!(aliceInbox, 'main');
+    await duck.publishActivity(aliceInbox, 'main', {
+      turnId: 'pub-1',
+      seq: 1,
+      timestamp: new Date().toISOString(),
+      kind: 'tool_start',
+      summary: 'Public Bash',
+    });
+    await duck.clearActivity(aliceInbox, 'main', 'pub-1');
+
+    await vi.waitFor(() => {
+      expect(client.events.some((e) => (e as { type?: string }).type === 'typing')).toBe(true);
+      expect(client.events.some((e) => (e as { type?: string }).type === 'activity')).toBe(true);
+      expect(client.events.some((e) => (e as { type?: string }).type === 'activity_clear')).toBe(true);
+    });
+
+    const typing = client.events.find((e) => (e as { type?: string }).type === 'typing') as {
+      platformId?: string;
+    };
+    const activity = client.events.find((e) => (e as { type?: string }).type === 'activity') as {
+      platformId?: string;
+    };
+    const clear = client.events.find((e) => (e as { type?: string }).type === 'activity_clear') as {
+      platformId?: string;
+    };
+    expect(typing.platformId).toBe('inbox');
+    expect(activity.platformId).toBe('inbox');
+    expect(clear.platformId).toBe('inbox');
+
+    client.ws.close();
   });
 
   it('returns 403 when session user accesses another users scoped room', async () => {

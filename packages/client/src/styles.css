@@ -1972,3 +1972,117 @@ body.attachment-drawer-resizing * {
     padding-left: 52px;
   }
 }
+
+/* Live agent activity + typing (nanoclaw-agenttrace companion) */
+.msg--live {
+  opacity: 0.92;
+  align-items: flex-start;
+}
+
+.msg--live .typing-bubble {
+  align-self: center;
+  margin-top: 0.2em;
+}
+
+.msg-live-activity {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.875rem;
+  line-height: 1.4;
+  max-width: 100%;
+  animation: live-activity-pulse 1.8s ease-in-out infinite;
+}
+
+.msg-live-activity-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  margin-top: 0.15em;
+  color: var(--muted);
+  opacity: 0.9;
+}
+
+.msg-live-activity-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  min-width: 0;
+}
+
+.msg-live-activity .formatted-message--live {
+  color: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  min-width: 0;
+  word-break: break-word;
+}
+
+.msg-live-activity .formatted-message--live p {
+  margin: 0.15em 0;
+}
+
+.msg-live-activity .formatted-message--live p:first-child {
+  margin-top: 0;
+}
+
+.msg-live-activity .formatted-message--live p:last-child {
+  margin-bottom: 0;
+}
+
+.msg-live-activity .formatted-message--live pre,
+.msg-live-activity .formatted-message--live .code-block {
+  font-size: 0.8em;
+  opacity: 0.95;
+}
+
+.typing-bubble {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--msg-hover) 85%, var(--accent) 15%);
+  border: 1px solid var(--border);
+  min-height: 22px;
+  align-self: center;
+}
+
+.typing-bubble span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+  animation: typing-dot 1.2s ease-in-out infinite;
+}
+
+.typing-bubble span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.typing-bubble span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes typing-dot {
+  0%,
+  60%,
+  100% {
+    opacity: 0.35;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
+}
+
+@keyframes live-activity-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 0.95;
+  }
+}

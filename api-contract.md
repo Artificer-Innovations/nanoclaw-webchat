@@ -267,6 +267,46 @@ Optional typing events:
 { "type": "typing", "platformId": "lobby", "threadId": "thread_abc" }
 ```
 
+When the adapter can resolve which agents are working (lobby engaged set, or DM folder), typing includes them so the UI can show one bubble per agent:
+
+```json
+{ "type": "typing", "platformId": "lobby", "threadId": "thread_abc", "agents": ["sarah", "diego"] }
+```
+
+Agent activity (from nanoclaw-agenttrace via duck-typed `publishActivity`):
+
+```json
+{
+  "type": "activity",
+  "platformId": "lobby",
+  "threadId": "main",
+  "event": {
+    "turnId": "msg-…",
+    "seq": 3,
+    "timestamp": "2026-07-16T21:00:00.000Z",
+    "kind": "tool_start",
+    "summary": "Running Bash",
+    "tool": "Bash",
+    "agentName": "Sarah",
+    "agentFolder": "sarah"
+  }
+}
+```
+
+```json
+{ "type": "activity_clear", "platformId": "lobby", "threadId": "main", "turnId": "msg-…" }
+```
+
+Omit `turnId` to clear **all** live activity for that room/thread. With `turnId`, only that turn is cleared.
+
+### `GET /api/rooms/:platformId/threads/:threadId/activity`
+
+Returns recent in-flight activity for reconnect (events newer than ~3 minutes, capped at 50 turns). Not a durable history log.
+
+```json
+{ "platformId": "lobby", "threadId": "main", "events": [ /* AgentActivityEvent[] */ ] }
+```
+
 Engaged-agent updates (lobby threads — when agents are @'d or removed via UI):
 
 ```json

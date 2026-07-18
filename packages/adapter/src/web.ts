@@ -75,13 +75,16 @@ import {
 import { implicitMentionedFolders, mentionedAgentFolders, type ImplicitMentionAgent } from '../webchat-mentions.js';
 import {
   addEngagedAgents,
+  appendActivityEvent,
   appendMessage,
   appendMessageWithAttachmentMeta,
+  clearActivityTurn,
   createThread,
   deleteThreadData,
   deleteMessageFiles,
   ensureWebchatSchema,
   enrichMessagesWithAttachmentData,
+  getActivityEvents,
   getEngagedAgents,
   getMessageAttachmentPath,
   getMessages,
@@ -98,6 +101,7 @@ import {
   answerCardsByQuestionId,
   revertCardsByQuestionId,
   writeAttachmentFiles,
+  type StoredActivityEvent,
   type StoredAttachmentMeta,
   type WebchatAskQuestionCard,
   type WebchatAttachmentInput,
@@ -197,6 +201,29 @@ function extractSenderFolder(content: unknown): string | undefined {
     if (typeof folder === 'string' && folder.trim()) return folder.trim();
   }
   return undefined;
+}
+
+function extractSkipPeerFanOut(content: unknown): boolean {
+  if (content && typeof content === 'object') {
+    return (content as { skipPeerFanOut?: unknown }).skipPeerFanOut === true;
+  }
+  return false;
+}
+
+/** Provider quota / session-limit notices must not re-enter other agents. */
+function looksLikeProviderLimitNotice(text: string): boolean {
+  return /hit your (session )?limit/i.test(text) || /rate limit/i.test(text);
+}
+
+/** Best-effort agent folders for typing events (lobby engaged set, or DM folder). */
+function resolveTypingAgentFolders(platformId: string, threadId: string): string[] {
+  const engaged = getEngagedAgents(platformId, threadId);
+  if (engaged.length > 0) return engaged;
+  if (platformId.startsWith('dm:')) {
+    const folder = platformId.slice(3).split(':')[0];
+    if (folder) return [folder];
+  }
+  return [];
 }
 
 interface AskQuestionContent {
@@ -855,6 +882,13 @@ async function fanOutPeerReply(
   outboundContent: unknown,
   threadMessageSeq?: number,
 ): Promise<void> {
+  if (extractSkipPeerFanOut(outboundContent) || looksLikeProviderLimitNotice(outboundText)) {
+    log.debug('Web peer fan-out skipped — provider error / limit notice', {
+      platformId,
+      threadIdStored,
+    });
+    return;
+  }
   const { agents } = lobbyAgentFolders();
   const engaged = getEngagedAgents(platformId, threadIdStored);
   const senderName = extractSenderName(outboundContent);
@@ -1721,6 +1755,27 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
               return;
             }
 
+            const activityMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/threads\/([^/]+)\/activity$/);
+            if (activityMatch && req.method === 'GET') {
+              const logicalPlatformId = decodeURIComponent(activityMatch[1]!);
+              const activityThreadId = decodeURIComponent(activityMatch[2]!);
+              const storagePlatformId = tryResolveStoragePlatformId(
+                logicalPlatformId,
+                requestUser.userId,
+                res,
+              );
+              if (storagePlatformId === undefined) return;
+              // Activity payloads are agent-status (name/folder/summary) — no
+              // storage-only fields to redact in public mode beyond platformId remap.
+              const events = getActivityEvents(storagePlatformId, activityThreadId);
+              json(res, 200, {
+                platformId: isPublicMode() ? toLogicalPlatformId(storagePlatformId) : storagePlatformId,
+                threadId: activityThreadId,
+                events,
+              });
+              return;
+            }
+
             const attMatch = url.pathname.match(/^\/api\/attachments\/([^/]+)\/([^/]+)$/);
             if (attMatch && req.method === 'GET') {
               const messageId = decodeURIComponent(attMatch[1]!);
@@ -2052,12 +2107,77 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
     },
 
     async setTyping(platformId: string, threadId: string | null): Promise<void> {
-      broadcast({
-        type: 'typing',
-        platformId,
-        threadId: threadId ?? MAIN_THREAD,
-      });
+      const tid = threadId ?? MAIN_THREAD;
+      const agents = resolveTypingAgentFolders(platformId, tid);
+      broadcast(
+        wsEventForClient(
+          {
+            type: 'typing',
+            platformId: isPublicMode() ? toLogicalPlatformId(platformId) : platformId,
+            threadId: tid,
+            ...(agents.length > 0 ? { agents } : {}),
+          },
+          platformId,
+        ),
+      );
     },
+
+    async publishActivity(
+      platformId: string,
+      threadId: string | null,
+      event: StoredActivityEvent,
+    ): Promise<void> {
+      const tid = threadId ?? MAIN_THREAD;
+      // Keepalives are ephemeral typing pulses — don't persist (avoids
+      // reconnect ghosts of "Working" after the turn already finished).
+      if (!event.keepalive) {
+        appendActivityEvent(platformId, tid, event);
+      }
+      broadcast(
+        wsEventForClient(
+          {
+            type: 'activity',
+            platformId: isPublicMode() ? toLogicalPlatformId(platformId) : platformId,
+            threadId: tid,
+            event,
+          },
+          platformId,
+        ),
+      );
+    },
+
+    async clearActivity(
+      platformId: string,
+      threadId: string | null,
+      turnId?: string,
+    ): Promise<void> {
+      const tid = threadId ?? MAIN_THREAD;
+      // turnId set → clear that turn; omitted → clear all activity for the room.
+      clearActivityTurn(platformId, tid, turnId);
+      broadcast(
+        wsEventForClient(
+          {
+            type: 'activity_clear',
+            platformId: isPublicMode() ? toLogicalPlatformId(platformId) : platformId,
+            threadId: tid,
+            turnId,
+          },
+          platformId,
+        ),
+      );
+    },
+    // Duck-typed for nanoclaw-agenttrace — not on ChannelAdapter until trunk adopts it.
+  } as ChannelAdapter & {
+    publishActivity: (
+      platformId: string,
+      threadId: string | null,
+      event: StoredActivityEvent,
+    ) => Promise<void>;
+    clearActivity: (
+      platformId: string,
+      threadId: string | null,
+      turnId?: string,
+    ) => Promise<void>;
   };
 }
 

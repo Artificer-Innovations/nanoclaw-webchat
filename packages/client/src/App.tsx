@@ -53,7 +53,25 @@ import { formatMessageTime } from './format-message-time';
 import { FormattedMessage } from './FormattedMessage';
 import { InteractiveCard, messageHasInteractiveCard } from './InteractiveCard';
 import { engagedStateAfterSend, messageSenderLabel } from './message-sender';
-import { SendArrowIcon, PlusIcon, SidebarHideIcon, SidebarShowIcon } from './nav-icons';
+import {
+  applyActivityClearToLiveStatus,
+  applyActivityToLiveStatus,
+  applyTypingToLiveStatus,
+  clearLiveStatusForSender,
+  liveStatusList,
+  pruneExpiredLiveStatus,
+  type LiveAgentStatus,
+} from './live-status';
+import { formatLiveActivity } from './format-live-activity';
+import {
+  SendArrowIcon,
+  PlusIcon,
+  SidebarHideIcon,
+  SidebarShowIcon,
+  ThinkingBubbleIcon,
+  ToolGearIcon,
+  MessageActivityIcon,
+} from './nav-icons';
 import { senderColor } from './sender-color';
 import { SidebarSection } from './SidebarRoom';
 import { ThemeToggle } from './ThemeToggle';
@@ -82,7 +100,13 @@ import {
   sidebarWidthFromKeyboard,
 } from './sidebar-layout';
 import { defaultThreadTitle, isAutoThreadTitle, titleFromMessage } from './thread-names';
-import type { BootstrapPayload, ThreadMeta, WebChatAttachment, WebChatMessage, WebChatRoom } from './types';
+import type {
+  BootstrapPayload,
+  ThreadMeta,
+  WebChatAttachment,
+  WebChatMessage,
+  WebChatRoom,
+} from './types';
 import { Login } from './Login';
 import {
   connectWebSocket,
@@ -91,6 +115,7 @@ import {
   deleteThread,
   detectPublicAuthMode,
   disengageAgent,
+  fetchActivity,
   fetchAuthMe,
   fetchBootstrap,
   fetchMessages,
@@ -126,6 +151,11 @@ export function App() {
   const [expandedRooms, setExpandedRooms] = useState<Set<string>>(() => new Set());
   const [threadId, setThreadId] = useState('main');
   const [messages, setMessages] = useState<WebChatMessage[]>([]);
+  const [liveByAgent, setLiveByAgent] = useState<Record<string, LiveAgentStatus>>({});
+  const [, setLiveTick] = useState(0);
+  const liveAgentRows = useMemo(() => liveStatusList(liveByAgent), [liveByAgent]);
+  // Only start/stop the prune clock when live rows appear or disappear.
+  const hasLiveActivity = liveAgentRows.length > 0;
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
   const [engagedAgentsByThread, setEngagedAgentsByThread] = useState<Record<string, string[]>>({});
   const [draft, setDraft] = useState('');
@@ -242,8 +272,32 @@ export function App() {
   }, [room?.platformId]);
 
   useEffect(() => {
+    if (!hasLiveActivity) return;
+    const id = setInterval(() => {
+      setLiveByAgent((prev) => pruneExpiredLiveStatus(prev));
+      setLiveTick((n) => n + 1);
+    }, 400);
+    return () => clearInterval(id);
+  }, [hasLiveActivity]);
+
+  useEffect(() => {
     if (!sessionReady || !room) return;
     let cancelled = false;
+    setLiveByAgent({});
+    void fetchActivity(authToken, room.platformId, threadId)
+      .then((events) => {
+        if (cancelled || !bootstrap) return;
+        let next: Record<string, LiveAgentStatus> = {};
+        for (const event of events) {
+          // Include turn_end so completed turns clear — skipping them left
+          // turn_start / tool / keepalive ghosts after refresh/reconnect.
+          next = applyActivityToLiveStatus(next, event, bootstrap.agents);
+        }
+        setLiveByAgent(next);
+      })
+      .catch(() => {
+        /* activity endpoint may be absent on older hosts */
+      });
     fetchMessages(authToken, room.platformId, threadId)
       .then(({ messages: msgs, engagedAgents }) => {
         if (!cancelled) {
@@ -268,7 +322,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [authToken, room, threadId, sessionReady]);
+  }, [authToken, room, threadId, sessionReady, bootstrap]);
 
   useEffect(() => {
     if (!sessionReady || !bootstrap) return;
@@ -280,6 +334,40 @@ export function App() {
             ...prev,
             [unreadKey(event.platformId, event.threadId)]: event.agents,
           }));
+          return;
+        }
+        if (event.type === 'typing') {
+          if (
+            roomRef.current &&
+            event.platformId === roomRef.current.platformId &&
+            event.threadId === threadIdRef.current
+          ) {
+            setLiveByAgent((prev) =>
+              applyTypingToLiveStatus(prev, event.agents, bootstrap.agents),
+            );
+          }
+          return;
+        }
+        if (event.type === 'activity') {
+          if (
+            roomRef.current &&
+            event.platformId === roomRef.current.platformId &&
+            event.threadId === threadIdRef.current
+          ) {
+            setLiveByAgent((prev) =>
+              applyActivityToLiveStatus(prev, event.event, bootstrap.agents),
+            );
+          }
+          return;
+        }
+        if (event.type === 'activity_clear') {
+          if (
+            roomRef.current &&
+            event.platformId === roomRef.current.platformId &&
+            event.threadId === threadIdRef.current
+          ) {
+            setLiveByAgent((prev) => applyActivityClearToLiveStatus(prev, event.turnId));
+          }
           return;
         }
         if (event.type === 'message_update') {
@@ -311,6 +399,7 @@ export function App() {
             setRoom(nextRoom);
             setThreadId('main');
             setMessages([]);
+            setLiveByAgent({});
             setSelectedAttachment(null);
           }
           return;
@@ -347,6 +436,11 @@ export function App() {
             trackSeenMessageId(seenIds, msg.id);
             return next;
           });
+          if (msg.direction === 'outbound') {
+            setLiveByAgent((prev) =>
+              clearLiveStatusForSender(prev, msg.senderName, undefined),
+            );
+          }
           setUnreadCounts((counts) =>
             clearUnread(counts, msg.platformId, msg.threadId),
           );
@@ -422,7 +516,7 @@ export function App() {
 
   useLayoutEffect(() => {
     const el = messagesRef.current;
-    if (!el || messages.length === 0) return;
+    if (!el || (messages.length === 0 && liveAgentRows.length === 0)) return;
     const unread = pendingScrollUnreadRef.current;
     if (unread > 0) {
       scrollToUnreadAnchor(el, unread);
@@ -433,7 +527,7 @@ export function App() {
     if (stickToBottomRef.current) {
       scrollToBottom(el);
     }
-  }, [messages, room?.platformId, threadId]);
+  }, [messages, liveAgentRows, room?.platformId, threadId]);
 
   const handleMessagesScroll = useCallback(() => {
     stickToBottomRef.current = isNearBottom(messagesRef.current);
@@ -1042,6 +1136,67 @@ export function App() {
                         <FormattedMessage text={m.text} />
                       ) : null}
                     </div>
+                  </div>
+                );
+              })}
+              {liveAgentRows.map((row) => {
+                const typing = row.typingUntil > Date.now();
+                const formatted = formatLiveActivity(
+                  row.partialText ?? row.event?.summary,
+                  row.event,
+                );
+                // Always prefer cleaned/formatted text — raw partialText can still
+                // contain wrapper tags reassembled across stream chunk boundaries.
+                const displayText = formatted?.text;
+                const useMarkdown =
+                  Boolean(row.partialText) || Boolean(formatted?.markdown);
+                const ActivityIcon =
+                  formatted?.icon === 'thinking'
+                    ? ThinkingBubbleIcon
+                    : formatted?.icon === 'tool'
+                      ? ToolGearIcon
+                      : formatted?.icon === 'message' || useMarkdown
+                        ? MessageActivityIcon
+                        : null;
+                return (
+                  <div
+                    key={`live:${row.key}`}
+                    className="msg msg--live"
+                    aria-live="polite"
+                    aria-label={`${row.name} is working`}
+                  >
+                    <time className="msg-time" dateTime={row.event?.timestamp}>
+                      {formatMessageTime(
+                        row.event ? Date.parse(row.event.timestamp) || Date.now() : Date.now(),
+                      )}
+                    </time>
+                    <span className="msg-sender" style={{ color: senderColor(row.name) }}>
+                      {row.name}
+                    </span>
+                    {typing || !displayText ? (
+                      <div className="typing-bubble" aria-hidden={Boolean(displayText) && !typing}>
+                        <span />
+                        <span />
+                        <span />
+                      </div>
+                    ) : null}
+                    {displayText ? (
+                      <div className="msg-text msg-live-activity">
+                        {ActivityIcon ? (
+                          <span className="msg-live-activity-icon" aria-hidden="true">
+                            <ActivityIcon />
+                          </span>
+                        ) : null}
+                        {useMarkdown ? (
+                          <FormattedMessage
+                            text={displayText}
+                            className="formatted-message formatted-message--live"
+                          />
+                        ) : (
+                          <span className="msg-live-activity-text">{displayText}</span>
+                        )}
+                      </div>
+                    ) : null}
                   </div>
                 );
               })}

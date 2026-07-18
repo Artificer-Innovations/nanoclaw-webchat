@@ -116,6 +116,7 @@ function createFetchMock(handlers: {
   messages?: WebChatMessage[];
   engagedAgents?: string[];
   disengageResult?: string[];
+  activity?: unknown[];
   messagesForThread?: (
     platformId: string,
     threadId: string,
@@ -179,6 +180,9 @@ function createFetchMock(handlers: {
     }
     if (url.includes('/actions') && init?.method === 'POST') {
       return jsonResponse({ ok: true });
+    }
+    if (url.includes('/activity')) {
+      return jsonResponse({ platformId: 'lobby-1', threadId: 'main', events: handlers.activity ?? [] });
     }
     if (url.includes('/messages')) {
       if (handlers.messagesError) {
@@ -3612,5 +3616,396 @@ describe('App', () => {
     await user.click(await screen.findByRole('button', { name: 'Inbox' }));
     await user.click(await screen.findByRole('button', { name: 'Approve' }));
     await screen.findByText('Approved');
+  });
+
+  it('renders live activity from websocket and clears on activity_clear', async () => {
+    vi.stubGlobal('fetch', vi.fn(createFetchMock({ messages: [] })));
+    const MockWebSocket = createWebSocketMock();
+    sessionStorage.setItem('webchat_token', 'secret');
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+    const ws = await waitForWebSocket(MockWebSocket);
+
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: 'activity',
+          platformId: 'lobby-1',
+          threadId: 'main',
+          event: {
+            turnId: 't-live',
+            seq: 1,
+            timestamp: new Date().toISOString(),
+            kind: 'tool_start',
+            summary: 'Running Bash',
+            tool: 'Bash',
+            agentName: 'Sarah',
+            agentFolder: 'sarah',
+          },
+        }),
+      } as MessageEvent);
+    });
+
+    expect(await screen.findByText('Running Bash')).toBeInTheDocument();
+
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: 'activity_clear',
+          platformId: 'lobby-1',
+          threadId: 'main',
+          turnId: 't-live',
+        }),
+      } as MessageEvent);
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText('Running Bash')).not.toBeInTheDocument();
+    });
+  });
+
+  it('replays activity from GET /activity on room load', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          messages: [],
+          activity: [
+            {
+              turnId: 't-replay',
+              seq: 1,
+              timestamp: new Date().toISOString(),
+              kind: 'tool_start',
+              summary: 'Replayed Grep',
+              tool: 'Grep',
+              agentName: 'Sarah',
+              agentFolder: 'sarah',
+            },
+          ],
+        }),
+      ),
+    );
+    createWebSocketMock();
+    sessionStorage.setItem('webchat_token', 'secret');
+
+    render(<App />);
+    expect(await screen.findByText('Replayed Grep')).toBeInTheDocument();
+  });
+
+  it('ticks the live-status prune interval while activity is visible', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      vi.stubGlobal('fetch', vi.fn(createFetchMock({ messages: [] })));
+      const MockWebSocket = createWebSocketMock();
+      sessionStorage.setItem('webchat_token', 'secret');
+
+      render(<App />);
+      await screen.findByRole('heading', { name: 'Lobby' });
+      const ws = await waitForWebSocket(MockWebSocket);
+
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({
+            type: 'activity',
+            platformId: 'lobby-1',
+            threadId: 'main',
+            event: {
+              turnId: 't-tick',
+              seq: 1,
+              timestamp: new Date().toISOString(),
+              kind: 'tool_start',
+              summary: 'Ticking Bash',
+              tool: 'Bash',
+              agentName: 'Sarah',
+              agentFolder: 'sarah',
+            },
+          }),
+        } as MessageEvent);
+      });
+
+      expect(await screen.findByText('Ticking Bash')).toBeInTheDocument();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(450);
+      });
+
+      expect(screen.getByText('Ticking Bash')).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('applies typing websocket events for engaged agents', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(createFetchMock({ messages: [], engagedAgents: ['sarah'] })),
+    );
+    const MockWebSocket = createWebSocketMock();
+    sessionStorage.setItem('webchat_token', 'secret');
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+    const ws = await waitForWebSocket(MockWebSocket);
+
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: 'typing',
+          platformId: 'lobby-1',
+          threadId: 'main',
+          agents: ['sarah'],
+        }),
+      } as MessageEvent);
+    });
+
+    expect(await screen.findByLabelText('Sarah is working')).toBeInTheDocument();
+  });
+
+  it('ignores typing/activity for other rooms and unknown ws event kinds', async () => {
+    vi.stubGlobal('fetch', vi.fn(createFetchMock({ messages: [] })));
+    const MockWebSocket = createWebSocketMock();
+    sessionStorage.setItem('webchat_token', 'secret');
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+    const ws = await waitForWebSocket(MockWebSocket);
+
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: 'typing',
+          platformId: 'other-room',
+          threadId: 'main',
+          agents: ['sarah'],
+        }),
+      } as MessageEvent);
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: 'activity',
+          platformId: 'other-room',
+          threadId: 'main',
+          event: {
+            turnId: 't-x',
+            seq: 1,
+            timestamp: new Date().toISOString(),
+            kind: 'tool_start',
+            summary: 'Other room tool',
+            tool: 'Bash',
+            agentName: 'Sarah',
+            agentFolder: 'sarah',
+          },
+        }),
+      } as MessageEvent);
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: 'activity_clear',
+          platformId: 'other-room',
+          threadId: 'main',
+          turnId: 't-x',
+        }),
+      } as MessageEvent);
+      ws.onmessage?.({
+        data: JSON.stringify({ type: 'pong' }),
+      } as MessageEvent);
+    });
+
+    expect(screen.queryByText('Other room tool')).not.toBeInTheDocument();
+  });
+
+  it('renders thinking live icon and invalid activity timestamps', async () => {
+    vi.stubGlobal('fetch', vi.fn(createFetchMock({ messages: [] })));
+    const MockWebSocket = createWebSocketMock();
+    sessionStorage.setItem('webchat_token', 'secret');
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+    const ws = await waitForWebSocket(MockWebSocket);
+
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: 'activity',
+          platformId: 'lobby-1',
+          threadId: 'main',
+          event: {
+            turnId: 't-think',
+            seq: 1,
+            timestamp: 'not-a-date',
+            kind: 'reasoning_summary',
+            summary: 'Considering options',
+            agentName: 'Sarah',
+            agentFolder: 'sarah',
+          },
+        }),
+      } as MessageEvent);
+    });
+
+    expect(await screen.findByText('Considering options')).toBeInTheDocument();
+  });
+
+  it('renders markdown partial_text and plain generic activity after typing expires', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      vi.stubGlobal('fetch', vi.fn(createFetchMock({ messages: [] })));
+      const MockWebSocket = createWebSocketMock();
+      sessionStorage.setItem('webchat_token', 'secret');
+
+      render(<App />);
+      await screen.findByRole('heading', { name: 'Lobby' });
+      const ws = await waitForWebSocket(MockWebSocket);
+
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({
+            type: 'activity',
+            platformId: 'lobby-1',
+            threadId: 'main',
+            event: {
+              turnId: 't-md',
+              seq: 1,
+              timestamp: new Date().toISOString(),
+              kind: 'partial_text',
+              summary: 'Hello **world**',
+              agentName: 'Sarah',
+              agentFolder: 'sarah',
+            },
+          }),
+        } as MessageEvent);
+      });
+
+      expect(await screen.findByText('world')).toBeInTheDocument();
+      expect(document.querySelector('.formatted-message--live')).toBeTruthy();
+
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({
+            type: 'activity',
+            platformId: 'lobby-1',
+            threadId: 'main',
+            event: {
+              turnId: 't-msg',
+              seq: 3,
+              timestamp: new Date().toISOString(),
+              kind: 'task_progress',
+              summary: '<message>Tagged message</message>',
+              agentName: 'Sarah',
+              agentFolder: 'sarah',
+            },
+          }),
+        } as MessageEvent);
+      });
+
+      expect(await screen.findByText('Tagged message')).toBeInTheDocument();
+      expect(document.querySelector('.msg-live-activity-icon')).toBeTruthy();
+
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({
+            type: 'activity',
+            platformId: 'lobby-1',
+            threadId: 'main',
+            event: {
+              turnId: 't-gen',
+              seq: 2,
+              timestamp: new Date().toISOString(),
+              kind: 'task_progress',
+              summary: 'Standing by',
+              agentName: 'Diego',
+              agentFolder: 'diego',
+            },
+          }),
+        } as MessageEvent);
+      });
+
+      expect(await screen.findByText('Standing by')).toBeInTheDocument();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+
+      expect(screen.getByText('Standing by')).toBeInTheDocument();
+      const diegoRow = screen.getByLabelText('Diego is working');
+      expect(diegoRow.querySelector('.typing-bubble')).toBeNull();
+      expect(diegoRow.querySelector('.msg-live-activity-icon')).toBeTruthy();
+      expect(diegoRow.querySelector('.formatted-message--live, .msg-live-activity-text')).toBeTruthy();
+
+      // Generic (non-message) activity: text without a dedicated icon.
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({
+            type: 'activity',
+            platformId: 'lobby-1',
+            threadId: 'main',
+            event: {
+              turnId: 't-plain',
+              seq: 4,
+              timestamp: new Date().toISOString(),
+              kind: 'turn_start',
+              summary: 'hello there',
+              agentName: 'Alex',
+              agentFolder: 'alex',
+            },
+          }),
+        } as MessageEvent);
+      });
+
+      expect(await screen.findByText('hello there')).toBeInTheDocument();
+      const alexRow = screen.getByLabelText('Alex is working');
+      expect(alexRow.querySelector('.msg-live-activity-icon')).toBeNull();
+      expect(alexRow.querySelector('.msg-live-activity-text')).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('ignores activity replay when the room effect is cancelled', async () => {
+    let resolveActivity: ((value: Response) => void) | undefined;
+    const activityPromise = new Promise<Response>((resolve) => {
+      resolveActivity = resolve;
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/activity')) {
+          return activityPromise;
+        }
+        return createFetchMock({ messages: [] })(input);
+      }),
+    );
+    createWebSocketMock();
+    sessionStorage.setItem('webchat_token', 'secret');
+
+    const { unmount } = render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+
+    unmount();
+    resolveActivity?.(
+      new Response(
+        JSON.stringify({
+          platformId: 'lobby-1',
+          threadId: 'main',
+          events: [
+            {
+              turnId: 't-cancel',
+              seq: 1,
+              timestamp: new Date().toISOString(),
+              kind: 'tool_start',
+              summary: 'Should not appear',
+              tool: 'Bash',
+              agentName: 'Sarah',
+              agentFolder: 'sarah',
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.queryByText('Should not appear')).not.toBeInTheDocument();
   });
 });
