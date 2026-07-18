@@ -62,7 +62,7 @@ import {
   pruneExpiredLiveStatus,
   type LiveAgentStatus,
 } from './live-status';
-import { formatLiveActivity } from './format-live-activity';
+import { collapseLiveActivity, formatLiveActivity } from './format-live-activity';
 import {
   SendArrowIcon,
   PlusIcon,
@@ -154,6 +154,8 @@ export function App() {
   const [liveByAgent, setLiveByAgent] = useState<Record<string, LiveAgentStatus>>({});
   const [, setLiveTick] = useState(0);
   const liveAgentRows = useMemo(() => liveStatusList(liveByAgent), [liveByAgent]);
+  // Keyed by `${row.key}:${turnId}` so each new turn starts collapsed again.
+  const [expandedLive, setExpandedLive] = useState<Record<string, boolean>>({});
   // Only start/stop the prune clock when live rows appear or disappear.
   const hasLiveActivity = liveAgentRows.length > 0;
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
@@ -280,10 +282,27 @@ export function App() {
     return () => clearInterval(id);
   }, [hasLiveActivity]);
 
+  // Drop expand keys whose live rows are gone (turn_end / prune / room leave).
+  useEffect(() => {
+    const liveKeys = new Set(
+      liveAgentRows.map((row) => `${row.key}:${row.event?.turnId ?? ''}`),
+    );
+    setExpandedLive((prev) => {
+      let changed = false;
+      const next: Record<string, boolean> = {};
+      for (const [key, value] of Object.entries(prev)) {
+        if (value && liveKeys.has(key)) next[key] = true;
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [liveAgentRows]);
+
   useEffect(() => {
     if (!sessionReady || !room) return;
     let cancelled = false;
     setLiveByAgent({});
+    setExpandedLive({});
     void fetchActivity(authToken, room.platformId, threadId)
       .then((events) => {
         if (cancelled || !bootstrap) return;
@@ -400,6 +419,7 @@ export function App() {
             setThreadId('main');
             setMessages([]);
             setLiveByAgent({});
+            setExpandedLive({});
             setSelectedAttachment(null);
           }
           return;
@@ -957,6 +977,8 @@ export function App() {
     setBootstrap(null);
     setRoom(null);
     setMessages([]);
+    setLiveByAgent({});
+    setExpandedLive({});
     setThreadsByRoom({});
     setUnreadCounts({});
     setEngagedAgentsByThread({});
@@ -1150,6 +1172,14 @@ export function App() {
                 const displayText = formatted?.text;
                 const useMarkdown =
                   Boolean(row.partialText) || Boolean(formatted?.markdown);
+                const collapse = displayText
+                  ? collapseLiveActivity(displayText, row.event)
+                  : null;
+                const expandKey = `${row.key}:${row.event?.turnId ?? ''}`;
+                // CSS-safe id for aria-controls (expandKey contains `:`).
+                const activityTextId = `live-activity-${expandKey.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+                const expanded = Boolean(expandedLive[expandKey]);
+                const collapsed = Boolean(collapse?.collapsible) && !expanded;
                 const ActivityIcon =
                   formatted?.icon === 'thinking'
                     ? ThinkingBubbleIcon
@@ -1187,14 +1217,45 @@ export function App() {
                             <ActivityIcon />
                           </span>
                         ) : null}
-                        {useMarkdown ? (
-                          <FormattedMessage
-                            text={displayText}
-                            className="formatted-message formatted-message--live"
-                          />
+                        {collapsed ? (
+                          <span
+                            id={activityTextId}
+                            className="msg-live-activity-text msg-live-activity-text--collapsed"
+                          >
+                            {collapse?.preview}
+                          </span>
+                        ) : useMarkdown ? (
+                          <div id={activityTextId}>
+                            <FormattedMessage
+                              text={displayText}
+                              className="formatted-message formatted-message--live"
+                            />
+                          </div>
                         ) : (
-                          <span className="msg-live-activity-text">{displayText}</span>
+                          <span id={activityTextId} className="msg-live-activity-text">
+                            {displayText}
+                          </span>
                         )}
+                        {collapse?.collapsible ? (
+                          <button
+                            type="button"
+                            className="msg-live-activity-toggle"
+                            aria-expanded={expanded}
+                            aria-controls={activityTextId}
+                            onClick={() =>
+                              setExpandedLive((prev) => {
+                                if (expanded) {
+                                  const next = { ...prev };
+                                  delete next[expandKey];
+                                  return next;
+                                }
+                                return { ...prev, [expandKey]: true };
+                              })
+                            }
+                          >
+                            {expanded ? 'Show less' : 'Show more'}
+                          </button>
+                        ) : null}
                       </div>
                     ) : null}
                   </div>

@@ -2009,6 +2009,34 @@ body.attachment-drawer-resizing * {
   min-width: 0;
 }
 
+.msg-live-activity-text--collapsed {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-style: italic;
+}
+
+.msg-live-activity-toggle {
+  flex-shrink: 0;
+  align-self: flex-end;
+  margin-top: 0.1em;
+  padding: 0 4px;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.8em;
+  cursor: pointer;
+  white-space: nowrap;
+  opacity: 0.85;
+}
+
+.msg-live-activity-toggle:hover,
+.msg-live-activity-toggle:focus-visible {
+  opacity: 1;
+  text-decoration: underline;
+}
+
 .msg-live-activity .formatted-message--live {
   color: inherit;
   font-size: inherit;
