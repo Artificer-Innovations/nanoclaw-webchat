@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { cleanPartialChunk, cleanStreamDelta, finalizeActivityText, formatLiveActivity } from './format-live-activity';
+import {
+  cleanPartialChunk,
+  cleanStreamDelta,
+  collapseLiveActivity,
+  finalizeActivityText,
+  formatLiveActivity,
+  LIVE_COLLAPSE_MIN_CHARS,
+  LIVE_COLLAPSE_PREVIEW_CHARS,
+} from './format-live-activity';
 import type { AgentActivityEvent } from './types';
 
 function ev(partial: Partial<AgentActivityEvent> & Pick<AgentActivityEvent, 'kind' | 'summary'>): AgentActivityEvent {
@@ -133,5 +141,62 @@ describe('formatLiveActivity', () => {
     );
     expect(out?.text).toBe('Still writing');
     expect(out?.markdown).toBe(true);
+  });
+});
+
+describe('collapseLiveActivity', () => {
+  it('leaves short text expanded', () => {
+    const out = collapseLiveActivity('Quick thought.', ev({ kind: 'reasoning_summary', summary: 'x' }));
+    expect(out.collapsible).toBe(false);
+    expect(out.preview).toBe('Quick thought.');
+  });
+
+  it('collapses long reasoning with a first-sentence preview', () => {
+    const text = `The user wants a refactor. ${'Detail sentence follows here. '.repeat(20)}`.trim();
+    expect(text.length).toBeGreaterThan(LIVE_COLLAPSE_MIN_CHARS);
+    const out = collapseLiveActivity(text, ev({ kind: 'reasoning_summary', summary: 'x' }));
+    expect(out.collapsible).toBe(true);
+    expect(out.preview).toBe('The user wants a refactor.');
+  });
+
+  it('collapses multi-paragraph text even under the char threshold', () => {
+    const out = collapseLiveActivity('First paragraph.\n\nSecond paragraph.', ev({ kind: 'reasoning_summary', summary: 'x' }));
+    expect(out.collapsible).toBe(true);
+    expect(out.preview).toBe('First paragraph.');
+  });
+
+  it('truncates at a word boundary with ellipsis when no sentence fits', () => {
+    const text = 'word '.repeat(100).trim();
+    const out = collapseLiveActivity(text, ev({ kind: 'tool_end', summary: 'x' }));
+    expect(out.collapsible).toBe(true);
+    expect(out.preview.endsWith('…')).toBe(true);
+    expect(out.preview.length).toBeLessThanOrEqual(LIVE_COLLAPSE_PREVIEW_CHARS + 1);
+    expect(out.preview).not.toContain('\n');
+  });
+
+  it('never collapses streaming partial_text rows', () => {
+    const text = 'streaming draft '.repeat(50);
+    const out = collapseLiveActivity(text, ev({ kind: 'partial_text', summary: 'x' }));
+    expect(out.collapsible).toBe(false);
+  });
+
+  it('collapses long text without an event and hard-cuts unbroken strings', () => {
+    const out = collapseLiveActivity('x'.repeat(300));
+    expect(out.collapsible).toBe(true);
+    expect(out.preview).toBe(`${'x'.repeat(LIVE_COLLAPSE_PREVIEW_CHARS)}…`);
+  });
+
+  it('keeps a short multi-paragraph preview whole when it fits on one line', () => {
+    const out = collapseLiveActivity('alpha beta\n\ngamma delta');
+    expect(out.collapsible).toBe(true);
+    expect(out.preview).toBe('alpha beta gamma delta');
+  });
+
+  it('falls back to char truncation when the first sentence exceeds the preview cap', () => {
+    const text = `${'word '.repeat(40).trim()}. And then a second sentence follows with more detail.`;
+    const out = collapseLiveActivity(text);
+    expect(out.collapsible).toBe(true);
+    expect(out.preview.endsWith('…')).toBe(true);
+    expect(out.preview.length).toBeLessThanOrEqual(LIVE_COLLAPSE_PREVIEW_CHARS + 1);
   });
 });

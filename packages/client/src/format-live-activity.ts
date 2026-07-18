@@ -155,3 +155,41 @@ export function formatLiveActivity(
   if (!cleaned) return null;
   return { icon, text: cleaned, markdown };
 }
+
+/** Rows longer than this collapse to a one-line preview by default. */
+export const LIVE_COLLAPSE_MIN_CHARS = 200;
+/** Max characters shown in the collapsed one-line preview. */
+export const LIVE_COLLAPSE_PREVIEW_CHARS = 120;
+
+export interface LiveActivityCollapse {
+  collapsible: boolean;
+  preview: string;
+}
+
+/** One-line preview: first sentence or first ~N chars, cut at a word boundary. */
+function previewLine(text: string, maxChars: number = LIVE_COLLAPSE_PREVIEW_CHARS): string {
+  const oneLine = text.replace(/\s+/g, ' ').trim();
+  // Prefer a sentence boundary when one lands inside the preview window.
+  const sentence = oneLine.match(/^.{10,}?[.!?](?=\s|$)/);
+  if (sentence && sentence[0].length <= maxChars) return sentence[0];
+  if (oneLine.length <= maxChars) return oneLine;
+  const cut = oneLine.slice(0, maxChars);
+  const lastSpace = cut.lastIndexOf(' ');
+  return `${(lastSpace > maxChars * 0.6 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
+}
+
+/**
+ * Decide whether a live activity row should collapse behind a one-line
+ * preview. Long reasoning summaries (and other long non-streaming rows,
+ * e.g. trace_full tool results) collapse; streaming partial_text stays
+ * expanded so the live draft remains visible as it grows.
+ */
+export function collapseLiveActivity(
+  text: string,
+  event?: AgentActivityEvent,
+): LiveActivityCollapse {
+  if (event?.kind === 'partial_text') return { collapsible: false, preview: text };
+  const long = text.length > LIVE_COLLAPSE_MIN_CHARS || text.includes('\n\n');
+  if (!long) return { collapsible: false, preview: text };
+  return { collapsible: true, preview: previewLine(text) };
+}

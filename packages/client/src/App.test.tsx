@@ -3844,6 +3844,54 @@ describe('App', () => {
     expect(await screen.findByText('Considering options')).toBeInTheDocument();
   });
 
+  it('collapses long thinking activity behind a one-line preview with expand toggle', async () => {
+    vi.stubGlobal('fetch', vi.fn(createFetchMock({ messages: [] })));
+    const MockWebSocket = createWebSocketMock();
+    sessionStorage.setItem('webchat_token', 'secret');
+    const user = userEvent.setup();
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Lobby' });
+    const ws = await waitForWebSocket(MockWebSocket);
+
+    const longThinking = `First I will inspect the codebase. ${'Then I will consider every edge case in detail before writing anything. '.repeat(6)}`.trim();
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: 'activity',
+          platformId: 'lobby-1',
+          threadId: 'main',
+          event: {
+            turnId: 't-collapse',
+            seq: 1,
+            timestamp: new Date().toISOString(),
+            kind: 'reasoning_summary',
+            summary: longThinking,
+            agentName: 'Sarah',
+            agentFolder: 'sarah',
+          },
+        }),
+      } as MessageEvent);
+    });
+
+    // Collapsed: one-line preview + toggle, full text hidden.
+    const toggle = await screen.findByRole('button', { name: 'Show more' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByText('First I will inspect the codebase.')).toBeInTheDocument();
+    expect(screen.queryByText(longThinking)).not.toBeInTheDocument();
+
+    // Expand: full text visible, toggle flips.
+    await user.click(toggle);
+    expect(screen.getByText(longThinking)).toBeInTheDocument();
+    const collapseToggle = screen.getByRole('button', { name: 'Show less' });
+    expect(collapseToggle).toHaveAttribute('aria-expanded', 'true');
+
+    // Collapse again.
+    await user.click(collapseToggle);
+    expect(screen.queryByText(longThinking)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Show more' })).toBeInTheDocument();
+  });
+
   it('renders markdown partial_text and plain generic activity after typing expires', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {

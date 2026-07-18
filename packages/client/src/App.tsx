@@ -62,7 +62,7 @@ import {
   pruneExpiredLiveStatus,
   type LiveAgentStatus,
 } from './live-status';
-import { formatLiveActivity } from './format-live-activity';
+import { collapseLiveActivity, formatLiveActivity } from './format-live-activity';
 import {
   SendArrowIcon,
   PlusIcon,
@@ -154,6 +154,8 @@ export function App() {
   const [liveByAgent, setLiveByAgent] = useState<Record<string, LiveAgentStatus>>({});
   const [, setLiveTick] = useState(0);
   const liveAgentRows = useMemo(() => liveStatusList(liveByAgent), [liveByAgent]);
+  // Keyed by `${row.key}:${turnId}` so each new turn starts collapsed again.
+  const [expandedLive, setExpandedLive] = useState<Record<string, boolean>>({});
   // Only start/stop the prune clock when live rows appear or disappear.
   const hasLiveActivity = liveAgentRows.length > 0;
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
@@ -1150,6 +1152,12 @@ export function App() {
                 const displayText = formatted?.text;
                 const useMarkdown =
                   Boolean(row.partialText) || Boolean(formatted?.markdown);
+                const collapse = displayText
+                  ? collapseLiveActivity(displayText, row.event)
+                  : null;
+                const expandKey = `${row.key}:${row.event?.turnId ?? ''}`;
+                const expanded = Boolean(expandedLive[expandKey]);
+                const collapsed = Boolean(collapse?.collapsible) && !expanded;
                 const ActivityIcon =
                   formatted?.icon === 'thinking'
                     ? ThinkingBubbleIcon
@@ -1187,7 +1195,11 @@ export function App() {
                             <ActivityIcon />
                           </span>
                         ) : null}
-                        {useMarkdown ? (
+                        {collapsed ? (
+                          <span className="msg-live-activity-text msg-live-activity-text--collapsed">
+                            {collapse?.preview}
+                          </span>
+                        ) : useMarkdown ? (
                           <FormattedMessage
                             text={displayText}
                             className="formatted-message formatted-message--live"
@@ -1195,6 +1207,21 @@ export function App() {
                         ) : (
                           <span className="msg-live-activity-text">{displayText}</span>
                         )}
+                        {collapse?.collapsible ? (
+                          <button
+                            type="button"
+                            className="msg-live-activity-toggle"
+                            aria-expanded={expanded}
+                            onClick={() =>
+                              setExpandedLive((prev) => ({
+                                ...prev,
+                                [expandKey]: !expanded,
+                              }))
+                            }
+                          >
+                            {expanded ? 'Show less' : 'Show more'}
+                          </button>
+                        ) : null}
                       </div>
                     ) : null}
                   </div>
