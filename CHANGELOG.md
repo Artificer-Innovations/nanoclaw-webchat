@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1
+
+### Patch Changes
+
+- [#54](https://github.com/Artificer-Innovations/nanoclaw-webchat/pull/54) [`6624beb`](https://github.com/Artificer-Innovations/nanoclaw-webchat/commit/6624bebe173cb1560d50ee860d185b530f39b57b) Thanks [@ZappoMan](https://github.com/ZappoMan)! - Collapse long live thinking/tool activity rows behind a one-line preview with a Show more / Show less toggle. Streaming `partial_text` drafts stay expanded so the live draft remains visible, and each new turn starts collapsed again.
+
 ## 0.4.0
 
 ### Minor Changes
