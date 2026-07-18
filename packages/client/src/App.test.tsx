@@ -3877,19 +3877,65 @@ describe('App', () => {
     // Collapsed: one-line preview + toggle, full text hidden.
     const toggle = await screen.findByRole('button', { name: 'Show more' });
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(toggle).toHaveAttribute('aria-controls');
+    const controlledId = toggle.getAttribute('aria-controls')!;
+    expect(document.getElementById(controlledId)).toBeTruthy();
     expect(screen.getByText('First I will inspect the codebase.')).toBeInTheDocument();
     expect(screen.queryByText(longThinking)).not.toBeInTheDocument();
 
-    // Expand: full text visible, toggle flips.
+    // Expand: full text visible, toggle flips, aria-controls still points at the text.
     await user.click(toggle);
     expect(screen.getByText(longThinking)).toBeInTheDocument();
     const collapseToggle = screen.getByRole('button', { name: 'Show less' });
     expect(collapseToggle).toHaveAttribute('aria-expanded', 'true');
+    expect(collapseToggle).toHaveAttribute('aria-controls', controlledId);
+    expect(document.getElementById(controlledId)?.textContent).toBe(longThinking);
 
     // Collapse again.
     await user.click(collapseToggle);
     expect(screen.queryByText(longThinking)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Show more' })).toBeInTheDocument();
+
+    // Re-expand; a same-turn update should keep the expanded state (prune keeps live keys).
+    await user.click(screen.getByRole('button', { name: 'Show more' }));
+    expect(screen.getByRole('button', { name: 'Show less' })).toBeInTheDocument();
+    const updatedThinking = `First I will inspect the codebase. ${'And then I will dig into every edge case once more carefully. '.repeat(6)}`.trim();
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: 'activity',
+          platformId: 'lobby-1',
+          threadId: 'main',
+          event: {
+            turnId: 't-collapse',
+            seq: 2,
+            timestamp: new Date().toISOString(),
+            kind: 'reasoning_summary',
+            summary: updatedThinking,
+            agentName: 'Sarah',
+            agentFolder: 'sarah',
+          },
+        }),
+      } as MessageEvent);
+    });
+    expect(await screen.findByText(updatedThinking)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Show less' })).toBeInTheDocument();
+
+    // Clear the turn — expand key should prune with the live row.
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: 'activity_clear',
+          platformId: 'lobby-1',
+          threadId: 'main',
+          turnId: 't-collapse',
+        }),
+      } as MessageEvent);
+    });
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: 'Show less' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Show more' })).not.toBeInTheDocument();
+    });
   });
 
   it('renders markdown partial_text and plain generic activity after typing expires', async () => {

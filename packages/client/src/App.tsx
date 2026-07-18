@@ -282,10 +282,27 @@ export function App() {
     return () => clearInterval(id);
   }, [hasLiveActivity]);
 
+  // Drop expand keys whose live rows are gone (turn_end / prune / room leave).
+  useEffect(() => {
+    const liveKeys = new Set(
+      liveAgentRows.map((row) => `${row.key}:${row.event?.turnId ?? ''}`),
+    );
+    setExpandedLive((prev) => {
+      let changed = false;
+      const next: Record<string, boolean> = {};
+      for (const [key, value] of Object.entries(prev)) {
+        if (value && liveKeys.has(key)) next[key] = true;
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [liveAgentRows]);
+
   useEffect(() => {
     if (!sessionReady || !room) return;
     let cancelled = false;
     setLiveByAgent({});
+    setExpandedLive({});
     void fetchActivity(authToken, room.platformId, threadId)
       .then((events) => {
         if (cancelled || !bootstrap) return;
@@ -402,6 +419,7 @@ export function App() {
             setThreadId('main');
             setMessages([]);
             setLiveByAgent({});
+            setExpandedLive({});
             setSelectedAttachment(null);
           }
           return;
@@ -959,6 +977,8 @@ export function App() {
     setBootstrap(null);
     setRoom(null);
     setMessages([]);
+    setLiveByAgent({});
+    setExpandedLive({});
     setThreadsByRoom({});
     setUnreadCounts({});
     setEngagedAgentsByThread({});
@@ -1156,6 +1176,8 @@ export function App() {
                   ? collapseLiveActivity(displayText, row.event)
                   : null;
                 const expandKey = `${row.key}:${row.event?.turnId ?? ''}`;
+                // CSS-safe id for aria-controls (expandKey contains `:`).
+                const activityTextId = `live-activity-${expandKey.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
                 const expanded = Boolean(expandedLive[expandKey]);
                 const collapsed = Boolean(collapse?.collapsible) && !expanded;
                 const ActivityIcon =
@@ -1196,27 +1218,39 @@ export function App() {
                           </span>
                         ) : null}
                         {collapsed ? (
-                          <span className="msg-live-activity-text msg-live-activity-text--collapsed">
+                          <span
+                            id={activityTextId}
+                            className="msg-live-activity-text msg-live-activity-text--collapsed"
+                          >
                             {collapse?.preview}
                           </span>
                         ) : useMarkdown ? (
-                          <FormattedMessage
-                            text={displayText}
-                            className="formatted-message formatted-message--live"
-                          />
+                          <div id={activityTextId}>
+                            <FormattedMessage
+                              text={displayText}
+                              className="formatted-message formatted-message--live"
+                            />
+                          </div>
                         ) : (
-                          <span className="msg-live-activity-text">{displayText}</span>
+                          <span id={activityTextId} className="msg-live-activity-text">
+                            {displayText}
+                          </span>
                         )}
                         {collapse?.collapsible ? (
                           <button
                             type="button"
                             className="msg-live-activity-toggle"
                             aria-expanded={expanded}
+                            aria-controls={activityTextId}
                             onClick={() =>
-                              setExpandedLive((prev) => ({
-                                ...prev,
-                                [expandKey]: !expanded,
-                              }))
+                              setExpandedLive((prev) => {
+                                if (expanded) {
+                                  const next = { ...prev };
+                                  delete next[expandKey];
+                                  return next;
+                                }
+                                return { ...prev, [expandKey]: true };
+                              })
                             }
                           >
                             {expanded ? 'Show less' : 'Show more'}

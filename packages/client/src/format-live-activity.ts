@@ -166,12 +166,23 @@ export interface LiveActivityCollapse {
   preview: string;
 }
 
+/** Common abbreviations that end in `.` — don't treat these as sentence stops. */
+const ABBREV_RE = /\b(?:e\.g|i\.e|etc|vs|approx|Mr|Mrs|Ms|Dr|Prof)\.$/i;
+
 /** One-line preview: first sentence or first ~N chars, cut at a word boundary. */
 function previewLine(text: string, maxChars: number = LIVE_COLLAPSE_PREVIEW_CHARS): string {
   const oneLine = text.replace(/\s+/g, ' ').trim();
-  // Prefer a sentence boundary when one lands inside the preview window.
-  const sentence = oneLine.match(/^.{10,}?[.!?](?=\s|$)/);
-  if (sentence && sentence[0].length <= maxChars) return sentence[0];
+  // Prefer a sentence boundary inside the preview window; skip common
+  // abbreviations so "e.g. foo" doesn't cut mid-phrase.
+  const re = /[.!?](?=\s|$)/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(oneLine)) !== null) {
+    const end = match.index + 1;
+    if (end < 10) continue;
+    if (end > maxChars) break;
+    const candidate = oneLine.slice(0, end);
+    if (!ABBREV_RE.test(candidate)) return candidate;
+  }
   if (oneLine.length <= maxChars) return oneLine;
   const cut = oneLine.slice(0, maxChars);
   const lastSpace = cut.lastIndexOf(' ');

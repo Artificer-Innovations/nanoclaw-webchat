@@ -159,8 +159,14 @@ describe('collapseLiveActivity', () => {
     expect(out.preview).toBe('The user wants a refactor.');
   });
 
-  it('collapses multi-paragraph text even under the char threshold', () => {
-    const out = collapseLiveActivity('First paragraph.\n\nSecond paragraph.', ev({ kind: 'reasoning_summary', summary: 'x' }));
+  it('collapses multi-paragraph task_progress text even under the char threshold', () => {
+    // App always passes formatLiveActivity()'s output. reasoning_summary goes
+    // through normalizePlain (flattens \n\n), so this branch is only live for
+    // markdown kinds like task_progress that preserve paragraph breaks.
+    const text = 'First paragraph.\n\nSecond paragraph.';
+    const formatted = formatLiveActivity(text, ev({ kind: 'task_progress', summary: text }));
+    expect(formatted?.text).toContain('\n\n');
+    const out = collapseLiveActivity(formatted!.text, ev({ kind: 'task_progress', summary: text }));
     expect(out.collapsible).toBe(true);
     expect(out.preview).toBe('First paragraph.');
   });
@@ -186,14 +192,43 @@ describe('collapseLiveActivity', () => {
     expect(out.preview).toBe(`${'x'.repeat(LIVE_COLLAPSE_PREVIEW_CHARS)}…`);
   });
 
-  it('keeps a short multi-paragraph preview whole when it fits on one line', () => {
-    const out = collapseLiveActivity('alpha beta\n\ngamma delta');
+  it('keeps a short multi-paragraph task_progress preview whole when it fits on one line', () => {
+    const text = 'alpha beta\n\ngamma delta';
+    const formatted = formatLiveActivity(text, ev({ kind: 'task_progress', summary: text }));
+    const out = collapseLiveActivity(formatted!.text, ev({ kind: 'task_progress', summary: text }));
     expect(out.collapsible).toBe(true);
     expect(out.preview).toBe('alpha beta gamma delta');
   });
 
   it('falls back to char truncation when the first sentence exceeds the preview cap', () => {
     const text = `${'word '.repeat(40).trim()}. And then a second sentence follows with more detail.`;
+    const out = collapseLiveActivity(text);
+    expect(out.collapsible).toBe(true);
+    expect(out.preview.endsWith('…')).toBe(true);
+    expect(out.preview.length).toBeLessThanOrEqual(LIVE_COLLAPSE_PREVIEW_CHARS + 1);
+  });
+
+  it('does not cut the preview at common abbreviations', () => {
+    // Keep the abbrev past the 10-char floor so the ABBREV skip path runs (not end < 10).
+    const text = `Please use e.g. a helper here for the path. ${'Then keep going with more detail about the approach. '.repeat(8)}`.trim();
+    const out = collapseLiveActivity(text, ev({ kind: 'reasoning_summary', summary: 'x' }));
+    expect(out.collapsible).toBe(true);
+    expect(out.preview).toBe('Please use e.g. a helper here for the path.');
+    expect(out.preview).not.toMatch(/^Please use e\.g\.$/);
+  });
+
+  it('skips early short punctuation and still finds a later sentence end', () => {
+    // Punctuation inside the first 10 chars is skipped; a later sentence still wins.
+    const earlyBang = `Hi! Later we settle on a real sentence end. ${'word '.repeat(40)}`.trim();
+    const earlyOut = collapseLiveActivity(earlyBang);
+    expect(earlyOut.collapsible).toBe(true);
+    expect(earlyOut.preview).toBe('Hi! Later we settle on a real sentence end.');
+  });
+
+  it('falls past a sentence end that sits beyond the preview cap', () => {
+    // First `.` is after maxChars → break out of the sentence loop and truncate.
+    const text = `${'word '.repeat(40).trim()}. And then more.`;
+    expect(text.indexOf('.')).toBeGreaterThan(LIVE_COLLAPSE_PREVIEW_CHARS);
     const out = collapseLiveActivity(text);
     expect(out.collapsible).toBe(true);
     expect(out.preview.endsWith('…')).toBe(true);
