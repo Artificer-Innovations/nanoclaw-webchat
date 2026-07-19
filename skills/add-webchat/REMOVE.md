@@ -2,6 +2,9 @@
 
 Idempotent uninstall. Safe to re-run.
 
+Remove webchat before removing `nanoclaw-hosthooks`. The shared hosthooks registry may
+still be used by other skills, so do not uninstall it unless no registrants remain.
+
 Or run:
 
 ```bash
@@ -13,6 +16,7 @@ pnpm exec nanoclaw-webchat uninstall
 ```bash
 rm -f src/channels/web.ts src/channels/web.test.ts src/channels/web-registration.test.ts
 rm -f src/webchat-sync.ts src/webchat-sync.test.ts src/webchat-boot.ts src/webchat-boot.test.ts src/webchat-wiring.test.ts
+rm -f src/webchat-hosthooks.ts src/webchat-hosthooks.test.ts
 rm -f src/webchat-live.ts src/webchat-live.test.ts
 rm -f src/webchat-store.ts src/webchat-store.test.ts src/webchat-thread-cleanup.ts
 rm -f src/webchat-routing.ts src/webchat-routing.test.ts
@@ -62,3 +66,6 @@ pnpm run build
 ```
 
 Web messaging groups and wirings remain in the DB but are inert without the adapter. Remove manually with `ncl` if desired.
+
+Optional: if no other installed skill uses hosthooks, run
+`pnpm exec nanoclaw-hosthooks uninstall` only after webchat has been removed.

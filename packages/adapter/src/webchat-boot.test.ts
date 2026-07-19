@@ -12,6 +12,7 @@ const {
   notifyAgent,
   refreshWebchatAfterAgentChange,
   approvalContinuation,
+  registerWebchatHosthooks,
 } = vi.hoisted(() => {
   const approvalContinuation = vi.fn();
   return {
@@ -25,6 +26,7 @@ const {
     agentsCreate: { name: 'agents.create' },
     notifyAgent: vi.fn(),
     refreshWebchatAfterAgentChange: vi.fn(),
+    registerWebchatHosthooks: vi.fn(),
     approvalContinuation,
   };
 });
@@ -40,6 +42,7 @@ vi.mock('./env.js', () => ({
 vi.mock('./webchat-sync.js', () => ({ syncWebchatWirings: vi.fn() }));
 vi.mock('./webchat-store.js', () => ({ ensureWebchatSchema: vi.fn() }));
 vi.mock('./webchat-live.js', () => ({ refreshWebchatAfterAgentChange }));
+vi.mock('./webchat-hosthooks.js', () => ({ registerWebchatHosthooks }));
 
 vi.mock('./delivery.js', () => ({
   registerDeliveryAction,
@@ -73,6 +76,11 @@ afterEach(() => {
 });
 
 describe('startWebChat create_agent guard wiring', () => {
+  it('registers hosthooks before starting webchat', async () => {
+    await startWebChat();
+    expect(registerWebchatHosthooks).toHaveBeenCalledTimes(1);
+  });
+
   it('registers create_agent with guardAction/precheck/requestHold/onDeny', async () => {
     await startWebChat();
 

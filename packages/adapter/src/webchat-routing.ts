@@ -18,6 +18,10 @@ export interface AgentNameRef {
   displayName: string;
 }
 
+export interface WebchatParsedContent {
+  [key: string]: unknown;
+}
+
 /** Content field: target agent folder for lobby engaged deliveries (router bypasses @ pattern). */
 export const WEBCHAT_RECEIVER_FIELD = 'webchatReceiver';
 
@@ -37,6 +41,20 @@ export const SYNTHETIC_KIND_FIELD = 'syntheticKind';
 export const HISTORICAL_REPLAY_FIELD = 'historicalReplay';
 
 const DEFAULT_BACKFILL_LIMIT = 20;
+
+export function resolveWebchatReceiver(parsed: WebchatParsedContent): string | null {
+  const receiver = parsed[WEBCHAT_RECEIVER_FIELD];
+  if (typeof receiver !== 'string') return null;
+  const trimmed = receiver.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+export function isWebchatContextOnly(parsed: WebchatParsedContent): boolean {
+  if (parsed[SYNTHETIC_MESSAGE_FIELD] === true) return true;
+  if (parsed[HISTORICAL_REPLAY_FIELD] === true) return true;
+  const routing = parsed.routing;
+  return !!routing && typeof routing === 'object' && (routing as { isPeerReply?: unknown }).isPeerReply === true;
+}
 
 export function readBackfillMessageLimit(): number {
   const fromEnv = process.env.WEBCHAT_BACKFILL_MESSAGE_LIMIT;

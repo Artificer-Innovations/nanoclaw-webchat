@@ -29,6 +29,31 @@ export interface InstallResult {
   npmrcUpdated: boolean;
 }
 
+const REQUIRED_HOSTHOOK_EXPORTS = [
+  'getHosthooksCapabilities',
+  'registerDeliveryPolicy',
+  'registerOutboundContentTransform',
+] as const;
+
+export function getHosthooksRequirementIssue(nanoclawRoot: string): string | null {
+  const hosthooksPath = path.join(nanoclawRoot, 'src/hosthooks.ts');
+  const installFirst =
+    'Install nanoclaw-hosthooks first: `pnpm exec nanoclaw-hosthooks install`, then retry.';
+  if (!fs.existsSync(hosthooksPath)) {
+    return `Missing src/hosthooks.ts. ${installFirst}`;
+  }
+
+  const source = fs.readFileSync(hosthooksPath, 'utf8');
+  if (!/\bHOSTHOOKS_API_VERSION\s*=\s*1\b/.test(source)) {
+    return `src/hosthooks.ts does not provide nanoclaw-hosthooks API v1. ${installFirst}`;
+  }
+  const missing = REQUIRED_HOSTHOOK_EXPORTS.filter((name) => !source.includes(name));
+  if (missing.length > 0) {
+    return `src/hosthooks.ts is missing required capabilities: ${missing.join(', ')}. ${installFirst}`;
+  }
+  return null;
+}
+
 function installAddedHostDependencies(nanoclawRoot: string, dependenciesAdded: string[]): boolean {
   if (dependenciesAdded.length === 0) return true;
   console.log(`Installing host dependencies: ${dependenciesAdded.join(', ')}...`);
@@ -46,6 +71,8 @@ function installAddedHostDependencies(nanoclawRoot: string, dependenciesAdded: s
 
 export function runInstall(root?: string): InstallResult {
   const nanoclawRoot = root ?? findNanoclawRoot();
+  const hosthooksIssue = getHosthooksRequirementIssue(nanoclawRoot);
+  if (hosthooksIssue) throw new Error(hosthooksIssue);
   console.log(`Detected NanoClaw root: ${nanoclawRoot}`);
   const copied = copyAdapterFiles(nanoclawRoot);
   const dependenciesAdded = ensureHostAdapterDependencies(nanoclawRoot);
@@ -69,8 +96,11 @@ export function runInstall(root?: string): InstallResult {
 }
 
 export function runUpgrade(root?: string): InstallResult & { skillPath: string } {
-  const skillPath = syncSkillToFork(root ?? findNanoclawRoot());
-  return { skillPath, ...runInstall(root) };
+  const nanoclawRoot = root ?? findNanoclawRoot();
+  const hosthooksIssue = getHosthooksRequirementIssue(nanoclawRoot);
+  if (hosthooksIssue) throw new Error(hosthooksIssue);
+  const skillPath = syncSkillToFork(nanoclawRoot);
+  return { skillPath, ...runInstall(nanoclawRoot) };
 }
 
 export function runUninstall(root?: string): {
@@ -96,6 +126,14 @@ export function runVerify(root?: string): {
   hostReminder?: string;
 } {
   const nanoclawRoot = root ?? findNanoclawRoot();
+  const hosthooksIssue = getHosthooksRequirementIssue(nanoclawRoot);
+  if (hosthooksIssue) {
+    return {
+      root: nanoclawRoot,
+      ok: false,
+      output: hosthooksIssue,
+    };
+  }
   const prep = ensureBetterSqlite3(nanoclawRoot);
   if (!prep.ok) {
     return {
