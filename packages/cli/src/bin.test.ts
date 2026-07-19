@@ -17,6 +17,7 @@ import {
   removeWebchatBootBlock,
   scaffoldEnv,
 } from './patch.js';
+import { writeStockHostModules } from './host-patches.js';
 import { findNanoclawRoot, packageRoot, resourcesDir, ADAPTER_COPY_RULES } from './paths.js';
 
 const tempDirs: string[] = [];
@@ -30,6 +31,7 @@ function makeNanoclawFixture(): string {
     path.join(root, 'src/index.ts'),
     'async function main() {\n  await runMigrations(db);\n  await initChannelAdapters(config);\n}\n',
   );
+  writeStockHostModules(root);
   return root;
 }
 
@@ -116,6 +118,17 @@ describe('runCommand', () => {
 
     const uninstallLog = vi.spyOn(console, 'log').mockImplementation(() => {});
     expect(runCommand(['node', 'bin.js', 'uninstall', '--path', root])).toBe(0);
+    expect(uninstallLog.mock.calls.some((call) => String(call[0]).includes('Reverted host router'))).toBe(true);
+    expect(uninstallLog.mock.calls.some((call) => String(call[0]).includes('Reverted host delivery'))).toBe(true);
+    uninstallLog.mockRestore();
+  });
+
+  it('uninstall omits revert lines when host patches were never applied', () => {
+    const root = makeNanoclawFixture();
+    const uninstallLog = vi.spyOn(console, 'log').mockImplementation(() => {});
+    expect(runCommand(['node', 'bin.js', 'uninstall', '--path', root])).toBe(0);
+    expect(uninstallLog.mock.calls.some((call) => String(call[0]).includes('Reverted host router'))).toBe(false);
+    expect(uninstallLog.mock.calls.some((call) => String(call[0]).includes('Reverted host delivery'))).toBe(false);
     uninstallLog.mockRestore();
   });
 

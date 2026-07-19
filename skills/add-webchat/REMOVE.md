@@ -43,6 +43,15 @@ Delete the colocated block from `main()` in `src/index.ts`:
   await startWebChat();
 ```
 
+## 3b. Revert host patches (CLI does this)
+
+`nanoclaw-webchat uninstall` removes only the managed patches it installed:
+
+- `src/router.ts` lobby-routing (`nanoclaw-webchat:lobby-routing` markers)
+- `src/delivery.ts` sender-attribution (`nanoclaw-webchat:sender-attribution` markers)
+
+If the host already had an equivalent MyNanoClaw/Quad integration without those markers, uninstall leaves it alone.
+
 ## 4. Uninstall packages
 
 ```bash

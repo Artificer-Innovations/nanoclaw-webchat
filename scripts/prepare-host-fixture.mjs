@@ -161,8 +161,145 @@ export const DATA_DIR = path.resolve(process.cwd(), 'data');
 write(
   'src/router.ts',
   `import type { InboundEvent } from './channels/adapter.js';
+import type { AgentGroup, MessagingGroup, MessagingGroupAgent } from './types.js';
 
-export async function routeInbound(_event: InboundEvent): Promise<void> {}
+function safeParseContent(raw: string): { text?: string; sender?: string; senderId?: string } {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return { text: raw };
+  }
+}
+
+export async function routeInbound(event: InboundEvent): Promise<void> {
+  const isMention = event.message.isMention === true;
+  const agents: MessagingGroupAgent[] = [];
+  const mg = { id: 'mg', is_group: 1 } as MessagingGroup;
+  const userId: string | null = null;
+  const accessGate = null;
+  const senderScopeGate = null;
+
+  const parsed = safeParseContent(event.message.content);
+  const messageText = parsed.text ?? '';
+
+  // Per-wiring thread policy inputs, resolved once per event.
+  for (const agent of agents) {
+    const agentGroup = { folder: 'agent' } as AgentGroup;
+    const threadsEnabled = true;
+    const effectiveThreadId = threadsEnabled ? event.threadId : null;
+
+    const engages = evaluateEngage(agent, messageText, isMention, mg, effectiveThreadId);
+    const accessOk = engages && (!accessGate || true);
+    const scopeOk = engages && (!senderScopeGate || true);
+
+    if (engages && accessOk && scopeOk) {
+      await deliverToAgent(agent, agentGroup, mg, event, userId, threadsEnabled, effectiveThreadId, true);
+    } else if (agent.ignored_message_policy === 'accumulate') {
+      await deliverToAgent(agent, agentGroup, mg, event, userId, threadsEnabled, effectiveThreadId, false);
+    }
+  }
+}
+
+function evaluateEngage(
+  _agent: MessagingGroupAgent,
+  _text: string,
+  _isMention: boolean,
+  _mg: MessagingGroup,
+  _threadId: string | null,
+): boolean {
+  return false;
+}
+
+async function deliverToAgent(
+  agent: MessagingGroupAgent,
+  agentGroup: AgentGroup,
+  mg: MessagingGroup,
+  event: InboundEvent,
+  userId: string | null,
+  threadsEnabled: boolean,
+  effectiveThreadId: string | null,
+  wake: boolean,
+): Promise<void> {
+  void agent;
+  void agentGroup;
+  void mg;
+  void userId;
+  void threadsEnabled;
+  void effectiveThreadId;
+  void wake;
+  if (event.message.kind === 'chat' || event.message.kind === 'chat-sdk') {
+    return;
+  }
+}
+`,
+);
+
+write(
+  'src/delivery.ts',
+  `import { getAgentGroup } from './db/agent-groups.js';
+import { readOutboxFiles } from './session-manager.js';
+import type { Session } from './types.js';
+
+const deliveryAdapter = {
+  async deliver(
+    _channelType: string,
+    _platformId: string,
+    _threadId: string | null,
+    _kind: string,
+    _content: string,
+    _files?: unknown[],
+    _instance?: string,
+  ): Promise<string | undefined> {
+    return undefined;
+  },
+};
+
+export async function deliverMessage(
+  msg: {
+    id: string;
+    kind: string;
+    platform_id: string | null;
+    channel_type: string | null;
+    thread_id: string | null;
+    content: string;
+  },
+  session: Session,
+): Promise<string | undefined> {
+  const content = JSON.parse(msg.content) as Record<string, unknown>;
+  const deliverInstance = msg.channel_type ?? undefined;
+  if (!msg.channel_type || !msg.platform_id) return;
+
+  // Read file attachments from outbox if the content declares files.
+  // File I/O lives in session-manager.ts (symmetric with inbound
+  // extractAttachmentFiles) — delivery just hands buffers to the adapter.
+  const files =
+    Array.isArray(content.files) && content.files.length > 0
+      ? readOutboxFiles(session.agent_group_id, session.id, msg.id, content.files as string[])
+      : undefined;
+
+  const platformMsgId = await deliveryAdapter.deliver(
+    msg.channel_type,
+    msg.platform_id,
+    msg.thread_id,
+    msg.kind,
+    msg.content,
+    files,
+    deliverInstance,
+  );
+  return platformMsgId;
+}
+
+export function registerDeliveryAction(
+  _action: string,
+  _handler: (...args: unknown[]) => Promise<void>,
+  _spec?: unknown,
+): void {}
+
+export function reenterGuardedDeliveryAction(_action: string): (ctx: unknown) => Promise<void> {
+  return async () => undefined;
+}
+
+void getAgentGroup;
 `,
 );
 
@@ -180,6 +317,15 @@ write(
   'src/session-manager.ts',
   `export function sessionDir(_agentFolder: string, _sessionId: string): string {
   return '/tmp/nanoclaw-fixture-session';
+}
+
+export function readOutboxFiles(
+  _agentGroupId: string,
+  _sessionId: string,
+  _messageId: string,
+  _files: string[],
+): unknown[] {
+  return [];
 }
 `,
 );

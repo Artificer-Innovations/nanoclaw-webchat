@@ -4,9 +4,13 @@ import {
   buildRoutingMetadata,
   computeResponseExpectation,
   folderFromSenderName,
+  HISTORICAL_REPLAY_FIELD,
+  isWebchatContextOnly,
   readBackfillMessageLimit,
+  resolveWebchatReceiver,
   roomContextStub,
   rosterJoinStub,
+  SYNTHETIC_MESSAGE_FIELD,
   THREAD_MESSAGE_SEQ_FIELD,
   WEBCHAT_RECEIVER_FIELD,
 } from './webchat-routing.js';
@@ -52,6 +56,36 @@ describe('webchat-routing', () => {
 
   it('exports thread message seq field name', () => {
     expect(THREAD_MESSAGE_SEQ_FIELD).toBe('threadMessageSeq');
+  });
+
+  describe('resolveWebchatReceiver', () => {
+    it('returns trimmed non-empty string receivers', () => {
+      expect(resolveWebchatReceiver({ [WEBCHAT_RECEIVER_FIELD]: 'sarah' })).toBe('sarah');
+      expect(resolveWebchatReceiver({ [WEBCHAT_RECEIVER_FIELD]: '  diego  ' })).toBe('diego');
+    });
+
+    it('returns null for missing, blank, or non-string values', () => {
+      expect(resolveWebchatReceiver({})).toBeNull();
+      expect(resolveWebchatReceiver({ [WEBCHAT_RECEIVER_FIELD]: '' })).toBeNull();
+      expect(resolveWebchatReceiver({ [WEBCHAT_RECEIVER_FIELD]: '   ' })).toBeNull();
+      expect(resolveWebchatReceiver({ [WEBCHAT_RECEIVER_FIELD]: 12 })).toBeNull();
+      expect(resolveWebchatReceiver({ [WEBCHAT_RECEIVER_FIELD]: null })).toBeNull();
+    });
+  });
+
+  describe('isWebchatContextOnly', () => {
+    it('is true for peer replies, synthetic stubs, and historical replay', () => {
+      expect(isWebchatContextOnly({ routing: { isPeerReply: true } })).toBe(true);
+      expect(isWebchatContextOnly({ [SYNTHETIC_MESSAGE_FIELD]: true })).toBe(true);
+      expect(isWebchatContextOnly({ [HISTORICAL_REPLAY_FIELD]: true })).toBe(true);
+    });
+
+    it('is false for ordinary chat deliveries', () => {
+      expect(isWebchatContextOnly({})).toBe(false);
+      expect(isWebchatContextOnly({ routing: { isPeerReply: false } })).toBe(false);
+      expect(isWebchatContextOnly({ [SYNTHETIC_MESSAGE_FIELD]: false })).toBe(false);
+      expect(isWebchatContextOnly({ [WEBCHAT_RECEIVER_FIELD]: 'sarah' })).toBe(false);
+    });
   });
 
   it('formats backfill intro without message bodies', () => {

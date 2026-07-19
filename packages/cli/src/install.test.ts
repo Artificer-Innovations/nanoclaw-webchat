@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { printInstallNextSteps, runInstall, runUninstall, runUpgrade, runVerify } from './install.js';
 import * as nativeDeps from './native-deps.js';
 import * as nodeRunner from './node-runner.js';
+import { writeStockHostModules } from './host-patches.js';
 import { spawnSyncMock } from './test/spawn-mock.js';
 import { ADAPTER_COPY_RULES, resourcesDir, skillDir } from './paths.js';
 
@@ -23,7 +24,28 @@ function makeNanoclawFixture(): string {
     path.join(root, 'package.json'),
     `${JSON.stringify({ name: 'nanoclaw-host-test', dependencies: {}, devDependencies: {} }, null, 2)}\n`,
   );
+  writeStockHostModules(root);
   return root;
+}
+
+function installResultDefaults(
+  overrides: Partial<Parameters<typeof printInstallNextSteps>[0]> = {},
+): Parameters<typeof printInstallNextSteps>[0] {
+  return {
+    root: '/tmp/x',
+    copied: ['a'],
+    dependenciesAdded: [],
+    dependenciesInstalled: true,
+    barrelPatched: false,
+    bootPatched: false,
+    routerPatched: 'already',
+    deliveryPatched: 'already',
+    env: { created: [], skipped: [] },
+    version: '0.1.0',
+    nvmrcCreated: false,
+    npmrcUpdated: false,
+    ...overrides,
+  };
 }
 
 afterEach(() => {
@@ -87,6 +109,8 @@ describe('install', () => {
     expect(nodeRunner.runUnderProjectNode).toHaveBeenCalledWith(root, 'pnpm', ['install']);
     expect(result.barrelPatched).toBe(true);
     expect(result.bootPatched).toBe(true);
+    expect(result.routerPatched).toBe('applied');
+    expect(result.deliveryPatched).toBe('applied');
     expect(result.env.created.length).toBeGreaterThan(0);
     expect(result.nvmrcCreated).toBe(true);
     expect(result.npmrcUpdated).toBe(true);
@@ -94,6 +118,12 @@ describe('install', () => {
     expect(fs.readFileSync(path.join(root, '.npmrc'), 'utf8')).toContain(
       'onlyBuiltDependencies[]=better-sqlite3',
     );
+    expect(fs.readFileSync(path.join(root, 'src/router.ts'), 'utf8')).toContain('resolveWebchatReceiver');
+    expect(fs.readFileSync(path.join(root, 'src/delivery.ts'), 'utf8')).toContain('senderFolder');
+
+    const again = runInstall(root);
+    expect(again.routerPatched).toBe('already');
+    expect(again.deliveryPatched).toBe('already');
   });
 
   it('runInstall without path uses cwd when cwd is nanoclaw root', () => {
@@ -123,6 +153,12 @@ describe('install', () => {
     expect(result.removedFiles).toHaveLength(ADAPTER_COPY_RULES.length);
     expect(result.barrelRemoved).toBe(true);
     expect(result.bootRemoved).toBe(true);
+    expect(result.routerUnpatched).toBe('removed');
+    expect(result.deliveryUnpatched).toBe('removed');
+    expect(fs.readFileSync(path.join(root, 'src/router.ts'), 'utf8')).not.toContain('resolveWebchatReceiver');
+    expect(fs.readFileSync(path.join(root, 'src/delivery.ts'), 'utf8')).not.toContain(
+      'nanoclaw-webchat:sender-attribution',
+    );
   });
 
   it('runUninstall without path uses cwd', () => {
@@ -150,54 +186,27 @@ describe('install', () => {
 
   it('printInstallNextSteps logs installed host dependencies', () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
-    printInstallNextSteps({
-      root: '/tmp/x',
-      copied: ['a'],
-      dependenciesAdded: ['busboy'],
-      dependenciesInstalled: true,
-      barrelPatched: false,
-      bootPatched: false,
-      env: { created: [], skipped: [] },
-      version: '0.1.0',
-      nvmrcCreated: false,
-      npmrcUpdated: false,
-    });
+    printInstallNextSteps(
+      installResultDefaults({ dependenciesAdded: ['busboy'], dependenciesInstalled: true }),
+    );
     expect(log.mock.calls.some((call) => String(call[0]).includes('Installed host dependencies'))).toBe(true);
     log.mockRestore();
   });
 
   it('printInstallNextSteps warns when host dependencies were not installed', () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
-    printInstallNextSteps({
-      root: '/tmp/x',
-      copied: ['a'],
-      dependenciesAdded: ['busboy'],
-      dependenciesInstalled: false,
-      barrelPatched: false,
-      bootPatched: false,
-      env: { created: [], skipped: [] },
-      version: '0.1.0',
-      nvmrcCreated: false,
-      npmrcUpdated: false,
-    });
+    printInstallNextSteps(
+      installResultDefaults({ dependenciesAdded: ['busboy'], dependenciesInstalled: false }),
+    );
     expect(log.mock.calls.some((call) => String(call[0]).includes('run pnpm install'))).toBe(true);
     log.mockRestore();
   });
 
   it('printInstallNextSteps omits env line when nothing created', () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
-    printInstallNextSteps({
-      root: '/tmp/x',
-      copied: ['a'],
-      dependenciesAdded: [],
-      dependenciesInstalled: true,
-      barrelPatched: false,
-      bootPatched: false,
-      env: { created: [], skipped: ['WEBCHAT_ENABLED'] },
-      version: '0.1.0',
-      nvmrcCreated: false,
-      npmrcUpdated: false,
-    });
+    printInstallNextSteps(
+      installResultDefaults({ env: { created: [], skipped: ['WEBCHAT_ENABLED'] } }),
+    );
     expect(log.mock.calls.some((call) => String(call[0]).includes('Added .env'))).toBe(false);
     log.mockRestore();
   });
@@ -211,18 +220,15 @@ describe('install', () => {
       }),
     );
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
-    printInstallNextSteps({
-      root,
-      copied: ['a'],
-      dependenciesAdded: [],
-      dependenciesInstalled: true,
-      barrelPatched: true,
-      bootPatched: true,
-      env: { created: [], skipped: [] },
-      version: '0.1.0',
-      nvmrcCreated: false,
-      npmrcUpdated: false,
-    });
+    printInstallNextSteps(
+      installResultDefaults({
+        root,
+        barrelPatched: true,
+        bootPatched: true,
+        routerPatched: 'applied',
+        deliveryPatched: 'applied',
+      }),
+    );
     expect(log.mock.calls.some((call) => String(call[0]).includes('file: link'))).toBe(true);
     log.mockRestore();
   });
@@ -231,36 +237,20 @@ describe('install', () => {
     const root = makeNanoclawFixture();
     fs.writeFileSync(path.join(root, '.nvmrc'), `${process.version.slice(1).split('.')[0]}\n`);
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
-    printInstallNextSteps({
-      root,
-      copied: ['a'],
-      dependenciesAdded: [],
-      dependenciesInstalled: true,
-      barrelPatched: true,
-      bootPatched: true,
-      env: { created: [], skipped: [] },
-      version: '0.1.0',
-      nvmrcCreated: false,
-      npmrcUpdated: false,
-    });
+    printInstallNextSteps(installResultDefaults({ root, barrelPatched: true, bootPatched: true }));
     expect(log.mock.calls.some((call) => String(call[0]).includes('targets Node'))).toBe(false);
     log.mockRestore();
   });
 
   it('printInstallNextSteps skips file: hint when host package.json is missing', () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
-    printInstallNextSteps({
-      root: '/nonexistent/nanoclaw-root',
-      copied: ['a'],
-      dependenciesAdded: [],
-      dependenciesInstalled: true,
-      barrelPatched: true,
-      bootPatched: true,
-      env: { created: [], skipped: [] },
-      version: '0.1.0',
-      nvmrcCreated: false,
-      npmrcUpdated: false,
-    });
+    printInstallNextSteps(
+      installResultDefaults({
+        root: '/nonexistent/nanoclaw-root',
+        barrelPatched: true,
+        bootPatched: true,
+      }),
+    );
     expect(log.mock.calls.some((call) => String(call[0]).includes('file: link'))).toBe(false);
     log.mockRestore();
   });
@@ -269,38 +259,45 @@ describe('install', () => {
     const root = makeNanoclawFixture();
     fs.writeFileSync(path.join(root, '.nvmrc'), '99\n');
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
-    printInstallNextSteps({
-      root,
-      copied: ['a'],
-      dependenciesAdded: [],
-      dependenciesInstalled: true,
-      barrelPatched: true,
-      bootPatched: true,
-      env: { created: [], skipped: [] },
-      version: '0.1.0',
-      nvmrcCreated: false,
-      npmrcUpdated: false,
-    });
+    printInstallNextSteps(installResultDefaults({ root, barrelPatched: true, bootPatched: true }));
     expect(log.mock.calls.some((call) => String(call[0]).includes('targets Node 99'))).toBe(true);
     log.mockRestore();
   });
 
   it('printInstallNextSteps logs scaffold hints when created', () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
-    printInstallNextSteps({
-      root: '/tmp/x',
-      copied: ['a'],
-      dependenciesAdded: [],
-      dependenciesInstalled: true,
-      barrelPatched: false,
-      bootPatched: false,
-      env: { created: ['WEBCHAT_ENABLED'], skipped: [] },
-      version: '0.1.3',
-      nvmrcCreated: true,
-      npmrcUpdated: true,
-    });
+    printInstallNextSteps(
+      installResultDefaults({
+        env: { created: ['WEBCHAT_ENABLED'], skipped: [] },
+        version: '0.1.3',
+        nvmrcCreated: true,
+        npmrcUpdated: true,
+        routerPatched: 'applied',
+        deliveryPatched: 'applied',
+      }),
+    );
     expect(log.mock.calls.some((call) => String(call[0]).includes('Added .nvmrc'))).toBe(true);
     expect(log.mock.calls.some((call) => String(call[0]).includes('Updated .npmrc'))).toBe(true);
+    expect(log.mock.calls.some((call) => String(call[0]).includes('Patched host router'))).toBe(true);
+    expect(log.mock.calls.some((call) => String(call[0]).includes('Patched host delivery'))).toBe(true);
+    log.mockRestore();
+  });
+
+  it('printInstallNextSteps reports already and equivalent host patches', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    printInstallNextSteps(
+      installResultDefaults({ routerPatched: 'already', deliveryPatched: 'already-equivalent' }),
+    );
+    expect(log.mock.calls.some((call) => String(call[0]).includes('already patched (idempotent)'))).toBe(true);
+    expect(log.mock.calls.some((call) => String(call[0]).includes('already present (equivalent'))).toBe(true);
+    log.mockRestore();
+  });
+
+  it('printInstallNextSteps ignores non-applied host patch statuses', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    printInstallNextSteps(installResultDefaults({ routerPatched: 'absent', deliveryPatched: 'removed' }));
+    expect(log.mock.calls.some((call) => String(call[0]).includes('Patched host'))).toBe(false);
+    expect(log.mock.calls.some((call) => String(call[0]).includes('already patched'))).toBe(false);
     log.mockRestore();
   });
 

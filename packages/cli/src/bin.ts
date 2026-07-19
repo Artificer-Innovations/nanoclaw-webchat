@@ -60,6 +60,12 @@ export function runCommand(argv: string[]): number {
         const result = runUninstall(path);
         console.log(`Removed adapter from ${result.root}`);
         console.log(`Deleted ${result.removedFiles.length} files.`);
+        if (result.routerUnpatched === 'removed') {
+          console.log('Reverted host router lobby-routing patch.');
+        }
+        if (result.deliveryUnpatched === 'removed') {
+          console.log('Reverted host delivery sender-attribution patch.');
+        }
         console.log('\nOptional: pnpm remove nanoclaw-webchat ws');
         console.log('Optional: pnpm remove -D @types/ws');
         console.log('Then: pnpm run build && restart host');

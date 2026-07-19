@@ -112,6 +112,15 @@ Add this block inside `main()`, after DB migrations/backfill and **before** `ini
   await startWebChat();
 ```
 
+### 4b. Host lobby-routing + sender-attribution patches
+
+`nanoclaw-webchat install` also patches:
+
+- `src/router.ts` — honor `webchatReceiver` so engaged lobby/table agents receive follow-ups without another `@mention`; peer replies / synthetic stubs / historical replay are context-only (no wake, no command gate)
+- `src/delivery.ts` — stamp `senderName`/`senderFolder` on web outbound when missing so the UI labels agents correctly and peer fan-out can resolve the sender
+
+These patches are idempotent and reversed by `uninstall`. Prefer the CLI over hand-editing.
+
 ### 5. Build and validate
 
 ```bash
@@ -146,9 +155,10 @@ Generate secret: `node -e "console.log(require('crypto').randomBytes(16).toStrin
 
 Open `http://127.0.0.1:3200` — auth token is injected by the host (no paste step).
 
-- **Lobby:** `@sarah hello` routes to the sarah agent
+- **Lobby:** `@sarah hello` routes to Sarah; a follow-up without `@sarah` still reaches her while she is engaged
 - **DM:** pick an agent in the sidebar — all messages go to that agent
 - **Threads:** use **New thread** in the lobby header
+- **Multi-agent:** engaged agents see each other's replies (requires delivery sender-attribution patch)
 
 ## Channel Info
 
@@ -176,7 +186,8 @@ UI-only updates may only require a host restart. Adapter changes require re-runn
 - **`better-sqlite3` / MODULE_NOT_FOUND / NODE_MODULE_VERSION:** Run `pnpm exec nanoclaw-webchat verify` (rebuilds under project Node). Ensure Node 22 (`nvm use`) or upgrade host to `better-sqlite3@^12.10.0` on Node 26+
 - **401 in browser:** wrong `WEBCHAT_SECRET`
 - **Messages dropped:** ensure `web:local` user has member access (sync adds this automatically)
-- **Agent not engaging in lobby:** message must match `@<folder>` pattern (e.g. `@sarah`)
+- **Agent not engaging in lobby:** first message must `@mention` the agent (e.g. `@sarah`) to engage; follow-ups without a mention should still deliver while the chip shows listening. If follow-ups drop, re-run `nanoclaw-webchat install` so `src/router.ts` honors `webchatReceiver`
+- **Wrong agent labels / agents ignore each other in lobby:** re-run install so `src/delivery.ts` stamps `senderName`/`senderFolder` on web outbound
 - **Package missing:** run step 1; build must pass before tests
 
 See [REMOVE.md](REMOVE.md) to uninstall.

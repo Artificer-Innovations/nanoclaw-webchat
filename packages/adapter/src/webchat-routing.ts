@@ -36,6 +36,43 @@ export const SYNTHETIC_KIND_FIELD = 'syntheticKind';
 /** Historical thread replay during backfill — context only, no wake. */
 export const HISTORICAL_REPLAY_FIELD = 'historicalReplay';
 
+/**
+ * Parsed inbound content fields the host router consults for lobby fan-out.
+ * `webchatReceiver` is honored on any channel (MyNanoClaw behavior): it selects
+ * among agents already wired to that messaging group; access/scope gates still apply.
+ */
+export type WebchatParsedContent = {
+  [WEBCHAT_RECEIVER_FIELD]?: unknown;
+  [SYNTHETIC_MESSAGE_FIELD]?: unknown;
+  [HISTORICAL_REPLAY_FIELD]?: unknown;
+  routing?: { isPeerReply?: unknown } | null;
+};
+
+/**
+ * Lobby fan-out tags each copy with `webchatReceiver` (agent folder).
+ * When present, the host router engages exactly that wiring and skips
+ * engage_pattern — otherwise follow-ups are dropped (lobby wirings use
+ * `@folder\\b` + drop) and mention copies can duplicate to peers.
+ */
+export function resolveWebchatReceiver(parsed: WebchatParsedContent): string | null {
+  const receiver = parsed[WEBCHAT_RECEIVER_FIELD];
+  if (typeof receiver !== 'string') return null;
+  const trimmed = receiver.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * Peer replies, synthetic stubs, and historical replay are context-only:
+ * store in the session but do not wake the container or run the command gate.
+ */
+export function isWebchatContextOnly(parsed: WebchatParsedContent): boolean {
+  if (parsed[SYNTHETIC_MESSAGE_FIELD] === true) return true;
+  if (parsed[HISTORICAL_REPLAY_FIELD] === true) return true;
+  const routing = parsed.routing;
+  if (routing && typeof routing === 'object' && routing.isPeerReply === true) return true;
+  return false;
+}
+
 const DEFAULT_BACKFILL_LIMIT = 20;
 
 export function readBackfillMessageLimit(): number {

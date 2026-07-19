@@ -13,6 +13,13 @@ import {
   syncSkillToFork,
   ensureHostAdapterDependencies,
 } from './patch.js';
+import {
+  applyDeliverySenderAttributionPatch,
+  applyRouterLobbyRoutingPatch,
+  removeDeliverySenderAttributionPatch,
+  removeRouterLobbyRoutingPatch,
+  type HostPatchStatus,
+} from './host-patches.js';
 import { readProjectNodeMajor, runUnderProjectNode, scaffoldProjectNodeFiles, verifyHostReminder } from './node-runner.js';
 import { findNanoclawRoot, readPackageVersion, VERIFY_TESTS } from './paths.js';
 
@@ -23,6 +30,8 @@ export interface InstallResult {
   dependenciesInstalled: boolean;
   barrelPatched: boolean;
   bootPatched: boolean;
+  routerPatched: HostPatchStatus;
+  deliveryPatched: HostPatchStatus;
   env: { created: string[]; skipped: string[] };
   version: string;
   nvmrcCreated: boolean;
@@ -52,6 +61,8 @@ export function runInstall(root?: string): InstallResult {
   const dependenciesInstalled = installAddedHostDependencies(nanoclawRoot, dependenciesAdded);
   const barrelPatched = appendBarrelImport(nanoclawRoot);
   const bootPatched = insertWebchatBootBlock(nanoclawRoot);
+  const routerPatched = applyRouterLobbyRoutingPatch(nanoclawRoot).status;
+  const deliveryPatched = applyDeliverySenderAttributionPatch(nanoclawRoot).status;
   const env = scaffoldEnv(nanoclawRoot);
   const { nvmrcCreated, npmrcUpdated } = scaffoldProjectNodeFiles(nanoclawRoot);
   return {
@@ -61,6 +72,8 @@ export function runInstall(root?: string): InstallResult {
     dependenciesInstalled,
     barrelPatched,
     bootPatched,
+    routerPatched,
+    deliveryPatched,
     env,
     version: readPackageVersion(),
     nvmrcCreated,
@@ -78,14 +91,27 @@ export function runUninstall(root?: string): {
   removedFiles: string[];
   barrelRemoved: boolean;
   bootRemoved: boolean;
+  routerUnpatched: HostPatchStatus;
+  deliveryUnpatched: HostPatchStatus;
   envRemoved: string[];
 } {
   const nanoclawRoot = root ?? findNanoclawRoot();
+  // Unpatch host modules before deleting copied adapter sources they import.
+  const routerUnpatched = removeRouterLobbyRoutingPatch(nanoclawRoot).status;
+  const deliveryUnpatched = removeDeliverySenderAttributionPatch(nanoclawRoot).status;
   const removedFiles = removeAdapterFiles(nanoclawRoot);
   const barrelRemoved = removeBarrelImport(nanoclawRoot);
   const bootRemoved = removeWebchatBootBlock(nanoclawRoot);
   const envRemoved = removeEnvVars(nanoclawRoot);
-  return { root: nanoclawRoot, removedFiles, barrelRemoved, bootRemoved, envRemoved };
+  return {
+    root: nanoclawRoot,
+    removedFiles,
+    barrelRemoved,
+    bootRemoved,
+    routerUnpatched,
+    deliveryUnpatched,
+    envRemoved,
+  };
 }
 
 export function runVerify(root?: string): {
@@ -138,6 +164,8 @@ export function printInstallNextSteps(result: InstallResult): void {
   if (result.npmrcUpdated) {
     console.log('Updated .npmrc for better-sqlite3 native rebuilds');
   }
+  logHostPatch('router lobby-routing', result.routerPatched);
+  logHostPatch('delivery sender-attribution', result.deliveryPatched);
   console.log('\nNext steps:');
   console.log('  pnpm run build');
   console.log('  pnpm exec nanoclaw-webchat verify');
@@ -162,4 +190,20 @@ function readHostWebchatDependency(nanoclawRoot: string): string | undefined {
     dependencies?: Record<string, string>;
   };
   return pkg.dependencies?.['nanoclaw-webchat'];
+}
+
+function logHostPatch(label: string, status: HostPatchStatus): void {
+  switch (status) {
+    case 'applied':
+      console.log(`Patched host ${label}.`);
+      break;
+    case 'already':
+      console.log(`Host ${label} already patched (idempotent).`);
+      break;
+    case 'already-equivalent':
+      console.log(`Host ${label} already present (equivalent integration).`);
+      break;
+    default:
+      break;
+  }
 }
