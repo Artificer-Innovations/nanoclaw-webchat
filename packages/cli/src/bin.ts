@@ -69,11 +69,11 @@ export function runCommand(argv: string[]): number {
         console.log(`Usage: nanoclaw-webchat <command> [--path <nanoclaw-root>]
 
 Commands:
-  install      Copy adapter, patch host, scaffold .env
+  install      Copy adapter, wire boot, scaffold .env
   upgrade      sync-skill + install
   sync-skill   Copy bundled skill to .claude/skills/add-webchat/
   verify       Run adapter verification tests in NanoClaw fork
-  uninstall    Remove adapter files and host patches
+  uninstall    Remove adapter files and boot wiring
 `);
         return command === 'help' ? 0 : 1;
     }

@@ -134,6 +134,14 @@ copyTree(path.join(nanoclawSrc, 'src/db'), path.join(fixtureRoot, 'src/db'));
 copyFile(path.join(nanoclawSrc, 'src/types.ts'), path.join(fixtureRoot, 'src/types.ts'));
 copyFile(path.join(nanoclawSrc, 'src/env.ts'), path.join(fixtureRoot, 'src/env.ts'));
 copyFile(path.join(nanoclawSrc, 'src/log.ts'), path.join(fixtureRoot, 'src/log.ts'));
+const hosthooksSource = path.join(nanoclawSrc, 'src/hosthooks.ts');
+if (!fs.existsSync(hosthooksSource)) {
+  throw new Error(
+    `Missing ${hosthooksSource}. Install nanoclaw-hosthooks into the NanoClaw fork first ` +
+      '(`pnpm exec nanoclaw-hosthooks install`), then re-run this script.',
+  );
+}
+copyFile(hosthooksSource, path.join(fixtureRoot, 'src/hosthooks.ts'));
 copyFile(path.join(nanoclawSrc, 'src/channels/adapter.ts'), path.join(fixtureRoot, 'src/channels/adapter.ts'));
 copyFile(
   path.join(nanoclawSrc, 'src/channels/channel-registry.ts'),

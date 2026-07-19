@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.0
+
+### Minor Changes
+
+- [#58](https://github.com/Artificer-Innovations/nanoclaw-webchat/pull/58) [`46dacf2`](https://github.com/Artificer-Innovations/nanoclaw-webchat/commit/46dacf26bbd2bc76d9cfe6e2ecbb5ce19e4b4562) Thanks [@ZappoMan](https://github.com/ZappoMan)! - Require nanoclaw-hosthooks API v1 and register composable lobby delivery policy and web outbound sender attribution hooks instead of patching router or delivery business logic.
+
+### Patch Changes
+
+- Pin `/add-webchat` skill and QUICKSTART install examples to `nanoclaw-webchat@0.5.0` so published install docs match the hosthooks-required release (was still documenting `@0.1.0`).
+
 ## 0.4.1
 
 ### Patch Changes

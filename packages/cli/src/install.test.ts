@@ -2,7 +2,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { printInstallNextSteps, runInstall, runUninstall, runUpgrade, runVerify } from './install.js';
+import {
+  getHosthooksRequirementIssue,
+  printInstallNextSteps,
+  runInstall,
+  runUninstall,
+  runUpgrade,
+  runVerify,
+} from './install.js';
 import * as nativeDeps from './native-deps.js';
 import * as nodeRunner from './node-runner.js';
 import { spawnSyncMock } from './test/spawn-mock.js';
@@ -22,6 +29,14 @@ function makeNanoclawFixture(): string {
   fs.writeFileSync(
     path.join(root, 'package.json'),
     `${JSON.stringify({ name: 'nanoclaw-host-test', dependencies: {}, devDependencies: {} }, null, 2)}\n`,
+  );
+  fs.writeFileSync(
+    path.join(root, 'src/hosthooks.ts'),
+    `export const HOSTHOOKS_API_VERSION = 1 as const;
+export function getHosthooksCapabilities() {}
+export function registerDeliveryPolicy() {}
+export function registerOutboundContentTransform() {}
+`,
   );
   return root;
 }
@@ -43,6 +58,40 @@ beforeEach(() => {
 });
 
 describe('install', () => {
+  it('requires nanoclaw-hosthooks before changing the host', () => {
+    const root = makeNanoclawFixture();
+    fs.rmSync(path.join(root, 'src/hosthooks.ts'));
+    expect(() => runInstall(root)).toThrow(
+      /Install nanoclaw-hosthooks first: `pnpm exec nanoclaw-hosthooks install`/,
+    );
+    expect(fs.existsSync(path.join(root, 'src/channels/web.ts'))).toBe(false);
+  });
+
+  it('rejects unsupported or incomplete hosthooks capabilities', () => {
+    const root = makeNanoclawFixture();
+    const hosthooksPath = path.join(root, 'src/hosthooks.ts');
+    fs.writeFileSync(hosthooksPath, 'export const HOSTHOOKS_API_VERSION = 2 as const;\n');
+    expect(getHosthooksRequirementIssue(root)).toMatch(/does not provide nanoclaw-hosthooks API v1/);
+
+    fs.writeFileSync(hosthooksPath, 'export const HOSTHOOKS_API_VERSION = 1 as const;\n');
+    expect(getHosthooksRequirementIssue(root)).toMatch(
+      /missing required capabilities: getHosthooksCapabilities, registerDeliveryPolicy, registerOutboundContentTransform/,
+    );
+
+    fs.writeFileSync(
+      hosthooksPath,
+      `export const HOSTHOOKS_API_VERSION = 1 as const;
+// registerDeliveryPolicy getHosthooksCapabilities registerOutboundContentTransform
+`,
+    );
+    expect(getHosthooksRequirementIssue(root)).toMatch(/missing required capabilities/);
+  });
+
+  it('accepts a complete hosthooks API v1 registry', () => {
+    const root = makeNanoclawFixture();
+    expect(getHosthooksRequirementIssue(root)).toBeNull();
+  });
+
   it('runInstall reports failed pnpm install when host dependencies were added', () => {
     const root = makeNanoclawFixture();
     vi.mocked(nodeRunner.runUnderProjectNode).mockReturnValueOnce({
@@ -114,6 +163,13 @@ describe('install', () => {
     const result = runUpgrade(root);
     expect(result.skillPath).toBe(path.join(root, '.claude/skills/add-webchat'));
     expect(fs.existsSync(path.join(result.skillPath, 'SKILL.md'))).toBe(true);
+  });
+
+  it('runUpgrade requires hosthooks before syncing the skill', () => {
+    const root = makeNanoclawFixture();
+    fs.rmSync(path.join(root, 'src/hosthooks.ts'));
+    expect(() => runUpgrade(root)).toThrow(/Install nanoclaw-hosthooks first/);
+    expect(fs.existsSync(path.join(root, '.claude/skills/add-webchat'))).toBe(false);
   });
 
   it('runUninstall removes adapter artifacts', () => {
@@ -312,6 +368,16 @@ describe('install', () => {
       ok: false,
       output: '',
     });
+  });
+
+  it('runVerify fails before native preflight when hosthooks is absent', () => {
+    const root = makeNanoclawFixture();
+    fs.rmSync(path.join(root, 'src/hosthooks.ts'));
+    const preflight = vi.spyOn(nativeDeps, 'ensureBetterSqlite3');
+    const result = runVerify(root);
+    expect(result.ok).toBe(false);
+    expect(result.output).toContain('Install nanoclaw-hosthooks first');
+    expect(preflight).not.toHaveBeenCalled();
   });
 
   it('runVerify returns early when better-sqlite3 preflight fails without notice', () => {
