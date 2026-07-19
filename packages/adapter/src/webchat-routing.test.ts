@@ -4,9 +4,13 @@ import {
   buildRoutingMetadata,
   computeResponseExpectation,
   folderFromSenderName,
+  HISTORICAL_REPLAY_FIELD,
+  isWebchatContextOnly,
   readBackfillMessageLimit,
+  resolveWebchatReceiver,
   roomContextStub,
   rosterJoinStub,
+  SYNTHETIC_MESSAGE_FIELD,
   THREAD_MESSAGE_SEQ_FIELD,
   WEBCHAT_RECEIVER_FIELD,
 } from './webchat-routing.js';
@@ -52,6 +56,21 @@ describe('webchat-routing', () => {
 
   it('exports thread message seq field name', () => {
     expect(THREAD_MESSAGE_SEQ_FIELD).toBe('threadMessageSeq');
+  });
+
+  it('resolves only non-empty string webchat receivers', () => {
+    expect(resolveWebchatReceiver({ [WEBCHAT_RECEIVER_FIELD]: '  sarah  ' })).toBe('sarah');
+    expect(resolveWebchatReceiver({ [WEBCHAT_RECEIVER_FIELD]: '' })).toBeNull();
+    expect(resolveWebchatReceiver({ [WEBCHAT_RECEIVER_FIELD]: 12 })).toBeNull();
+  });
+
+  it('identifies peer, synthetic, and historical context-only deliveries', () => {
+    expect(isWebchatContextOnly({ routing: { isPeerReply: true } })).toBe(true);
+    expect(isWebchatContextOnly({ [SYNTHETIC_MESSAGE_FIELD]: true })).toBe(true);
+    expect(isWebchatContextOnly({ [HISTORICAL_REPLAY_FIELD]: true })).toBe(true);
+    expect(isWebchatContextOnly({ routing: { isPeerReply: false } })).toBe(false);
+    expect(isWebchatContextOnly({ routing: 'invalid' })).toBe(false);
+    expect(isWebchatContextOnly({})).toBe(false);
   });
 
   it('formats backfill intro without message bodies', () => {

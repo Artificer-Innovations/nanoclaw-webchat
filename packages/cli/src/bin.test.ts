@@ -30,6 +30,14 @@ function makeNanoclawFixture(): string {
     path.join(root, 'src/index.ts'),
     'async function main() {\n  await runMigrations(db);\n  await initChannelAdapters(config);\n}\n',
   );
+  fs.writeFileSync(
+    path.join(root, 'src/hosthooks.ts'),
+    `export const HOSTHOOKS_API_VERSION = 1 as const;
+export function getHosthooksCapabilities() {}
+export function registerDeliveryPolicy() {}
+export function registerOutboundContentTransform() {}
+`,
+  );
   return root;
 }
 
@@ -311,11 +319,12 @@ describe('runCommand', () => {
   });
 
   it('reports non-Error throws', () => {
+    const root = makeNanoclawFixture();
     vi.spyOn(console, 'error').mockImplementation(() => {});
     spawnSyncMock.mockImplementation(() => {
       throw 'boom';
     });
-    expect(runCommand(['node', 'bin.js', 'verify', '--path', '/tmp'])).toBe(1);
+    expect(runCommand(['node', 'bin.js', 'verify', '--path', root])).toBe(1);
   });
 });
 

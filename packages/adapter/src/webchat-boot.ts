@@ -6,6 +6,7 @@ import { readEnvFile } from './env.js';
 import { syncWebchatWirings } from './webchat-sync.js';
 import { ensureWebchatSchema } from './webchat-store.js';
 import { refreshWebchatAfterAgentChange } from './webchat-live.js';
+import { registerWebchatHosthooks } from './webchat-hosthooks.js';
 
 /**
  * Re-register handlers so agent-group create/delete refresh webchat lobby/DM
@@ -78,6 +79,7 @@ export async function startWebChat(): Promise<void> {
     return;
   }
 
+  registerWebchatHosthooks();
   syncWebchatWirings();
   ensureWebchatSchema();
   await installAgentGroupLiveRefresh();
