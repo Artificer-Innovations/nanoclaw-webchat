@@ -4,6 +4,7 @@ import {
   registerOutboundContentTransform,
   type ValidatedInboundParse,
 } from './hosthooks.js';
+import { log } from './log.js';
 import { isWebchatContextOnly, resolveWebchatReceiver } from './webchat-routing.js';
 
 type UnknownRecord = Record<string, unknown>;
@@ -47,7 +48,7 @@ export function registerWebchatHosthooks(): void {
 
   registerOutboundContentTransform(
     'nanoclaw-webchat:sender-attribution',
-    ({ content, message, agentGroup }) => {
+    ({ content, message, agentGroup, session }) => {
       const msg = asRecord(message);
       if (msg?.channel_type !== 'web') return null;
 
@@ -61,11 +62,27 @@ export function registerWebchatHosthooks(): void {
         return null;
       }
 
-      if (nonEmptyString(parsed.senderName)) return null;
+      const existingName = nonEmptyString(parsed.senderName);
+      const existingFolder = nonEmptyString(parsed.senderFolder);
+      if (existingName && existingFolder) return null;
+
       const group = asRecord(agentGroup);
-      const senderName = nonEmptyString(group?.name);
-      const senderFolder = nonEmptyString(group?.folder);
-      if (!senderName || !senderFolder) return null;
+      const senderName = existingName ?? nonEmptyString(group?.name);
+      const senderFolder = existingFolder ?? nonEmptyString(group?.folder);
+      if (!senderName || !senderFolder) {
+        const agentGroupId =
+          nonEmptyString(asRecord(session)?.agent_group_id) ??
+          nonEmptyString(group?.id) ??
+          null;
+        log.warn('webchat: agentGroup missing name/folder, skipping sender attribution', {
+          agentGroupId,
+          hasName: Boolean(nonEmptyString(group?.name)),
+          hasFolder: Boolean(nonEmptyString(group?.folder)),
+          hadSenderName: Boolean(existingName),
+          hadSenderFolder: Boolean(existingFolder),
+        });
+        return null;
+      }
 
       return JSON.stringify({ ...parsed, senderName, senderFolder });
     },

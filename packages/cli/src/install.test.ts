@@ -77,6 +77,14 @@ describe('install', () => {
     expect(getHosthooksRequirementIssue(root)).toMatch(
       /missing required capabilities: getHosthooksCapabilities, registerDeliveryPolicy, registerOutboundContentTransform/,
     );
+
+    fs.writeFileSync(
+      hosthooksPath,
+      `export const HOSTHOOKS_API_VERSION = 1 as const;
+// registerDeliveryPolicy getHosthooksCapabilities registerOutboundContentTransform
+`,
+    );
+    expect(getHosthooksRequirementIssue(root)).toMatch(/missing required capabilities/);
   });
 
   it('accepts a complete hosthooks API v1 registry', () => {

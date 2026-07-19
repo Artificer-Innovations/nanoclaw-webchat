@@ -47,7 +47,12 @@ export function getHosthooksRequirementIssue(nanoclawRoot: string): string | nul
   if (!/\bHOSTHOOKS_API_VERSION\s*=\s*1\b/.test(source)) {
     return `src/hosthooks.ts does not provide nanoclaw-hosthooks API v1. ${installFirst}`;
   }
-  const missing = REQUIRED_HOSTHOOK_EXPORTS.filter((name) => !source.includes(name));
+  const missing = REQUIRED_HOSTHOOK_EXPORTS.filter((name) => {
+    const exportPattern = new RegExp(
+      String.raw`\b(?:export\s+(?:async\s+)?function|export\s+(?:const|let|var)|export\s+\{[^}]*\b)\s*${name}\b`,
+    );
+    return !exportPattern.test(source);
+  });
   if (missing.length > 0) {
     return `src/hosthooks.ts is missing required capabilities: ${missing.join(', ')}. ${installFirst}`;
   }

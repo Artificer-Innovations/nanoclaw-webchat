@@ -17,6 +17,17 @@ vi.mock('./env.js', () => ({
   readEnvFile: vi.fn(() => ({})),
 }));
 
+vi.mock('./log.js', () => ({
+  log: {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    fatal: vi.fn(),
+  },
+}));
+
+import { log } from './log.js';
 import { registerWebchatHosthooks } from './webchat-hosthooks.js';
 
 type DeliveryPolicy = (context: {
@@ -28,6 +39,7 @@ type OutboundTransform = (context: {
   content: string;
   message: unknown;
   agentGroup: unknown;
+  session?: unknown;
 }) => string | null;
 
 beforeEach(() => {
@@ -139,11 +151,25 @@ describe('webchat hosthooks registration', () => {
     });
   });
 
-  it('preserves attributed, non-web, malformed, and incomplete content', () => {
+  it('fills only the missing sender field without overwriting present ones', () => {
+    const { transform } = registrations();
+    const result = transform({
+      content: JSON.stringify({ text: 'On it', senderName: 'Diego' }),
+      message: { channel_type: 'web' },
+      agentGroup: { name: 'Sarah', folder: 'sarah' },
+    });
+    expect(JSON.parse(result!)).toEqual({
+      text: 'On it',
+      senderName: 'Diego',
+      senderFolder: 'sarah',
+    });
+  });
+
+  it('preserves attributed, non-web, and malformed content', () => {
     const { transform } = registrations();
     expect(
       transform({
-        content: JSON.stringify({ text: 'On it', senderName: 'Diego' }),
+        content: JSON.stringify({ text: 'On it', senderName: 'Diego', senderFolder: 'diego' }),
         message: { channel_type: 'web' },
         agentGroup: { name: 'Sarah', folder: 'sarah' },
       }),
@@ -176,12 +202,41 @@ describe('webchat hosthooks registration', () => {
         agentGroup: { name: 'Sarah', folder: 'sarah' },
       }),
     ).toBeNull();
+  });
+
+  it('warns when agentGroup cannot complete sender attribution', () => {
+    const { transform } = registrations();
     expect(
       transform({
         content: JSON.stringify({ text: 'On it' }),
         message: { channel_type: 'web' },
         agentGroup: { name: 'Sarah' },
+        session: { agent_group_id: 'ag-sarah' },
       }),
     ).toBeNull();
+    expect(log.warn).toHaveBeenCalledWith(
+      'webchat: agentGroup missing name/folder, skipping sender attribution',
+      expect.objectContaining({
+        agentGroupId: 'ag-sarah',
+        hasName: true,
+        hasFolder: false,
+      }),
+    );
+
+    expect(
+      transform({
+        content: JSON.stringify({ text: 'On it' }),
+        message: { channel_type: 'web' },
+        agentGroup: { id: 'ag-from-group', folder: 'sarah' },
+      }),
+    ).toBeNull();
+    expect(log.warn).toHaveBeenCalledWith(
+      'webchat: agentGroup missing name/folder, skipping sender attribution',
+      expect.objectContaining({
+        agentGroupId: 'ag-from-group',
+        hasName: false,
+        hasFolder: true,
+      }),
+    );
   });
 });

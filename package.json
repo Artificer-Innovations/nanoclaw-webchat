@@ -69,6 +69,14 @@
   "engines": {
     "node": ">=20"
   },
+  "peerDependencies": {
+    "nanoclaw-hosthooks": "^0.1.0"
+  },
+  "peerDependenciesMeta": {
+    "nanoclaw-hosthooks": {
+      "optional": true
+    }
+  },
   "publishConfig": {
     "access": "public",
     "provenance": true
