@@ -29,6 +29,14 @@ const ENV_KEYS = [
   'WEBCHAT_OIDC_ALLOWED_EMAILS',
   'WEBCHAT_OIDC_ALLOWED_SUBS',
   'WEBCHAT_OIDC_REQUIRED_GROUP',
+  'WEBCHAT_EXTERNAL_SESSION_ENABLED',
+  'WEBCHAT_EXTERNAL_SESSION_COOKIE',
+  'WEBCHAT_EXTERNAL_JWKS_URL',
+  'WEBCHAT_EXTERNAL_JWT_ISS',
+  'WEBCHAT_EXTERNAL_JWT_AUD',
+  'WEBCHAT_EXTERNAL_USER_ID_CLAIM',
+  'WEBCHAT_EXTERNAL_DISPLAY_NAME_CLAIM',
+  'WEBCHAT_EXTERNAL_USER_ID_PREFIX',
   'NODE_ENV',
 ] as const;
 
@@ -123,7 +131,35 @@ describe('loadWebAdapterAuthConfig', () => {
     const cfg = loadWebAdapterAuthConfig();
     expect(cfg?.public?.oidcEnabled).toBe(true);
     expect(vi.mocked(log.warn)).toHaveBeenCalledWith(
-      expect.stringContaining('OIDC allowlist is empty'),
+      expect.stringContaining('allowlist is empty'),
     );
+  });
+
+  it('allows public mode with only external session enabled', () => {
+    publicEnv();
+    setEnv('WEBCHAT_AUTH_BASIC_ENABLED', undefined);
+    setEnv('WEBCHAT_AUTH_OIDC_ENABLED', undefined);
+    setEnv('WEBCHAT_EXTERNAL_SESSION_ENABLED', 'true');
+    setEnv('WEBCHAT_EXTERNAL_SESSION_COOKIE', 'parent_session');
+    setEnv('WEBCHAT_EXTERNAL_JWKS_URL', 'https://auth.example/.well-known/jwks.json');
+    setEnv('WEBCHAT_EXTERNAL_JWT_ISS', 'https://auth.example');
+    setEnv('WEBCHAT_EXTERNAL_JWT_AUD', 'webchat');
+
+    const cfg = loadWebAdapterAuthConfig();
+    expect(cfg?.public?.externalSession.enabled).toBe(true);
+    expect(cfg?.public?.externalSession.cookieName).toBe('parent_session');
+    expect(cfg?.public?.oidcEnabled).toBe(false);
+    expect(cfg?.public?.basic.enabled).toBe(false);
+  });
+
+  it('rejects external session without JWKS URL', () => {
+    publicEnv();
+    setEnv('WEBCHAT_AUTH_BASIC_ENABLED', undefined);
+    setEnv('WEBCHAT_EXTERNAL_SESSION_ENABLED', 'true');
+    setEnv('WEBCHAT_EXTERNAL_SESSION_COOKIE', 'parent_session');
+    setEnv('WEBCHAT_EXTERNAL_JWT_ISS', 'https://auth.example');
+    setEnv('WEBCHAT_EXTERNAL_JWT_AUD', 'webchat');
+
+    expect(() => loadWebAdapterAuthConfig()).toThrow(/WEBCHAT_EXTERNAL_JWKS_URL/);
   });
 });

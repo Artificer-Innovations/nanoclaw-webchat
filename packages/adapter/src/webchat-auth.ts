@@ -25,6 +25,7 @@ import {
 export interface AuthConfigResponse {
   basic: { enabled: boolean };
   providers: Array<{ id: string; label: string }>;
+  externalSession: { enabled: boolean };
 }
 
 export interface ResolvedWebUser {
@@ -285,6 +286,7 @@ export function buildAuthConfigResponse(config: PublicAuthConfig): AuthConfigRes
     providers: config.oidcEnabled
       ? config.providers.map((p) => ({ id: p.id, label: p.label || `Login with ${p.id}` }))
       : [],
+    externalSession: { enabled: config.externalSession.enabled },
   };
 }
 
@@ -298,6 +300,113 @@ export function resolveSessionUser(
   const session = getSession(sessionId);
   if (!session) return null;
   return { userId: session.userId, displayName: session.displayName };
+}
+
+/** Stable provider id used in allowlist `subs` entries (`ext:<sub>`). */
+export const EXTERNAL_SESSION_PROVIDER_ID = 'ext';
+
+function identityFromExternalClaims(
+  config: PublicAuthConfig,
+  claims: Record<string, unknown>,
+): WebchatSessionUser {
+  const ext = config.externalSession;
+  const idRaw = claims[ext.userIdClaim];
+  const idPart = typeof idRaw === 'string' || typeof idRaw === 'number' ? String(idRaw).trim() : '';
+  if (!idPart) throw new Error(`External JWT missing ${ext.userIdClaim} claim`);
+
+  const nameRaw = claims[ext.displayNameClaim];
+  const email = typeof claims.email === 'string' ? claims.email : undefined;
+  const preferred =
+    typeof claims.preferred_username === 'string' ? claims.preferred_username : undefined;
+  const displayName =
+    (typeof nameRaw === 'string' && nameRaw.trim()) ||
+    email ||
+    preferred ||
+    idPart;
+
+  return {
+    userId: `${ext.userIdPrefix}${idPart}`,
+    displayName,
+    authMethod: 'external',
+    providerId: EXTERNAL_SESSION_PROVIDER_ID,
+    email,
+    oidcSub: typeof claims.sub === 'string' ? claims.sub : idPart,
+  };
+}
+
+/**
+ * Verify the configured external session cookie JWT. Does not mint a webchat_session.
+ * Returns null when external auth is disabled, cookie missing, or verification fails.
+ */
+export async function verifyExternalSessionUser(
+  config: PublicAuthConfig,
+  req: http.IncomingMessage,
+): Promise<WebchatSessionUser | null> {
+  const ext = config.externalSession;
+  if (!ext.enabled) return null;
+
+  const raw = parseCookieHeader(req.headers.cookie, ext.cookieName);
+  if (!raw?.trim()) return null;
+
+  try {
+    const verifyOpts = { audience: ext.audience, issuer: ext.issuer };
+    const verifyWithKeys = (keys: JsonWebKey[]) => verifyIdToken(raw, keys, verifyOpts);
+
+    let keys = await fetchJwks(ext.jwksUrl);
+    let claims: Record<string, unknown>;
+    try {
+      claims = verifyWithKeys(keys);
+    } catch (err) {
+      if (!isJwksRetryableVerificationError(err)) throw err;
+      jwksCache.delete(ext.jwksUrl);
+      keys = await fetchJwks(ext.jwksUrl);
+      claims = verifyWithKeys(keys);
+    }
+
+    // Parent session JWTs are already authenticated by the host IdP — treat email as verified
+    // for allowlist domain/email checks.
+    const allowlistClaims: Record<string, unknown> = {
+      ...claims,
+      email_verified: true,
+    };
+    if (!checkOidcAllowlist(config.allowlist, EXTERNAL_SESSION_PROVIDER_ID, allowlistClaims)) {
+      log.warn('Webchat external session rejected by allowlist', {
+        sub: typeof claims.sub === 'string' ? claims.sub : undefined,
+      });
+      return null;
+    }
+
+    return identityFromExternalClaims(config, claims);
+  } catch (err) {
+    log.debug('Webchat external session verification failed', { err });
+    return null;
+  }
+}
+
+/**
+ * If there is no webchat_session yet, verify the external cookie and mint one.
+ * When `res` is provided, sets `Set-Cookie`. Returns the established user or null.
+ */
+export async function tryEstablishExternalSession(
+  config: PublicAuthConfig,
+  req: http.IncomingMessage,
+  onLogin: (user: WebchatSessionUser) => void,
+  res?: http.ServerResponse,
+): Promise<ResolvedWebUser | null> {
+  const existing = resolveSessionUser(config, req);
+  if (existing) return existing;
+  const user = await verifyExternalSessionUser(config, req);
+  if (!user) return null;
+  try {
+    onLogin(user);
+  } catch (err) {
+    log.error('Webchat external session onLogin failed', { err, userId: user.userId });
+    return null;
+  }
+  if (res) {
+    writeSession(res, config, user);
+  }
+  return { userId: user.userId, displayName: user.displayName };
 }
 
 function writeSession(res: http.ServerResponse, config: PublicAuthConfig, user: WebchatSessionUser): void {
@@ -435,7 +544,10 @@ export async function handlePublicAuthRequest(
   }
 
   if (url.pathname === '/api/auth/me' && req.method === 'GET') {
-    const user = resolveSessionUser(config, req);
+    let user = resolveSessionUser(config, req);
+    if (!user) {
+      user = await tryEstablishExternalSession(config, req, onLogin, res);
+    }
     if (!user) {
       json(res, 401, { error: 'Unauthorized' });
       return true;

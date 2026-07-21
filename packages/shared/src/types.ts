@@ -27,6 +27,7 @@ export interface BootstrapPayload {
 export interface AuthConfigResponse {
   basic: { enabled: boolean };
   providers: Array<{ id: string; label: string }>;
+  externalSession: { enabled: boolean };
 }
 
 export interface ThreadMeta {

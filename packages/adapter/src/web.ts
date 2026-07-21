@@ -40,6 +40,8 @@ import {
   isPublicAuthExemptPath,
   isPublicAuthPath,
   resolveSessionUser,
+  tryEstablishExternalSession,
+  verifyExternalSessionUser,
 } from '../webchat-auth.js';
 import { ensureWebchatAuthSchema } from '../webchat-auth-sessions.js';
 import {
@@ -1737,6 +1739,15 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
               if (handled) return;
             }
 
+            if (isPublicMode() && resolveSessionUser(opts.publicAuth!, req) == null) {
+              await tryEstablishExternalSession(
+                opts.publicAuth!,
+                req,
+                (user) => ensureUserWebchatWirings(user.userId, user.displayName),
+                res,
+              );
+            }
+
             if (!checkAuth(req, url, res)) {
               json(res, 401, { error: 'Unauthorized' });
               return;
@@ -1946,26 +1957,46 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
       wss = new WebSocketServer({ noServer: true });
 
       server.on('upgrade', (req, socket, head) => {
-        const url = new URL(req.url ?? '/', `http://127.0.0.1:${opts.port}`);
-        if (url.pathname !== '/api/ws') {
-          socket.destroy();
-          return;
-        }
-        if (!checkAuth(req, url)) {
-          socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-          socket.destroy();
-          return;
-        }
-        wss!.handleUpgrade(req, socket, head, (ws) => {
-          const mcpUser = readMcpUser(req);
-          const sessionUser = isPublicMode() ? resolveSessionUser(opts.publicAuth!, req) : null;
-          const client: TrackedWsClient = {
-            ws,
-            userId: mcpUser?.userId ?? sessionUser?.userId ?? null,
-          };
-          wsClients.add(client);
-          ws.on('close', () => wsClients.delete(client));
-        });
+        void (async () => {
+          const url = new URL(req.url ?? '/', `http://127.0.0.1:${opts.port}`);
+          if (url.pathname !== '/api/ws') {
+            socket.destroy();
+            return;
+          }
+
+          let externalUser: { userId: string; displayName: string } | null = null;
+          if (!checkAuth(req, url)) {
+            // SPA normally establishes webchat_session via /api/auth/me first; if the
+            // upgrade races ahead, accept a valid external JWT for this connection.
+            if (isPublicMode()) {
+              const verified = await verifyExternalSessionUser(opts.publicAuth!, req);
+              if (verified) {
+                try {
+                  ensureUserWebchatWirings(verified.userId, verified.displayName);
+                  externalUser = verified;
+                } catch (err) {
+                  log.error('Webchat external WS onLogin failed', { err, userId: verified.userId });
+                }
+              }
+            }
+            if (!externalUser) {
+              socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+              socket.destroy();
+              return;
+            }
+          }
+
+          wss!.handleUpgrade(req, socket, head, (ws) => {
+            const mcpUser = readMcpUser(req);
+            const sessionUser = isPublicMode() ? resolveSessionUser(opts.publicAuth!, req) : null;
+            const client: TrackedWsClient = {
+              ws,
+              userId: mcpUser?.userId ?? sessionUser?.userId ?? externalUser?.userId ?? null,
+            };
+            wsClients.add(client);
+            ws.on('close', () => wsClients.delete(client));
+          });
+        })();
       });
 
       await new Promise<void>((resolve, reject) => {

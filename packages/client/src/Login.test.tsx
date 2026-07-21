@@ -19,6 +19,7 @@ describe('Login', () => {
     vi.mocked(api.fetchAuthConfig).mockResolvedValue({
       basic: { enabled: true },
       providers: [{ id: 'google', label: 'Login with Google' }],
+      externalSession: { enabled: false },
     });
     vi.mocked(api.loginBasic).mockResolvedValue(undefined);
   });
@@ -77,6 +78,7 @@ describe('Login', () => {
     vi.mocked(api.fetchAuthConfig).mockResolvedValue({
       basic: { enabled: false },
       providers: [{ id: 'github', label: 'Login with GitHub' }],
+      externalSession: { enabled: false },
     });
     render(<Login onSuccess={vi.fn()} />);
     expect(await screen.findByRole('button', { name: 'Login with GitHub' })).toBeInTheDocument();
@@ -88,9 +90,21 @@ describe('Login', () => {
     vi.mocked(api.fetchAuthConfig).mockResolvedValue({
       basic: { enabled: true },
       providers: [],
+      externalSession: { enabled: false },
     });
     render(<Login onSuccess={vi.fn()} />);
     expect(await screen.findByLabelText(/username/i)).toBeInTheDocument();
     expect(screen.queryByText('or')).not.toBeInTheDocument();
+  });
+
+  it('shows host-app hint when only external session is enabled', async () => {
+    vi.mocked(api.fetchAuthConfig).mockResolvedValue({
+      basic: { enabled: false },
+      providers: [],
+      externalSession: { enabled: true },
+    });
+    render(<Login onSuccess={vi.fn()} />);
+    expect(await screen.findByText(/Sign in to the host application/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/username/i)).not.toBeInTheDocument();
   });
 });

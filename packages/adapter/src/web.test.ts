@@ -237,6 +237,16 @@ function publicAdapterOptions(port: number) {
           ['bob', 'Bob'],
         ]),
       },
+      externalSession: {
+        enabled: false,
+        cookieName: '',
+        jwksUrl: '',
+        issuer: '',
+        audience: '',
+        userIdClaim: 'sub',
+        displayNameClaim: 'name',
+        userIdPrefix: 'web:ext:',
+      },
       secureCookies: false,
     },
   };
