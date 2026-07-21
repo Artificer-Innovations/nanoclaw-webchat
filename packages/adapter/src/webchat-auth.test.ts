@@ -545,6 +545,56 @@ describe('webchat-auth', () => {
       }
     });
 
+    it('respects explicit email_verified=false for email-domain allowlists', async () => {
+      const { verifyExternalSessionUser } = await import('./webchat-auth.js');
+      const keys = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+      const jwk = rsaJwkFromPublicKey(keys.publicKey, 'k1');
+      const unverified = signRs256Jwt(
+        {
+          sub: 'user-123',
+          email: 'pat@example.com',
+          email_verified: false,
+          iss: issuer,
+          aud: audience,
+          exp: Math.floor(Date.now() / 1000) + 3600,
+        },
+        keys.privateKey,
+      );
+      const omitted = signRs256Jwt(
+        {
+          sub: 'user-456',
+          email: 'pat@example.com',
+          iss: issuer,
+          aud: audience,
+          exp: Math.floor(Date.now() / 1000) + 3600,
+        },
+        keys.privateKey,
+      );
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(JSON.stringify({ keys: [jwk] }), { status: 200 }),
+      );
+      try {
+        const cfg = externalPublicConfig({
+          emailDomains: ['example.com'],
+          emails: [],
+          subs: [],
+          requiredGroup: null,
+        });
+        await expect(
+          verifyExternalSessionUser(cfg, {
+            headers: { cookie: `${cookieName}=${unverified}` },
+          } as IncomingMessage),
+        ).resolves.toBeNull();
+        await expect(
+          verifyExternalSessionUser(cfg, {
+            headers: { cookie: `${cookieName}=${omitted}` },
+          } as IncomingMessage),
+        ).resolves.toMatchObject({ userId: 'web:ext:user-456' });
+      } finally {
+        fetchMock.mockRestore();
+      }
+    });
+
     it('treats a malformed external cookie as an auth miss (no throw)', async () => {
       const { verifyExternalSessionUser } = await import('./webchat-auth.js');
       const cfg = externalPublicConfig();

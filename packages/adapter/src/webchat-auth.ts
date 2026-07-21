@@ -373,13 +373,16 @@ export async function verifyExternalSessionUser(
     if (!idPart) throw new Error(`External JWT missing ${ext.userIdClaim} claim`);
 
     // Trust boundary: parent session JWTs are already authenticated by the host IdP.
-    // Treat email as verified for allowlist domain/email checks — we assume the host
-    // never emits an unverified email inside a signature-verified session token.
+    // When the host omits `email_verified`, treat email as verified for allowlist checks.
+    // Respect an explicit `email_verified: false` so hosts that surface unverified emails
+    // are not overridden.
     const allowlistClaims: Record<string, unknown> = {
       ...claims,
       sub: idPart,
-      email_verified: true,
     };
+    if (claims.email_verified === undefined || claims.email_verified === null) {
+      allowlistClaims.email_verified = true;
+    }
     if (!checkOidcAllowlist(config.allowlist, EXTERNAL_SESSION_PROVIDER_ID, allowlistClaims)) {
       log.warn('Webchat external session rejected by allowlist', {
         sub: idPart,
