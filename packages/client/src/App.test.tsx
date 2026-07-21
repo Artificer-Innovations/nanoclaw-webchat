@@ -300,7 +300,7 @@ describe('App', () => {
       vi.fn(async (input) => {
         const url = String(input);
         if (url === '/api/auth/config') {
-          return jsonResponse({ basic: { enabled: true }, providers: [] });
+          return jsonResponse({ basic: { enabled: true }, providers: [], externalSession: { enabled: false } });
         }
         if (url === '/api/auth/me') {
           return jsonResponse(null, false, 401);
@@ -326,7 +326,7 @@ describe('App', () => {
       vi.fn(async (input) => {
         const url = String(input);
         if (url === '/api/auth/config') {
-          return jsonResponse({ basic: { enabled: true }, providers: [] });
+          return jsonResponse({ basic: { enabled: true }, providers: [], externalSession: { enabled: false } });
         }
         if (url === '/api/auth/me') {
           return jsonResponse(null, false, 500);
@@ -762,7 +762,7 @@ describe('App', () => {
       vi.fn(async (input, init) => {
         const url = String(input);
         if (url === '/api/auth/config') {
-          return jsonResponse({ basic: { enabled: true }, providers: [] });
+          return jsonResponse({ basic: { enabled: true }, providers: [], externalSession: { enabled: false } });
         }
         if (url === '/api/auth/me') {
           return jsonResponse(null, false, 401);
@@ -797,7 +797,7 @@ describe('App', () => {
       vi.fn(async (input, init) => {
         const url = String(input);
         if (url === '/api/auth/config') {
-          return jsonResponse({ basic: { enabled: true }, providers: [] });
+          return jsonResponse({ basic: { enabled: true }, providers: [], externalSession: { enabled: false } });
         }
         if (url === '/api/auth/me') {
           return jsonResponse(null, false, 401);
@@ -835,7 +835,7 @@ describe('App', () => {
       vi.fn(async (input) => {
         const url = String(input);
         if (url === '/api/auth/config') {
-          return jsonResponse({ basic: { enabled: true }, providers: [] });
+          return jsonResponse({ basic: { enabled: true }, providers: [], externalSession: { enabled: false } });
         }
         if (url === '/api/auth/me') {
           return jsonResponse({ id: 'alice', displayName: 'Alice' });
@@ -866,7 +866,7 @@ describe('App', () => {
       vi.fn(async (input) => {
         const url = String(input);
         if (url === '/api/auth/config') {
-          return jsonResponse({ basic: { enabled: true }, providers: [] });
+          return jsonResponse({ basic: { enabled: true }, providers: [], externalSession: { enabled: false } });
         }
         if (url === '/api/auth/me') {
           return jsonResponse({ id: 'alice', displayName: 'Alice' });
@@ -891,7 +891,7 @@ describe('App', () => {
       vi.fn(async (input, init) => {
         const url = String(input);
         if (url === '/api/auth/config') {
-          return jsonResponse({ basic: { enabled: true }, providers: [] });
+          return jsonResponse({ basic: { enabled: true }, providers: [], externalSession: { enabled: false } });
         }
         if (url === '/api/auth/me') {
           return authed

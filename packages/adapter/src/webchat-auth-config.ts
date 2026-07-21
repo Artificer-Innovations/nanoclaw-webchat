@@ -37,6 +37,22 @@ export interface OidcAllowlistConfig {
   requiredGroup: string | null;
 }
 
+/**
+ * Trust a parent-app session JWT carried in a cookie (same-site / shared domain).
+ * Verified via JWKS; no knowledge of any specific host product.
+ */
+export interface ExternalSessionConfig {
+  enabled: boolean;
+  cookieName: string;
+  jwksUrl: string;
+  issuer: string;
+  audience: string;
+  userIdClaim: string;
+  displayNameClaim: string;
+  /** Prefixed onto the user-id claim to form webchat userId (e.g. `web:ext:`). */
+  userIdPrefix: string;
+}
+
 export interface PublicAuthConfig {
   sessionSecret: string;
   sessionTtlSeconds: number;
@@ -45,6 +61,7 @@ export interface PublicAuthConfig {
   providers: OidcProviderConfig[];
   allowlist: OidcAllowlistConfig;
   basic: BasicAuthConfig;
+  externalSession: ExternalSessionConfig;
   secureCookies: boolean;
 }
 
@@ -88,6 +105,14 @@ const ENV_KEYS = [
   'WEBCHAT_MCP_HTTP_ENABLED',
   'WEBCHAT_MCP_TOKEN_TTL_SECONDS',
   'WEBCHAT_PUBLIC_BASE_URL',
+  'WEBCHAT_EXTERNAL_SESSION_ENABLED',
+  'WEBCHAT_EXTERNAL_SESSION_COOKIE',
+  'WEBCHAT_EXTERNAL_JWKS_URL',
+  'WEBCHAT_EXTERNAL_JWT_ISS',
+  'WEBCHAT_EXTERNAL_JWT_AUD',
+  'WEBCHAT_EXTERNAL_USER_ID_CLAIM',
+  'WEBCHAT_EXTERNAL_DISPLAY_NAME_CLAIM',
+  'WEBCHAT_EXTERNAL_USER_ID_PREFIX',
 ] as const;
 
 /** Minimum length for WEBCHAT_SESSION_SECRET (HMAC signing key). */
@@ -242,8 +267,11 @@ export function loadWebAdapterAuthConfig(): WebAdapterAuthConfig | null {
 
   const oidcEnabled = env('WEBCHAT_AUTH_OIDC_ENABLED', file) === 'true';
   const basicEnabled = env('WEBCHAT_AUTH_BASIC_ENABLED', file) === 'true';
-  if (!oidcEnabled && !basicEnabled) {
-    throw new Error('Enable WEBCHAT_AUTH_OIDC_ENABLED and/or WEBCHAT_AUTH_BASIC_ENABLED for public mode');
+  const externalEnabled = env('WEBCHAT_EXTERNAL_SESSION_ENABLED', file) === 'true';
+  if (!oidcEnabled && !basicEnabled && !externalEnabled) {
+    throw new Error(
+      'Enable WEBCHAT_AUTH_OIDC_ENABLED, WEBCHAT_AUTH_BASIC_ENABLED, and/or WEBCHAT_EXTERNAL_SESSION_ENABLED for public mode',
+    );
   }
 
   const providers = oidcEnabled ? loadProviders(file) : [];
@@ -265,6 +293,37 @@ export function loadWebAdapterAuthConfig(): WebAdapterAuthConfig | null {
     if (allowedUsernames.length === 0) {
       throw new Error('WEBCHAT_BASIC_ALLOWED_USERNAMES is required when basic auth is enabled');
     }
+  }
+
+  let externalSession: ExternalSessionConfig = {
+    enabled: false,
+    cookieName: '',
+    jwksUrl: '',
+    issuer: '',
+    audience: '',
+    userIdClaim: 'sub',
+    displayNameClaim: 'name',
+    userIdPrefix: 'web:ext:',
+  };
+  if (externalEnabled) {
+    const cookieName = env('WEBCHAT_EXTERNAL_SESSION_COOKIE', file)?.trim() ?? '';
+    const jwksUrl = env('WEBCHAT_EXTERNAL_JWKS_URL', file)?.trim() ?? '';
+    const issuer = env('WEBCHAT_EXTERNAL_JWT_ISS', file)?.trim() ?? '';
+    const audience = env('WEBCHAT_EXTERNAL_JWT_AUD', file)?.trim() ?? '';
+    if (!cookieName) throw new Error('WEBCHAT_EXTERNAL_SESSION_COOKIE is required when external session is enabled');
+    if (!jwksUrl) throw new Error('WEBCHAT_EXTERNAL_JWKS_URL is required when external session is enabled');
+    if (!issuer) throw new Error('WEBCHAT_EXTERNAL_JWT_ISS is required when external session is enabled');
+    if (!audience) throw new Error('WEBCHAT_EXTERNAL_JWT_AUD is required when external session is enabled');
+    externalSession = {
+      enabled: true,
+      cookieName,
+      jwksUrl,
+      issuer,
+      audience,
+      userIdClaim: env('WEBCHAT_EXTERNAL_USER_ID_CLAIM', file)?.trim() || 'sub',
+      displayNameClaim: env('WEBCHAT_EXTERNAL_DISPLAY_NAME_CLAIM', file)?.trim() || 'name',
+      userIdPrefix: env('WEBCHAT_EXTERNAL_USER_ID_PREFIX', file)?.trim() || 'web:ext:',
+    };
   }
 
   const ttlRaw = env('WEBCHAT_SESSION_TTL_SECONDS', file);
@@ -294,18 +353,19 @@ export function loadWebAdapterAuthConfig(): WebAdapterAuthConfig | null {
       allowedUsernames,
       displayNames: parseDisplayNames(env('WEBCHAT_BASIC_DISPLAY_NAMES', file)),
     },
+    externalSession,
     secureCookies: resolveSecureCookies(file),
   };
 
   if (
-    oidcEnabled &&
+    (oidcEnabled || externalEnabled) &&
     base.public.allowlist.emailDomains.length === 0 &&
     base.public.allowlist.emails.length === 0 &&
     base.public.allowlist.subs.length === 0 &&
     base.public.allowlist.requiredGroup === null
   ) {
     log.warn(
-      'Webchat public OIDC allowlist is empty: any account that completes OAuth is admitted and granted global owner',
+      'Webchat public allowlist is empty: any account that completes OIDC or external session auth is admitted and granted global owner',
     );
   }
 

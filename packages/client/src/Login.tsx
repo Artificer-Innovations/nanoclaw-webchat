@@ -63,10 +63,18 @@ export function Login({ onSuccess }: LoginProps) {
   const showBasic = config.basic.enabled;
   const showProviders = config.providers.length > 0;
   const showDivider = showBasic && showProviders;
+  const externalOnly =
+    Boolean(config.externalSession?.enabled) && !showBasic && !showProviders;
 
   return (
     <div className="auth-screen">
       <h1>NanoClaw Web Chat</h1>
+
+      {externalOnly && (
+        <p className="hint">
+          Sign in to the host application first, then reload this page.
+        </p>
+      )}
 
       {showBasic && (
         <form className="login-form" onSubmit={handleBasicSubmit}>

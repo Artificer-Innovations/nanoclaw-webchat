@@ -15,7 +15,7 @@ export interface WebchatSessionRecord {
   id: string;
   userId: string;
   displayName: string;
-  authMethod: 'oidc' | 'basic';
+  authMethod: 'oidc' | 'basic' | 'external';
   providerId: string | null;
   email: string | null;
   oidcSub: string | null;
@@ -26,7 +26,7 @@ export interface WebchatSessionRecord {
 export interface WebchatSessionUser {
   userId: string;
   displayName: string;
-  authMethod: 'oidc' | 'basic';
+  authMethod: 'oidc' | 'basic' | 'external';
   providerId?: string;
   email?: string;
   oidcSub?: string;
@@ -168,7 +168,7 @@ export function getSession(sessionId: string): WebchatSessionRecord | null {
     id: row.id,
     userId: row.user_id,
     displayName: row.display_name,
-    authMethod: row.auth_method as 'oidc' | 'basic',
+    authMethod: row.auth_method as 'oidc' | 'basic' | 'external',
     providerId: row.provider_id,
     email: row.email,
     oidcSub: row.oidc_sub,

@@ -318,9 +318,9 @@ describe('api', () => {
     it('fetchAuthConfig returns parsed config', async () => {
       vi.mocked(fetch).mockResolvedValue({
         ok: true,
-        json: async () => ({ basic: { enabled: true }, providers: [] }),
+        json: async () => ({ basic: { enabled: true }, providers: [], externalSession: { enabled: false } }),
       } as Response);
-      await expect(fetchAuthConfig()).resolves.toEqual({ basic: { enabled: true }, providers: [] });
+      await expect(fetchAuthConfig()).resolves.toEqual({ basic: { enabled: true }, providers: [], externalSession: { enabled: false } });
     });
 
     it('fetchAuthConfig throws on failure', async () => {
@@ -391,7 +391,7 @@ describe('api', () => {
     it('detectPublicAuthMode is true when auth config succeeds', async () => {
       vi.mocked(fetch).mockResolvedValue({
         ok: true,
-        json: async () => ({ basic: { enabled: true }, providers: [] }),
+        json: async () => ({ basic: { enabled: true }, providers: [], externalSession: { enabled: false } }),
       } as Response);
       await expect(detectPublicAuthMode()).resolves.toBe(true);
     });

@@ -40,6 +40,8 @@ import {
   isPublicAuthExemptPath,
   isPublicAuthPath,
   resolveSessionUser,
+  tryEstablishExternalSession,
+  verifyExternalSessionUser,
 } from '../webchat-auth.js';
 import { ensureWebchatAuthSchema } from '../webchat-auth-sessions.js';
 import {
@@ -940,6 +942,8 @@ const MAX_BODY_BYTES = 20 * 1024 * 1024;
 
 interface WebchatAuthedRequest extends http.IncomingMessage {
   webchatMcpUser?: McpAccessTokenUser;
+  /** Set when an external JWT was verified and a session minted for this response. */
+  webchatEstablishedUser?: { userId: string; displayName: string };
 }
 
 interface WebchatAuthedResponse extends http.ServerResponse {
@@ -965,6 +969,19 @@ function readMcpUser(
     (res ? (res as WebchatAuthedResponse).webchatMcpUser : undefined) ??
     (req as WebchatAuthedRequest).webchatMcpUser
   );
+}
+
+function attachEstablishedUser(
+  req: http.IncomingMessage,
+  user: { userId: string; displayName: string },
+): void {
+  (req as WebchatAuthedRequest).webchatEstablishedUser = user;
+}
+
+function readEstablishedUser(
+  req: http.IncomingMessage,
+): { userId: string; displayName: string } | undefined {
+  return (req as WebchatAuthedRequest).webchatEstablishedUser;
 }
 
 function parseBearerAuthorization(header: string | undefined): string | null {
@@ -1005,6 +1022,8 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
     if (isPublicMode()) {
       const session = resolveSessionUser(opts.publicAuth!, req);
       if (session) return session;
+      const established = readEstablishedUser(req);
+      if (established) return established;
     }
     return { userId: opts.userId, displayName: opts.displayName };
   }
@@ -1049,6 +1068,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
       }
       if (isPublicAuthPath(url.pathname) && isPublicAuthExemptPath(url.pathname)) return true;
       if (resolveSessionUser(opts.publicAuth!, req) != null) return true;
+      if (readEstablishedUser(req) != null) return true;
     }
 
     if (bearerHeader === `Bearer ${opts.authToken}`) return true;
@@ -1737,6 +1757,20 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
               if (handled) return;
             }
 
+            if (isPublicMode() && resolveSessionUser(opts.publicAuth!, req) == null) {
+              const established = await tryEstablishExternalSession(
+                opts.publicAuth!,
+                req,
+                (user) => ensureUserWebchatWirings(user.userId, user.displayName),
+                res,
+              );
+              if (established) {
+                // Set-Cookie is on the response; stamp the request so checkAuth /
+                // resolveRequestUser see this turn as authenticated.
+                attachEstablishedUser(req, established);
+              }
+            }
+
             if (!checkAuth(req, url, res)) {
               json(res, 401, { error: 'Unauthorized' });
               return;
@@ -1946,25 +1980,52 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
       wss = new WebSocketServer({ noServer: true });
 
       server.on('upgrade', (req, socket, head) => {
-        const url = new URL(req.url ?? '/', `http://127.0.0.1:${opts.port}`);
-        if (url.pathname !== '/api/ws') {
-          socket.destroy();
-          return;
-        }
-        if (!checkAuth(req, url)) {
-          socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-          socket.destroy();
-          return;
-        }
-        wss!.handleUpgrade(req, socket, head, (ws) => {
-          const mcpUser = readMcpUser(req);
-          const sessionUser = isPublicMode() ? resolveSessionUser(opts.publicAuth!, req) : null;
-          const client: TrackedWsClient = {
-            ws,
-            userId: mcpUser?.userId ?? sessionUser?.userId ?? null,
-          };
-          wsClients.add(client);
-          ws.on('close', () => wsClients.delete(client));
+        void (async () => {
+          const url = new URL(req.url ?? '/', `http://127.0.0.1:${opts.port}`);
+          if (url.pathname !== '/api/ws') {
+            socket.destroy();
+            return;
+          }
+
+          let externalUser: { userId: string; displayName: string } | null = null;
+          if (!checkAuth(req, url)) {
+            // SPA normally establishes webchat_session via /api/auth/me first; if the
+            // upgrade races ahead, accept a valid external JWT for this connection.
+            if (isPublicMode()) {
+              const verified = await verifyExternalSessionUser(opts.publicAuth!, req);
+              if (verified) {
+                try {
+                  ensureUserWebchatWirings(verified.userId, verified.displayName);
+                  externalUser = verified;
+                } catch (err) {
+                  log.error('Webchat external WS onLogin failed', { err, userId: verified.userId });
+                }
+              }
+            }
+            if (!externalUser) {
+              socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+              socket.destroy();
+              return;
+            }
+          }
+
+          wss!.handleUpgrade(req, socket, head, (ws) => {
+            const mcpUser = readMcpUser(req);
+            const sessionUser = isPublicMode() ? resolveSessionUser(opts.publicAuth!, req) : null;
+            const client: TrackedWsClient = {
+              ws,
+              userId: mcpUser?.userId ?? sessionUser?.userId ?? externalUser?.userId ?? null,
+            };
+            wsClients.add(client);
+            ws.on('close', () => wsClients.delete(client));
+          });
+        })().catch((err) => {
+          log.error('Webchat WS upgrade failed', { err });
+          try {
+            socket.destroy();
+          } catch {
+            // swallow
+          }
         });
       });
 

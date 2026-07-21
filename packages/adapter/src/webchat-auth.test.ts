@@ -73,6 +73,16 @@ describe('webchat-auth', () => {
           allowedUsernames: ['alice'],
           displayNames: new Map([['alice', 'Alice']]),
         },
+        externalSession: {
+          enabled: false,
+          cookieName: '',
+          jwksUrl: '',
+          issuer: '',
+          audience: '',
+          userIdClaim: 'sub',
+          displayNameClaim: 'name',
+          userIdPrefix: 'web:ext:',
+        },
         secureCookies: false,
       },
     }).public!;
@@ -101,6 +111,16 @@ describe('webchat-auth', () => {
             ['alice', 'Alice'],
             ['bob', 'Bob'],
           ]),
+        },
+        externalSession: {
+          enabled: false,
+          cookieName: '',
+          jwksUrl: '',
+          issuer: '',
+          audience: '',
+          userIdClaim: 'sub',
+          displayNameClaim: 'name',
+          userIdPrefix: 'web:ext:',
         },
         secureCookies: false,
       },
@@ -233,6 +253,16 @@ describe('webchat-auth', () => {
           allowedUsernames: [],
           displayNames: new Map(),
         },
+        externalSession: {
+          enabled: false,
+          cookieName: '',
+          jwksUrl: '',
+          issuer: '',
+          audience: '',
+          userIdClaim: 'sub',
+          displayNameClaim: 'name',
+          userIdPrefix: 'web:ext:',
+        },
         secureCookies: false,
       },
     }).public!;
@@ -329,5 +359,312 @@ describe('webchat-auth', () => {
     } finally {
       fetchMock.mockRestore();
     }
+  });
+
+  describe('external JWT session', () => {
+    const issuer = 'https://parent.example';
+    const audience = 'webchat-aud';
+    const jwksUri = `${issuer}/.well-known/jwks.json`;
+    const cookieName = 'parent_session';
+
+    function externalPublicConfig(
+      allowlist: {
+        emailDomains: string[];
+        emails: string[];
+        subs: string[];
+        requiredGroup: string | null;
+      } = { emailDomains: [], emails: [], subs: [], requiredGroup: null },
+      externalOverrides: Partial<{
+        userIdClaim: string;
+        displayNameClaim: string;
+        userIdPrefix: string;
+      }> = {},
+    ) {
+      return authConfigForTests({
+        mode: 'public',
+        public: {
+          sessionSecret: 's'.repeat(32),
+          sessionTtlSeconds: 3600,
+          redirectUri: '',
+          oidcEnabled: false,
+          providers: [],
+          allowlist,
+          basic: {
+            enabled: false,
+            password: '',
+            allowedUsernames: [],
+            displayNames: new Map(),
+          },
+          externalSession: {
+            enabled: true,
+            cookieName,
+            jwksUrl: jwksUri,
+            issuer,
+            audience,
+            userIdClaim: 'sub',
+            displayNameClaim: 'name',
+            userIdPrefix: 'web:ext:',
+            ...externalOverrides,
+          },
+          secureCookies: false,
+        },
+      }).public!;
+    }
+
+    it('establishes webchat_session from a valid external JWT cookie', async () => {
+      const { verifyExternalSessionUser, tryEstablishExternalSession, resolveSessionUser, buildAuthConfigResponse } =
+        await import('./webchat-auth.js');
+
+      const keys = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+      const jwk = rsaJwkFromPublicKey(keys.publicKey, 'k1');
+      const jwt = signRs256Jwt(
+        {
+          sub: 'user-123',
+          name: 'Pat Parent',
+          email: 'pat@example.com',
+          iss: issuer,
+          aud: audience,
+          exp: Math.floor(Date.now() / 1000) + 3600,
+        },
+        keys.privateKey,
+        'k1',
+      );
+
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(JSON.stringify({ keys: [jwk] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+
+      try {
+        const cfg = externalPublicConfig();
+        expect(buildAuthConfigResponse(cfg).externalSession).toEqual({ enabled: true });
+
+        const req = {
+          headers: { cookie: `${cookieName}=${jwt}` },
+        } as IncomingMessage;
+
+        const verified = await verifyExternalSessionUser(cfg, req);
+        expect(verified).toMatchObject({
+          userId: 'web:ext:user-123',
+          displayName: 'Pat Parent',
+          authMethod: 'external',
+        });
+
+        const setCookie: string[] = [];
+        const res = {
+          setHeader(name: string, value: string) {
+            if (name.toLowerCase() === 'set-cookie') setCookie.push(value);
+          },
+        } as unknown as ServerResponse;
+        const logins: string[] = [];
+        const established = await tryEstablishExternalSession(
+          cfg,
+          req,
+          (u) => logins.push(u.userId),
+          res,
+        );
+        expect(established).toEqual({ userId: 'web:ext:user-123', displayName: 'Pat Parent' });
+        expect(logins).toEqual(['web:ext:user-123']);
+        expect(setCookie.some((c) => c.startsWith('webchat_session='))).toBe(true);
+
+        const cookieHeader = setCookie[0]!;
+        const match = /webchat_session=([^;]+)/.exec(cookieHeader);
+        expect(match).toBeTruthy();
+        const sessionId = parseSessionCookie(decodeURIComponent(match![1]!), cfg.sessionSecret);
+        expect(sessionId).toBeTruthy();
+        expect(getSession(sessionId!)?.authMethod).toBe('external');
+
+        const withSession = {
+          headers: { cookie: `webchat_session=${match![1]!}` },
+        } as IncomingMessage;
+        expect(resolveSessionUser(cfg, withSession)).toEqual({
+          userId: 'web:ext:user-123',
+          displayName: 'Pat Parent',
+        });
+      } finally {
+        fetchMock.mockRestore();
+      }
+    });
+
+    it('rejects external JWT with wrong audience', async () => {
+      const { verifyExternalSessionUser } = await import('./webchat-auth.js');
+      const keys = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+      const jwk = rsaJwkFromPublicKey(keys.publicKey, 'k1');
+      const jwt = signRs256Jwt(
+        {
+          sub: 'user-123',
+          name: 'Pat',
+          iss: issuer,
+          aud: 'wrong-aud',
+          exp: Math.floor(Date.now() / 1000) + 3600,
+        },
+        keys.privateKey,
+      );
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(JSON.stringify({ keys: [jwk] }), { status: 200 }),
+      );
+      try {
+        const cfg = externalPublicConfig();
+        const req = { headers: { cookie: `${cookieName}=${jwt}` } } as IncomingMessage;
+        expect(await verifyExternalSessionUser(cfg, req)).toBeNull();
+      } finally {
+        fetchMock.mockRestore();
+      }
+    });
+
+    it('rejects external JWT when allowlist does not match', async () => {
+      const { verifyExternalSessionUser } = await import('./webchat-auth.js');
+      const keys = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+      const jwk = rsaJwkFromPublicKey(keys.publicKey, 'k1');
+      const jwt = signRs256Jwt(
+        {
+          sub: 'user-123',
+          email: 'pat@example.com',
+          iss: issuer,
+          aud: audience,
+          exp: Math.floor(Date.now() / 1000) + 3600,
+        },
+        keys.privateKey,
+      );
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(JSON.stringify({ keys: [jwk] }), { status: 200 }),
+      );
+      try {
+        const cfg = externalPublicConfig({
+          emailDomains: [],
+          emails: ['other@example.com'],
+          subs: [],
+          requiredGroup: null,
+        });
+        const req = { headers: { cookie: `${cookieName}=${jwt}` } } as IncomingMessage;
+        expect(await verifyExternalSessionUser(cfg, req)).toBeNull();
+      } finally {
+        fetchMock.mockRestore();
+      }
+    });
+
+    it('respects explicit email_verified=false for email-domain allowlists', async () => {
+      const { verifyExternalSessionUser } = await import('./webchat-auth.js');
+      const keys = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+      const jwk = rsaJwkFromPublicKey(keys.publicKey, 'k1');
+      const unverified = signRs256Jwt(
+        {
+          sub: 'user-123',
+          email: 'pat@example.com',
+          email_verified: false,
+          iss: issuer,
+          aud: audience,
+          exp: Math.floor(Date.now() / 1000) + 3600,
+        },
+        keys.privateKey,
+      );
+      const omitted = signRs256Jwt(
+        {
+          sub: 'user-456',
+          email: 'pat@example.com',
+          iss: issuer,
+          aud: audience,
+          exp: Math.floor(Date.now() / 1000) + 3600,
+        },
+        keys.privateKey,
+      );
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(JSON.stringify({ keys: [jwk] }), { status: 200 }),
+      );
+      try {
+        const cfg = externalPublicConfig({
+          emailDomains: ['example.com'],
+          emails: [],
+          subs: [],
+          requiredGroup: null,
+        });
+        await expect(
+          verifyExternalSessionUser(cfg, {
+            headers: { cookie: `${cookieName}=${unverified}` },
+          } as IncomingMessage),
+        ).resolves.toBeNull();
+        await expect(
+          verifyExternalSessionUser(cfg, {
+            headers: { cookie: `${cookieName}=${omitted}` },
+          } as IncomingMessage),
+        ).resolves.toMatchObject({ userId: 'web:ext:user-456' });
+      } finally {
+        fetchMock.mockRestore();
+      }
+    });
+
+    it('treats a malformed external cookie as an auth miss (no throw)', async () => {
+      const { verifyExternalSessionUser } = await import('./webchat-auth.js');
+      const cfg = externalPublicConfig();
+      const req = { headers: { cookie: `${cookieName}=%E0%A4%A` } } as IncomingMessage;
+      await expect(verifyExternalSessionUser(cfg, req)).resolves.toBeNull();
+    });
+
+    it('allowlists ext:<id> using WEBCHAT_EXTERNAL_USER_ID_CLAIM, not raw JWT sub', async () => {
+      const { verifyExternalSessionUser } = await import('./webchat-auth.js');
+      const keys = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+      const jwk = rsaJwkFromPublicKey(keys.publicKey, 'k1');
+      const jwt = signRs256Jwt(
+        {
+          sub: 'jwt-sub-ignored-for-allowlist',
+          uid: 'stable-uid',
+          name: 'Pat Parent',
+          iss: issuer,
+          aud: audience,
+          exp: Math.floor(Date.now() / 1000) + 3600,
+        },
+        keys.privateKey,
+      );
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(JSON.stringify({ keys: [jwk] }), { status: 200 }),
+      );
+      try {
+        const allowByUid = externalPublicConfig(
+          {
+            emailDomains: [],
+            emails: [],
+            subs: ['ext:stable-uid'],
+            requiredGroup: null,
+          },
+          { userIdClaim: 'uid' },
+        );
+        const allowByJwtSub = externalPublicConfig(
+          {
+            emailDomains: [],
+            emails: [],
+            subs: ['ext:jwt-sub-ignored-for-allowlist'],
+            requiredGroup: null,
+          },
+          { userIdClaim: 'uid' },
+        );
+        const req = { headers: { cookie: `${cookieName}=${jwt}` } } as IncomingMessage;
+        await expect(verifyExternalSessionUser(allowByUid, req)).resolves.toMatchObject({
+          userId: 'web:ext:stable-uid',
+        });
+        await expect(verifyExternalSessionUser(allowByJwtSub, req)).resolves.toBeNull();
+      } finally {
+        fetchMock.mockRestore();
+      }
+    });
+
+    it('does not override an existing webchat_session', async () => {
+      const { tryEstablishExternalSession, resolveSessionUser } = await import('./webchat-auth.js');
+      const cfg = externalPublicConfig();
+      const existing = createSession(
+        { userId: 'web:basic:alice', displayName: 'Alice', authMethod: 'basic' },
+        3600,
+      );
+      const cookie = signSessionCookie(existing.id, cfg.sessionSecret);
+      const req = {
+        headers: { cookie: `webchat_session=${encodeURIComponent(cookie)}; ${cookieName}=ignored` },
+      } as IncomingMessage;
+      const logins: string[] = [];
+      const result = await tryEstablishExternalSession(cfg, req, (u) => logins.push(u.userId));
+      expect(result).toEqual({ userId: 'web:basic:alice', displayName: 'Alice' });
+      expect(logins).toEqual([]);
+      expect(resolveSessionUser(cfg, req)?.userId).toBe('web:basic:alice');
+    });
   });
 });
