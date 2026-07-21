@@ -65,7 +65,7 @@ pnpm exec nanoclaw-webchat sync-skill
 ### 2. Install npm packages
 
 ```bash
-pnpm add nanoclaw-webchat@0.5.0 ws@8.18.3
+pnpm add nanoclaw-webchat@0.6.0 ws@8.18.3
 pnpm add -D @types/ws@8.18.1
 ```
 

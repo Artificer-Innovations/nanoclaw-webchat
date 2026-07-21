@@ -4,7 +4,7 @@ import fs from 'fs';
 import http from 'http';
 import { createServer as createNetServer, connect as netConnect } from 'node:net';
 import path from 'path';
-import WebSocket from 'ws';
+import WebSocket, { WebSocketServer } from 'ws';
 
 vi.mock('../config.js', async () => {
   const actual = await vi.importActual<typeof import('../config.js')>('../config.js');
@@ -181,6 +181,7 @@ import * as agentGroups from '../db/agent-groups.js';
 import * as webchatSync from '../webchat-sync.js';
 import * as webchatMentions from '../webchat-mentions.js';
 import { resetWebchatAuthSchemaForTests, createSession, signSessionCookie, WEBCHAT_SESSION_COOKIE } from '../webchat-auth-sessions.js';
+import { resetWebchatAuthCachesForTests } from '../webchat-auth.js';
 import { createWebchatMcpOAuthBackend, MCP_DEFAULT_SCOPE, verifyMcpAccessToken } from '../webchat-mcp-oauth.js';
 import { encodeUserSuffix } from '../webchat-room-scope.js';
 import * as webchatRoomScope from '../webchat-room-scope.js';
@@ -236,6 +237,16 @@ function publicAdapterOptions(port: number) {
           ['alice', 'Alice'],
           ['bob', 'Bob'],
         ]),
+      },
+      externalSession: {
+        enabled: false,
+        cookieName: '',
+        jwksUrl: '',
+        issuer: '',
+        audience: '',
+        userIdClaim: 'sub',
+        displayNameClaim: 'name',
+        userIdPrefix: 'web:ext:',
       },
       secureCookies: false,
     },
@@ -3561,6 +3572,248 @@ describe('web channel adapter', () => {
       ws.on('open', () => reject(new Error('should not open')));
       ws.on('error', () => resolve());
       ws.on('close', () => resolve());
+    });
+  });
+
+  describe('external JWT session (adapter)', () => {
+    const issuer = 'https://parent.example';
+    const audience = 'webchat-aud';
+    const jwksUri = `${issuer}/.well-known/jwks.json`;
+    const cookieName = 'parent_session';
+
+    beforeEach(() => {
+      resetWebchatAuthCachesForTests();
+    });
+
+    function base64UrlJson(value: unknown): string {
+      return Buffer.from(JSON.stringify(value)).toString('base64url');
+    }
+
+    function signRs256Jwt(
+      payload: Record<string, unknown>,
+      privateKey: crypto.KeyObject,
+      kid = 'test-key',
+    ): string {
+      const header = { alg: 'RS256', typ: 'JWT', kid };
+      const encodedHeader = base64UrlJson(header);
+      const encodedPayload = base64UrlJson(payload);
+      const signingInput = `${encodedHeader}.${encodedPayload}`;
+      const signature = crypto.sign('RSA-SHA256', Buffer.from(signingInput), privateKey);
+      return `${signingInput}.${signature.toString('base64url')}`;
+    }
+
+    function rsaJwkFromPublicKey(publicKey: crypto.KeyObject, kid: string) {
+      const jwk = publicKey.export({ format: 'jwk' }) as Record<string, unknown>;
+      return { ...jwk, kid, use: 'sig', alg: 'RS256' };
+    }
+
+    function externalAdapterOptions(port: number) {
+      const opts = publicAdapterOptions(port);
+      return {
+        ...opts,
+        publicAuth: {
+          ...opts.publicAuth,
+          basic: {
+            enabled: false,
+            password: '',
+            allowedUsernames: [],
+            displayNames: new Map(),
+          },
+          externalSession: {
+            enabled: true,
+            cookieName,
+            jwksUrl: jwksUri,
+            issuer,
+            audience,
+            userIdClaim: 'sub',
+            displayNameClaim: 'name',
+            userIdPrefix: 'web:ext:',
+          },
+        },
+      };
+    }
+
+    function mintExternalCookie(privateKey: crypto.KeyObject, sub = 'user-123', name = 'Pat Parent'): string {
+      return signRs256Jwt(
+        {
+          sub,
+          name,
+          email: 'pat@example.com',
+          iss: issuer,
+          aud: audience,
+          exp: Math.floor(Date.now() / 1000) + 3600,
+        },
+        privateKey,
+      );
+    }
+
+    it('establishes session from external cookie on bootstrap and wires the user', async () => {
+      const keys = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+      const jwk = rsaJwkFromPublicKey(keys.publicKey, 'test-key');
+      const jwt = mintExternalCookie(keys.privateKey);
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(JSON.stringify({ keys: [jwk] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+
+      const ensureWirings = vi.mocked(webchatSync.ensureUserWebchatWirings);
+      ensureWirings.mockClear();
+
+      try {
+        adapter = createWebAdapter(externalAdapterOptions(testPort));
+        resetWebchatAuthSchemaForTests();
+        await adapter.setup(setup);
+
+        const bootstrap = await httpGetWithHeaders(
+          '/api/bootstrap',
+          { Cookie: `${cookieName}=${jwt}` },
+          testPort,
+        );
+        expect(bootstrap.status).toBe(200);
+        expect(bootstrap.body).toMatchObject({
+          user: { id: 'web:ext:user-123', displayName: 'Pat Parent' },
+        });
+        expect(ensureWirings).toHaveBeenCalledWith('web:ext:user-123', 'Pat Parent');
+
+        const setCookie = bootstrap.headers['set-cookie'];
+        expect(setCookie).toBeDefined();
+        const cookieHeader = Array.isArray(setCookie) ? setCookie[0]! : String(setCookie);
+        expect(cookieHeader).toContain('webchat_session=');
+
+        const me = await httpGetWithHeaders(
+          '/api/auth/me',
+          { Cookie: cookieHeader.split(';')[0]! },
+          testPort,
+        );
+        expect(me.status).toBe(200);
+        expect(me.body).toMatchObject({ userId: 'web:ext:user-123', displayName: 'Pat Parent' });
+      } finally {
+        fetchMock.mockRestore();
+      }
+    });
+
+    it('accepts WebSocket upgrade with only an external JWT cookie', async () => {
+      const keys = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+      const jwk = rsaJwkFromPublicKey(keys.publicKey, 'test-key');
+      const jwt = mintExternalCookie(keys.privateKey);
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(JSON.stringify({ keys: [jwk] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+
+      const ensureWirings = vi.mocked(webchatSync.ensureUserWebchatWirings);
+      ensureWirings.mockClear();
+      ensureWirings.mockImplementation(() => undefined);
+
+      try {
+        adapter = createWebAdapter(externalAdapterOptions(testPort));
+        resetWebchatAuthSchemaForTests();
+        await adapter.setup(setup);
+
+        const { ws } = await openWsWithCookie(`${cookieName}=${jwt}`);
+        expect(ws.readyState).toBe(WebSocket.OPEN);
+        expect(ensureWirings).toHaveBeenCalledWith('web:ext:user-123', 'Pat Parent');
+        ws.close();
+      } finally {
+        fetchMock.mockRestore();
+      }
+    });
+
+    it('rejects WebSocket upgrade when external wirings throw', async () => {
+      const keys = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+      const jwk = rsaJwkFromPublicKey(keys.publicKey, 'test-key');
+      const jwt = mintExternalCookie(keys.privateKey);
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(JSON.stringify({ keys: [jwk] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+
+      const ensureWirings = vi.mocked(webchatSync.ensureUserWebchatWirings);
+      ensureWirings.mockClear();
+      ensureWirings.mockImplementation(() => {
+        throw new Error('wiring failed');
+      });
+
+      try {
+        adapter = createWebAdapter(externalAdapterOptions(testPort));
+        resetWebchatAuthSchemaForTests();
+        await adapter.setup(setup);
+
+        await new Promise<void>((resolve, reject) => {
+          const ws = new WebSocket(`ws://127.0.0.1:${testPort}/api/ws`, {
+            headers: { Cookie: `${cookieName}=${jwt}` },
+          });
+          ws.on('open', () => reject(new Error('should not open')));
+          ws.on('error', () => resolve());
+          ws.on('close', () => resolve());
+        });
+        expect(ensureWirings).toHaveBeenCalled();
+      } finally {
+        ensureWirings.mockReset();
+        ensureWirings.mockImplementation(() => undefined);
+        fetchMock.mockRestore();
+      }
+    });
+
+    it('destroys the socket when the WS upgrade handler rejects', async () => {
+      const keys = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+      const jwk = rsaJwkFromPublicKey(keys.publicKey, 'test-key');
+      const jwt = mintExternalCookie(keys.privateKey);
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(JSON.stringify({ keys: [jwk] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+
+      const ensureWirings = vi.mocked(webchatSync.ensureUserWebchatWirings);
+      ensureWirings.mockClear();
+      ensureWirings.mockImplementation(() => undefined);
+
+      const origHandleUpgrade = WebSocketServer.prototype.handleUpgrade;
+      WebSocketServer.prototype.handleUpgrade = function (
+        this: WebSocketServer,
+        ...args: Parameters<WebSocketServer['handleUpgrade']>
+      ) {
+        void this;
+        void args;
+        throw new Error('handleUpgrade failed');
+      };
+
+      try {
+        adapter = createWebAdapter(externalAdapterOptions(testPort));
+        resetWebchatAuthSchemaForTests();
+        await adapter.setup(setup);
+
+        await new Promise<void>((resolve, reject) => {
+          const ws = new WebSocket(`ws://127.0.0.1:${testPort}/api/ws`, {
+            headers: { Cookie: `${cookieName}=${jwt}` },
+          });
+          const timer = setTimeout(() => reject(new Error('upgrade did not fail')), 2000);
+          ws.on('open', () => {
+            clearTimeout(timer);
+            ws.close();
+            reject(new Error('should not open'));
+          });
+          ws.on('error', () => {
+            clearTimeout(timer);
+            resolve();
+          });
+          ws.on('close', () => {
+            clearTimeout(timer);
+            resolve();
+          });
+        });
+      } finally {
+        WebSocketServer.prototype.handleUpgrade = origHandleUpgrade;
+        fetchMock.mockRestore();
+      }
     });
   });
 

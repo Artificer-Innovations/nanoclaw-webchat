@@ -4,7 +4,7 @@ By default, nanoclaw-webchat runs in **local mode**: the adapter binds to `127.0
 
 **Public mode** is for deployments where users reach the UI over a network (VPN, tailnet, or the public internet). It adds:
 
-- A **login page** (shared password and/or OIDC/OAuth providers such as GitHub)
+- A **login page** (shared password, OIDC/OAuth providers such as GitHub, and/or silent SSO via an external parent-app session cookie)
 - **Signed session cookies** instead of an embedded bearer token in HTML
 - **Per-user room scoping**: shared lobby, private inbox, and per-user DMs
 - A **Sign out** button in the sidebar footer
@@ -13,7 +13,7 @@ Local mode is unchanged when `WEBCHAT_AUTH_MODE` is omitted or set to `local`.
 
 ## Which mode should I use?
 
-There are three ways to run the UI. Pick based on who reaches it and how much you trust them.
+There are four ways to run the UI. Pick based on who reaches it and how much you trust them.
 
 **Local mode** is for a single operator on the same machine. The adapter binds to localhost and injects the token into the page, so there is no login at all. Use it for solo local development and personal use.
 
@@ -21,16 +21,18 @@ There are three ways to run the UI. Pick based on who reaches it and how much yo
 
 **OIDC / OAuth** gives real per-person identity backed by an identity provider (GitHub, Google, Okta, and so on). Each person signs in with their own provider account, and you gate access with an allowlist on verified email domain, exact email, or provider subject. Choose it for anything internet-facing, anywhere you need to know who did what, or anywhere you need to add and remove individuals without rotating a shared secret.
 
-| | Local | Basic (shared password) | OIDC / OAuth |
-|---|---|---|---|
-| Login | none (localhost token) | username + one shared password | provider account |
-| Identity source | single operator | self-asserted username | verified by the IdP |
-| Per-user inbox/DMs | not applicable | yes, keyed by username | yes, keyed by provider subject |
-| Revoke one person | not applicable | rotate the shared password (signs everyone out) | remove from the allowlist (no impact on others) |
-| Setup cost | none | low | moderate (register an OAuth app or IdP) |
-| Best for | solo local dev | small trusted team on VPN/tailnet | internet-facing or audited multi-user |
+**External session (parent JWT cookie)** is for embedding webchat inside a host app that already authenticates users. Webchat trusts a named cookie containing a JWT, verifies it against a JWKS URL (issuer/audience), maps claims to a webchat user, and mints a normal `webchat_session`. There is no second login UI when the parent cookie is present. Choose it for same-site embeds (silent SSO from the host app).
 
-You can also run basic and OIDC together. See [Example: basic + GitHub together](#example-basic--github-together).
+| | Local | Basic (shared password) | OIDC / OAuth | External session |
+|---|---|---|---|---|
+| Login | none (localhost token) | username + one shared password | provider account | host app session cookie |
+| Identity source | single operator | self-asserted username | verified by the IdP | verified parent JWT |
+| Per-user inbox/DMs | not applicable | yes, keyed by username | yes, keyed by provider subject | yes, keyed by claim + prefix |
+| Revoke one person | not applicable | rotate the shared password (signs everyone out) | remove from the allowlist (no impact on others) | revoke in the host IdP |
+| Setup cost | none | low | moderate (register an OAuth app or IdP) | moderate (JWKS + claim mapping) |
+| Best for | solo local dev | small trusted team on VPN/tailnet | internet-facing or audited multi-user | embedded in a host product |
+
+You can also run basic and OIDC together. See [Example: basic + GitHub together](#example-basic--github-together). External session can stand alone or combine with the other public methods.
 
 ## Prerequisites
 
@@ -39,8 +41,9 @@ Complete the normal [QUICKSTART](../QUICKSTART.md) install first. Public auth bu
 You will need:
 
 - A **session signing secret** (`WEBCHAT_SESSION_SECRET`), unrelated to `WEBCHAT_SECRET`
-- At least one login method: **basic password** and/or **OIDC/OAuth**
+- At least one login method: **basic password**, **OIDC/OAuth**, and/or **external session**
 - For OIDC: provider credentials and a **callback URL** registered with the provider
+- For external session: parent cookie name, JWKS URL, issuer, and audience
 - For internet-facing hosts: **HTTPS** in front of the app (reverse proxy or load balancer)
 
 ## Quick reference: environment variables
@@ -53,18 +56,26 @@ You will need:
 | `WEBCHAT_SESSION_INSECURE_COOKIES` | no | Set `true` for local HTTP dev without TLS (disables the `Secure` flag) |
 | `WEBCHAT_SECRET` | yes | Still required. Used for MCP/automation bearer access and host wiring |
 | `WEBCHAT_BIND_ADDRESS` | recommended | `0.0.0.0` to listen on all interfaces. Default `127.0.0.1` |
-| `WEBCHAT_AUTH_BASIC_ENABLED` | one of basic/OIDC | `true` to enable shared-password login |
+| `WEBCHAT_AUTH_BASIC_ENABLED` | one of basic/OIDC/external | `true` to enable shared-password login |
 | `WEBCHAT_BASIC_PASSWORD` | if basic enabled | The single shared password for all allowed usernames |
 | `WEBCHAT_BASIC_ALLOWED_USERNAMES` | if basic enabled | Comma-separated usernames (e.g. `alice,bob`) |
 | `WEBCHAT_BASIC_DISPLAY_NAMES` | no | Optional `user:Display Name` pairs (e.g. `alice:Alice,bob:Bob`) |
-| `WEBCHAT_AUTH_OIDC_ENABLED` | one of basic/OIDC | `true` to enable OIDC/OAuth providers |
+| `WEBCHAT_AUTH_OIDC_ENABLED` | one of basic/OIDC/external | `true` to enable OIDC/OAuth providers |
 | `WEBCHAT_OIDC_REDIRECT_URI` | if OIDC enabled | Must match the provider callback, e.g. `https://chat.example.com/api/auth/callback` |
 | `WEBCHAT_OIDC_PROVIDERS` | if OIDC enabled | Inline JSON array of providers (see below) |
 | `WEBCHAT_OIDC_PROVIDERS_FILE` | alternative | Path to a JSON file (same schema as inline) |
+| `WEBCHAT_EXTERNAL_SESSION_ENABLED` | one of basic/OIDC/external | `true` to trust a parent-app JWT cookie |
+| `WEBCHAT_EXTERNAL_SESSION_COOKIE` | if external enabled | Cookie name carrying the parent JWT |
+| `WEBCHAT_EXTERNAL_JWKS_URL` | if external enabled | JWKS URL used to verify the cookie JWT |
+| `WEBCHAT_EXTERNAL_JWT_ISS` | if external enabled | Required `iss` claim |
+| `WEBCHAT_EXTERNAL_JWT_AUD` | if external enabled | Required `aud` claim |
+| `WEBCHAT_EXTERNAL_USER_ID_CLAIM` | no | Claim for user id (default `sub`) |
+| `WEBCHAT_EXTERNAL_DISPLAY_NAME_CLAIM` | no | Claim for display name (default `name`; falls back to `email` / `preferred_username`) |
+| `WEBCHAT_EXTERNAL_USER_ID_PREFIX` | no | Prefix for webchat user ids (default `web:ext:`) |
 | `WEBCHAT_SESSION_TTL_SECONDS` | no | Session lifetime (default `86400` = 24 hours) |
-| `WEBCHAT_OIDC_ALLOWED_EMAIL_DOMAINS` | recommended | Comma-separated email domains (verified email required) |
+| `WEBCHAT_OIDC_ALLOWED_EMAIL_DOMAINS` | recommended | Comma-separated email domains (verified email required for OIDC; for external JWTs, email is treated as verified when `email_verified` is omitted, but an explicit `false` is respected) |
 | `WEBCHAT_OIDC_ALLOWED_EMAILS` | optional | Comma-separated exact emails |
-| `WEBCHAT_OIDC_ALLOWED_SUBS` | optional | Comma-separated `providerId:numericSub` (e.g. `github:12345678`) |
+| `WEBCHAT_OIDC_ALLOWED_SUBS` | optional | Comma-separated `providerId:sub` (e.g. `github:12345678` or `ext:<id>` for external). For external, `<id>` is the value of `WEBCHAT_EXTERNAL_USER_ID_CLAIM` (default `sub`), not a separate claim. |
 | `WEBCHAT_OIDC_REQUIRED_GROUP` | optional | OIDC `groups` claim must include this value |
 | `WEBCHAT_MCP_HTTP_ENABLED` | no | `true`/`false`. Defaults to `true` in public mode, `false` in local mode. Enables co-hosted Streamable HTTP MCP at `/mcp` with OAuth login |
 | `WEBCHAT_MCP_TOKEN_TTL_SECONDS` | no | MCP access-token lifetime in seconds (default `86400` / 24h). Refresh grants are not supported yet |
@@ -114,6 +125,36 @@ The shared password is the only secret. The username is a label and a room key, 
 - **Allowlist checks are timing-safe.** Usernames are compared against the full allowlist with constant-time equality, so response timing does not reveal which names are valid. Basic mode is still not meant to stand alone on the open internet because the shared password is the only secret and usernames remain self-asserted.
 
 Use basic mode when you have a small trusted group on a private network and want zero external dependencies. Prefer OIDC when the host is internet-facing, when you need to revoke one person without disrupting everyone, or when you need an audit trail of who took which action.
+
+## Example: external session (parent JWT cookie)
+
+Silent SSO when webchat is embedded in a host app that already sets a session cookie on a shared site/domain.
+
+```bash
+WEBCHAT_ENABLED=true
+WEBCHAT_PORT=3200
+WEBCHAT_SECRET=<random-hex>
+WEBCHAT_AUTH_MODE=public
+WEBCHAT_SESSION_SECRET=<long-random-secret>
+WEBCHAT_BIND_ADDRESS=0.0.0.0
+WEBCHAT_PUBLIC_BASE_URL=https://app.example.com
+
+WEBCHAT_EXTERNAL_SESSION_ENABLED=true
+WEBCHAT_EXTERNAL_SESSION_COOKIE=parent_session
+WEBCHAT_EXTERNAL_JWKS_URL=https://auth.example.com/.well-known/jwks.json
+WEBCHAT_EXTERNAL_JWT_ISS=https://auth.example.com
+WEBCHAT_EXTERNAL_JWT_AUD=app.example.com
+# optional:
+# WEBCHAT_EXTERNAL_USER_ID_CLAIM=sub
+# WEBCHAT_EXTERNAL_DISPLAY_NAME_CLAIM=name
+# WEBCHAT_EXTERNAL_USER_ID_PREFIX=web:ext:
+
+# Reuse the same allowlist knobs as OIDC (subs use provider id `ext` + the configured user-id claim):
+# WEBCHAT_OIDC_ALLOWED_EMAIL_DOMAINS=example.com
+# WEBCHAT_OIDC_ALLOWED_SUBS=ext:cognito-sub-value
+```
+
+On the first authenticated API call (including `GET /api/auth/me`), the adapter verifies the parent cookie JWT, maps claims to `web:ext:<id>` (where `<id>` comes from `WEBCHAT_EXTERNAL_USER_ID_CLAIM`, default `sub`), runs allowlist checks against that same id (`ext:<id>`), calls the normal login wiring hook, and sets `webchat_session`. Email-domain allowlists treat a missing `email_verified` claim as verified (host IdP already authenticated the session) but respect an explicit `email_verified: false`. The SPA then proceeds without showing the OIDC/basic login page. If the parent cookie is missing, the login screen shows a short “sign in to the host application” hint when no other providers are enabled.
 
 ## Example: GitHub OAuth
 

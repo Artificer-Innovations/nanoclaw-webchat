@@ -47,6 +47,16 @@ function publicAuthConfig() {
         allowedUsernames: ['alice'],
         displayNames: new Map(),
       },
+      externalSession: {
+        enabled: false,
+        cookieName: '',
+        jwksUrl: '',
+        issuer: '',
+        audience: '',
+        userIdClaim: 'sub',
+        displayNameClaim: 'name',
+        userIdPrefix: 'web:ext:',
+      },
       secureCookies: false,
     },
   }).public!;
