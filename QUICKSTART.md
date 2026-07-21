@@ -29,7 +29,7 @@ You do **not** need to clone this repository beside your NanoClaw fork.
 
 ```bash
 cd ~/Dev/my-nanoclaw          # your NanoClaw fork
-pnpm add nanoclaw-webchat@0.5.0 ws@8.18.3
+pnpm add nanoclaw-webchat@0.6.0 ws@8.18.3
 pnpm add -D @types/ws@8.18.1
 ```
 
@@ -241,7 +241,7 @@ open http://127.0.0.1:3200
 cd ~/Dev/nanoclaw-webchat
 pnpm pack
 cd ~/Dev/nanoclaw-v2
-pnpm add ../nanoclaw-webchat/nanoclaw-webchat-0.5.0.tgz
+pnpm add ../nanoclaw-webchat/nanoclaw-webchat-0.6.0.tgz
 ```
 
 **UI hot reload** (adapter still from fork):
@@ -271,7 +271,7 @@ After validation, switch to the registry version:
 
 ```bash
 pnpm remove nanoclaw-webchat
-pnpm add nanoclaw-webchat@0.5.0
+pnpm add nanoclaw-webchat@0.6.0
 ```
 
 ## How this repo relates to your fork

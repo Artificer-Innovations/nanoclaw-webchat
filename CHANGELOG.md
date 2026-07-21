@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.0
+
+### Minor Changes
+
+- [#63](https://github.com/Artificer-Innovations/nanoclaw-webchat/pull/63) [`376019d`](https://github.com/Artificer-Innovations/nanoclaw-webchat/commit/376019de3ca3c1cf637d5f0972efb58518b6d85f) Thanks [@ZappoMan](https://github.com/ZappoMan)! - Add external JWT cookie session auth for silent SSO from a parent app: configure a cookie name + JWKS/iss/aud, verify on `/api/auth/me` and API requests, mint `webchat_session`, and show a host-app sign-in hint when no other providers are enabled.
+
+### Patch Changes
+
+- Pin `/add-webchat` skill and QUICKSTART install examples to `nanoclaw-webchat@0.6.0`.
+
 ## 0.5.0
 
 ### Minor Changes
