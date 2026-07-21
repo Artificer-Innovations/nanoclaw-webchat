@@ -346,10 +346,12 @@ export async function verifyExternalSessionUser(
   const ext = config.externalSession;
   if (!ext.enabled) return null;
 
-  const raw = parseCookieHeader(req.headers.cookie, ext.cookieName);
-  if (!raw?.trim()) return null;
-
   try {
+    // parseCookieHeader uses decodeURIComponent — malformed percent-encoding must not
+    // escape as an unhandled throw (treat as auth miss).
+    const raw = parseCookieHeader(req.headers.cookie, ext.cookieName);
+    if (!raw?.trim()) return null;
+
     const verifyOpts = { audience: ext.audience, issuer: ext.issuer };
     const verifyWithKeys = (keys: JsonWebKey[]) => verifyIdToken(raw, keys, verifyOpts);
 
@@ -554,10 +556,9 @@ export async function handlePublicAuthRequest(
   }
 
   if (url.pathname === '/api/auth/me' && req.method === 'GET') {
-    let user = resolveSessionUser(config, req);
-    if (!user) {
-      user = await tryEstablishExternalSession(config, req, onLogin, res);
-    }
+    // tryEstablishExternalSession returns an existing webchat_session when present,
+    // otherwise verifies the external cookie and mints one.
+    const user = await tryEstablishExternalSession(config, req, onLogin, res);
     if (!user) {
       json(res, 401, { error: 'Unauthorized' });
       return true;

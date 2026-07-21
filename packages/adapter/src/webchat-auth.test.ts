@@ -545,6 +545,13 @@ describe('webchat-auth', () => {
       }
     });
 
+    it('treats a malformed external cookie as an auth miss (no throw)', async () => {
+      const { verifyExternalSessionUser } = await import('./webchat-auth.js');
+      const cfg = externalPublicConfig();
+      const req = { headers: { cookie: `${cookieName}=%E0%A4%A` } } as IncomingMessage;
+      await expect(verifyExternalSessionUser(cfg, req)).resolves.toBeNull();
+    });
+
     it('allowlists ext:<id> using WEBCHAT_EXTERNAL_USER_ID_CLAIM, not raw JWT sub', async () => {
       const { verifyExternalSessionUser } = await import('./webchat-auth.js');
       const keys = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });

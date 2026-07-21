@@ -4,7 +4,7 @@ By default, nanoclaw-webchat runs in **local mode**: the adapter binds to `127.0
 
 **Public mode** is for deployments where users reach the UI over a network (VPN, tailnet, or the public internet). It adds:
 
-- A **login page** (shared password and/or OIDC/OAuth providers such as GitHub)
+- A **login page** (shared password, OIDC/OAuth providers such as GitHub, and/or silent SSO via an external parent-app session cookie)
 - **Signed session cookies** instead of an embedded bearer token in HTML
 - **Per-user room scoping**: shared lobby, private inbox, and per-user DMs
 - A **Sign out** button in the sidebar footer
@@ -13,7 +13,7 @@ Local mode is unchanged when `WEBCHAT_AUTH_MODE` is omitted or set to `local`.
 
 ## Which mode should I use?
 
-There are three ways to run the UI. Pick based on who reaches it and how much you trust them.
+There are four ways to run the UI. Pick based on who reaches it and how much you trust them.
 
 **Local mode** is for a single operator on the same machine. The adapter binds to localhost and injects the token into the page, so there is no login at all. Use it for solo local development and personal use.
 
