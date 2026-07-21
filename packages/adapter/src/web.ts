@@ -942,6 +942,8 @@ const MAX_BODY_BYTES = 20 * 1024 * 1024;
 
 interface WebchatAuthedRequest extends http.IncomingMessage {
   webchatMcpUser?: McpAccessTokenUser;
+  /** Set when an external JWT was verified and a session minted for this response. */
+  webchatEstablishedUser?: { userId: string; displayName: string };
 }
 
 interface WebchatAuthedResponse extends http.ServerResponse {
@@ -967,6 +969,19 @@ function readMcpUser(
     (res ? (res as WebchatAuthedResponse).webchatMcpUser : undefined) ??
     (req as WebchatAuthedRequest).webchatMcpUser
   );
+}
+
+function attachEstablishedUser(
+  req: http.IncomingMessage,
+  user: { userId: string; displayName: string },
+): void {
+  (req as WebchatAuthedRequest).webchatEstablishedUser = user;
+}
+
+function readEstablishedUser(
+  req: http.IncomingMessage,
+): { userId: string; displayName: string } | undefined {
+  return (req as WebchatAuthedRequest).webchatEstablishedUser;
 }
 
 function parseBearerAuthorization(header: string | undefined): string | null {
@@ -1007,6 +1022,8 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
     if (isPublicMode()) {
       const session = resolveSessionUser(opts.publicAuth!, req);
       if (session) return session;
+      const established = readEstablishedUser(req);
+      if (established) return established;
     }
     return { userId: opts.userId, displayName: opts.displayName };
   }
@@ -1051,6 +1068,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
       }
       if (isPublicAuthPath(url.pathname) && isPublicAuthExemptPath(url.pathname)) return true;
       if (resolveSessionUser(opts.publicAuth!, req) != null) return true;
+      if (readEstablishedUser(req) != null) return true;
     }
 
     if (bearerHeader === `Bearer ${opts.authToken}`) return true;
@@ -1740,12 +1758,17 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
             }
 
             if (isPublicMode() && resolveSessionUser(opts.publicAuth!, req) == null) {
-              await tryEstablishExternalSession(
+              const established = await tryEstablishExternalSession(
                 opts.publicAuth!,
                 req,
                 (user) => ensureUserWebchatWirings(user.userId, user.displayName),
                 res,
               );
+              if (established) {
+                // Set-Cookie is on the response; stamp the request so checkAuth /
+                // resolveRequestUser see this turn as authenticated.
+                attachEstablishedUser(req, established);
+              }
             }
 
             if (!checkAuth(req, url, res)) {
