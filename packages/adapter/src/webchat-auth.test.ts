@@ -374,6 +374,11 @@ describe('webchat-auth', () => {
         subs: string[];
         requiredGroup: string | null;
       } = { emailDomains: [], emails: [], subs: [], requiredGroup: null },
+      externalOverrides: Partial<{
+        userIdClaim: string;
+        displayNameClaim: string;
+        userIdPrefix: string;
+      }> = {},
     ) {
       return authConfigForTests({
         mode: 'public',
@@ -399,6 +404,7 @@ describe('webchat-auth', () => {
             userIdClaim: 'sub',
             displayNameClaim: 'name',
             userIdPrefix: 'web:ext:',
+            ...externalOverrides,
           },
           secureCookies: false,
         },
@@ -534,6 +540,53 @@ describe('webchat-auth', () => {
         });
         const req = { headers: { cookie: `${cookieName}=${jwt}` } } as IncomingMessage;
         expect(await verifyExternalSessionUser(cfg, req)).toBeNull();
+      } finally {
+        fetchMock.mockRestore();
+      }
+    });
+
+    it('allowlists ext:<id> using WEBCHAT_EXTERNAL_USER_ID_CLAIM, not raw JWT sub', async () => {
+      const { verifyExternalSessionUser } = await import('./webchat-auth.js');
+      const keys = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+      const jwk = rsaJwkFromPublicKey(keys.publicKey, 'k1');
+      const jwt = signRs256Jwt(
+        {
+          sub: 'jwt-sub-ignored-for-allowlist',
+          uid: 'stable-uid',
+          name: 'Pat Parent',
+          iss: issuer,
+          aud: audience,
+          exp: Math.floor(Date.now() / 1000) + 3600,
+        },
+        keys.privateKey,
+      );
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(JSON.stringify({ keys: [jwk] }), { status: 200 }),
+      );
+      try {
+        const allowByUid = externalPublicConfig(
+          {
+            emailDomains: [],
+            emails: [],
+            subs: ['ext:stable-uid'],
+            requiredGroup: null,
+          },
+          { userIdClaim: 'uid' },
+        );
+        const allowByJwtSub = externalPublicConfig(
+          {
+            emailDomains: [],
+            emails: [],
+            subs: ['ext:jwt-sub-ignored-for-allowlist'],
+            requiredGroup: null,
+          },
+          { userIdClaim: 'uid' },
+        );
+        const req = { headers: { cookie: `${cookieName}=${jwt}` } } as IncomingMessage;
+        await expect(verifyExternalSessionUser(allowByUid, req)).resolves.toMatchObject({
+          userId: 'web:ext:stable-uid',
+        });
+        await expect(verifyExternalSessionUser(allowByJwtSub, req)).resolves.toBeNull();
       } finally {
         fetchMock.mockRestore();
       }

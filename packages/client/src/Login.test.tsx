@@ -107,4 +107,14 @@ describe('Login', () => {
     expect(await screen.findByText(/Sign in to the host application/i)).toBeInTheDocument();
     expect(screen.queryByLabelText(/username/i)).not.toBeInTheDocument();
   });
+
+  it('tolerates legacy auth config without externalSession', async () => {
+    vi.mocked(api.fetchAuthConfig).mockResolvedValue({
+      basic: { enabled: true },
+      providers: [],
+    } as api.AuthConfigResponse);
+    render(<Login onSuccess={vi.fn()} />);
+    expect(await screen.findByLabelText(/username/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Sign in to the host application/i)).not.toBeInTheDocument();
+  });
 });

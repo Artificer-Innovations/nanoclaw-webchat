@@ -75,7 +75,7 @@ You will need:
 | `WEBCHAT_SESSION_TTL_SECONDS` | no | Session lifetime (default `86400` = 24 hours) |
 | `WEBCHAT_OIDC_ALLOWED_EMAIL_DOMAINS` | recommended | Comma-separated email domains (verified email required for OIDC; external JWTs are treated as verified) |
 | `WEBCHAT_OIDC_ALLOWED_EMAILS` | optional | Comma-separated exact emails |
-| `WEBCHAT_OIDC_ALLOWED_SUBS` | optional | Comma-separated `providerId:sub` (e.g. `github:12345678` or `ext:<sub>` for external) |
+| `WEBCHAT_OIDC_ALLOWED_SUBS` | optional | Comma-separated `providerId:sub` (e.g. `github:12345678` or `ext:<id>` for external). For external, `<id>` is the value of `WEBCHAT_EXTERNAL_USER_ID_CLAIM` (default `sub`), not a separate claim. |
 | `WEBCHAT_OIDC_REQUIRED_GROUP` | optional | OIDC `groups` claim must include this value |
 | `WEBCHAT_MCP_HTTP_ENABLED` | no | `true`/`false`. Defaults to `true` in public mode, `false` in local mode. Enables co-hosted Streamable HTTP MCP at `/mcp` with OAuth login |
 | `WEBCHAT_MCP_TOKEN_TTL_SECONDS` | no | MCP access-token lifetime in seconds (default `86400` / 24h). Refresh grants are not supported yet |
@@ -149,12 +149,12 @@ WEBCHAT_EXTERNAL_JWT_AUD=app.example.com
 # WEBCHAT_EXTERNAL_DISPLAY_NAME_CLAIM=name
 # WEBCHAT_EXTERNAL_USER_ID_PREFIX=web:ext:
 
-# Reuse the same allowlist knobs as OIDC (subs use provider id `ext`):
+# Reuse the same allowlist knobs as OIDC (subs use provider id `ext` + the configured user-id claim):
 # WEBCHAT_OIDC_ALLOWED_EMAIL_DOMAINS=example.com
 # WEBCHAT_OIDC_ALLOWED_SUBS=ext:cognito-sub-value
 ```
 
-On the first authenticated API call (including `GET /api/auth/me`), the adapter verifies the parent cookie JWT, maps claims to `web:ext:<sub>`, runs allowlist checks, calls the normal login wiring hook, and sets `webchat_session`. The SPA then proceeds without showing the OIDC/basic login page. If the parent cookie is missing, the login screen shows a short “sign in to the host application” hint when no other providers are enabled.
+On the first authenticated API call (including `GET /api/auth/me`), the adapter verifies the parent cookie JWT, maps claims to `web:ext:<id>` (where `<id>` comes from `WEBCHAT_EXTERNAL_USER_ID_CLAIM`, default `sub`), runs allowlist checks against that same id (`ext:<id>`), calls the normal login wiring hook, and sets `webchat_session`. Email-domain allowlists treat the parent JWT's email as verified (trust boundary: the host IdP already authenticated the session). The SPA then proceeds without showing the OIDC/basic login page. If the parent cookie is missing, the login screen shows a short “sign in to the host application” hint when no other providers are enabled.
 
 ## Example: GitHub OAuth
 

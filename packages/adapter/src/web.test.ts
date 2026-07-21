@@ -4,7 +4,7 @@ import fs from 'fs';
 import http from 'http';
 import { createServer as createNetServer, connect as netConnect } from 'node:net';
 import path from 'path';
-import WebSocket from 'ws';
+import WebSocket, { WebSocketServer } from 'ws';
 
 vi.mock('../config.js', async () => {
   const actual = await vi.importActual<typeof import('../config.js')>('../config.js');
@@ -3757,6 +3757,61 @@ describe('web channel adapter', () => {
       } finally {
         ensureWirings.mockReset();
         ensureWirings.mockImplementation(() => undefined);
+        fetchMock.mockRestore();
+      }
+    });
+
+    it('destroys the socket when the WS upgrade handler rejects', async () => {
+      const keys = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+      const jwk = rsaJwkFromPublicKey(keys.publicKey, 'test-key');
+      const jwt = mintExternalCookie(keys.privateKey);
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(JSON.stringify({ keys: [jwk] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+
+      const ensureWirings = vi.mocked(webchatSync.ensureUserWebchatWirings);
+      ensureWirings.mockClear();
+      ensureWirings.mockImplementation(() => undefined);
+
+      const origHandleUpgrade = WebSocketServer.prototype.handleUpgrade;
+      WebSocketServer.prototype.handleUpgrade = function (
+        this: WebSocketServer,
+        ...args: Parameters<WebSocketServer['handleUpgrade']>
+      ) {
+        void this;
+        void args;
+        throw new Error('handleUpgrade failed');
+      };
+
+      try {
+        adapter = createWebAdapter(externalAdapterOptions(testPort));
+        resetWebchatAuthSchemaForTests();
+        await adapter.setup(setup);
+
+        await new Promise<void>((resolve, reject) => {
+          const ws = new WebSocket(`ws://127.0.0.1:${testPort}/api/ws`, {
+            headers: { Cookie: `${cookieName}=${jwt}` },
+          });
+          const timer = setTimeout(() => reject(new Error('upgrade did not fail')), 2000);
+          ws.on('open', () => {
+            clearTimeout(timer);
+            ws.close();
+            reject(new Error('should not open'));
+          });
+          ws.on('error', () => {
+            clearTimeout(timer);
+            resolve();
+          });
+          ws.on('close', () => {
+            clearTimeout(timer);
+            resolve();
+          });
+        });
+      } finally {
+        WebSocketServer.prototype.handleUpgrade = origHandleUpgrade;
         fetchMock.mockRestore();
       }
     });

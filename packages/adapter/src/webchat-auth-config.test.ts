@@ -148,8 +148,23 @@ describe('loadWebAdapterAuthConfig', () => {
     const cfg = loadWebAdapterAuthConfig();
     expect(cfg?.public?.externalSession.enabled).toBe(true);
     expect(cfg?.public?.externalSession.cookieName).toBe('parent_session');
+    expect(cfg?.public?.externalSession.userIdPrefix).toBe('web:ext:');
     expect(cfg?.public?.oidcEnabled).toBe(false);
     expect(cfg?.public?.basic.enabled).toBe(false);
+  });
+
+  it('trims and defaults an empty external user id prefix', () => {
+    publicEnv();
+    setEnv('WEBCHAT_AUTH_BASIC_ENABLED', undefined);
+    setEnv('WEBCHAT_EXTERNAL_SESSION_ENABLED', 'true');
+    setEnv('WEBCHAT_EXTERNAL_SESSION_COOKIE', 'parent_session');
+    setEnv('WEBCHAT_EXTERNAL_JWKS_URL', 'https://auth.example/.well-known/jwks.json');
+    setEnv('WEBCHAT_EXTERNAL_JWT_ISS', 'https://auth.example');
+    setEnv('WEBCHAT_EXTERNAL_JWT_AUD', 'webchat');
+    setEnv('WEBCHAT_EXTERNAL_USER_ID_PREFIX', '  ');
+
+    const cfg = loadWebAdapterAuthConfig();
+    expect(cfg?.public?.externalSession.userIdPrefix).toBe('web:ext:');
   });
 
   it('rejects external session without JWKS URL', () => {

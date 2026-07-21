@@ -322,7 +322,7 @@ export function loadWebAdapterAuthConfig(): WebAdapterAuthConfig | null {
       audience,
       userIdClaim: env('WEBCHAT_EXTERNAL_USER_ID_CLAIM', file)?.trim() || 'sub',
       displayNameClaim: env('WEBCHAT_EXTERNAL_DISPLAY_NAME_CLAIM', file)?.trim() || 'name',
-      userIdPrefix: env('WEBCHAT_EXTERNAL_USER_ID_PREFIX', file) ?? 'web:ext:',
+      userIdPrefix: env('WEBCHAT_EXTERNAL_USER_ID_PREFIX', file)?.trim() || 'web:ext:',
     };
   }
 

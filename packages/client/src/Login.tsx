@@ -64,7 +64,7 @@ export function Login({ onSuccess }: LoginProps) {
   const showProviders = config.providers.length > 0;
   const showDivider = showBasic && showProviders;
   const externalOnly =
-    config.externalSession.enabled && !showBasic && !showProviders;
+    Boolean(config.externalSession?.enabled) && !showBasic && !showProviders;
 
   return (
     <div className="auth-screen">

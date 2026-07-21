@@ -2019,7 +2019,14 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
             wsClients.add(client);
             ws.on('close', () => wsClients.delete(client));
           });
-        })();
+        })().catch((err) => {
+          log.error('Webchat WS upgrade failed', { err });
+          try {
+            socket.destroy();
+          } catch {
+            // swallow
+          }
+        });
       });
 
       await new Promise<void>((resolve, reject) => {
