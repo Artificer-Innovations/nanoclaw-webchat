@@ -3,8 +3,15 @@ import { CODE_HIGHLIGHT_STYLES } from './code-highlight-styles';
 import { csvDelimiterFromAttachment, limitCsvPreviewRows, parseCsv, renderCsvTableHtml } from './csv-preview';
 import { escapeHtml } from './html-escape';
 
-/** HTML previews: run JS in an isolated origin; never add allow-same-origin (parent/token access). */
-export const ATTACHMENT_HTML_IFRAME_SANDBOX = 'allow-scripts allow-popups allow-modals';
+/**
+ * HTML previews: run JS in an isolated origin; never add allow-same-origin (parent/token access).
+ *
+ * `allow-popups-to-escape-sandbox` lets a `target="_blank"` link (or right-click →
+ * "open in new tab") open a normal, un-sandboxed page. Without it the new tab inherits
+ * this iframe's sandbox — no cookies/storage — so SPA destinations never hydrate.
+ */
+export const ATTACHMENT_HTML_IFRAME_SANDBOX =
+  'allow-scripts allow-popups allow-popups-to-escape-sandbox allow-modals';
 
 /** SVG previews: static display only — no scripts (SVG can embed executable content). */
 export const ATTACHMENT_SVG_IFRAME_SANDBOX = 'allow-popups allow-modals';
