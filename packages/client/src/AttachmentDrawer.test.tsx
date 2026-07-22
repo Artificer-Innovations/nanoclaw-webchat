@@ -452,6 +452,106 @@ describe('AttachmentDrawer', () => {
     expect(screen.getByRole('button', { name: 'Open page.html in new tab' })).toBeInTheDocument();
   });
 
+  it('forwards a compose message from the preview iframe to onComposeText', async () => {
+    vi.spyOn(attachments, 'fetchAttachmentText').mockResolvedValue('<h1>Hello</h1>');
+    const onComposeText = vi.fn();
+    const { container } = render(
+      <AttachmentDrawer
+        attachment={{
+          name: 'page.html',
+          mimeType: 'text/html',
+          type: 'file',
+          data: 'PGgxPkhlbGxvPC9oMT4=',
+        }}
+        token="secret"
+        onClose={vi.fn()}
+        onComposeText={onComposeText}
+      />,
+    );
+    const iframe = (await waitFor(() => {
+      const element = container.querySelector('iframe.attachment-drawer-embed');
+      if (!element) throw new Error('iframe not found');
+      return element;
+    })) as HTMLIFrameElement;
+
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: { channel: 'nanoclaw-attachment', type: 'compose', text: 'suggested reply' },
+          source: iframe.contentWindow,
+        }),
+      );
+    });
+    expect(onComposeText).toHaveBeenCalledWith('suggested reply');
+  });
+
+  it('ignores compose messages that do not come from the preview iframe', async () => {
+    vi.spyOn(attachments, 'fetchAttachmentText').mockResolvedValue('<h1>Hello</h1>');
+    const onComposeText = vi.fn();
+    const { container } = render(
+      <AttachmentDrawer
+        attachment={{
+          name: 'page.html',
+          mimeType: 'text/html',
+          type: 'file',
+          data: 'PGgxPkhlbGxvPC9oMT4=',
+        }}
+        token="secret"
+        onClose={vi.fn()}
+        onComposeText={onComposeText}
+      />,
+    );
+    await waitFor(() => {
+      if (!container.querySelector('iframe.attachment-drawer-embed')) {
+        throw new Error('iframe not found');
+      }
+    });
+
+    act(() => {
+      // Right shape, wrong source (the top window, not the iframe) — must be dropped.
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: { channel: 'nanoclaw-attachment', type: 'compose', text: 'spoofed' },
+          source: window,
+        }),
+      );
+    });
+    expect(onComposeText).not.toHaveBeenCalled();
+  });
+
+  it('ignores malformed compose messages from the preview iframe', async () => {
+    vi.spyOn(attachments, 'fetchAttachmentText').mockResolvedValue('<h1>Hello</h1>');
+    const onComposeText = vi.fn();
+    const { container } = render(
+      <AttachmentDrawer
+        attachment={{
+          name: 'page.html',
+          mimeType: 'text/html',
+          type: 'file',
+          data: 'PGgxPkhlbGxvPC9oMT4=',
+        }}
+        token="secret"
+        onClose={vi.fn()}
+        onComposeText={onComposeText}
+      />,
+    );
+    const iframe = (await waitFor(() => {
+      const element = container.querySelector('iframe.attachment-drawer-embed');
+      if (!element) throw new Error('iframe not found');
+      return element;
+    })) as HTMLIFrameElement;
+
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: { channel: 'nanoclaw-attachment', type: 'send', text: 'do not send' },
+          source: iframe.contentWindow,
+        }),
+      );
+    });
+    expect(onComposeText).not.toHaveBeenCalled();
+  });
+
   it('opens html attachments in a preview/raw pop-out tab', async () => {
     vi.spyOn(attachments, 'fetchAttachmentText').mockResolvedValue('<h1>Popout</h1>');
     const openSpy = vi.spyOn(attachments, 'openHtmlAttachmentInNewTab').mockResolvedValue(true);
