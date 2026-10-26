@@ -8,7 +8,7 @@ import { log } from './log.js';
 import { getUser } from './modules/permissions/db/users.js';
 import { buildWebchatBootstrap, syncWebchatWirings, type WebchatBootstrapPayload } from './webchat-sync.js';
 
-type BootstrapBroadcaster = () => void;
+type BootstrapBroadcaster = () => void | Promise<void>;
 
 let broadcaster: BootstrapBroadcaster | null = null;
 
@@ -18,9 +18,9 @@ export function setWebchatBootstrapBroadcaster(next: BootstrapBroadcaster | null
 }
 
 /** Sync wirings and push an updated room list to connected browsers. */
-export function refreshWebchatAfterAgentChange(): void {
+export async function refreshWebchatAfterAgentChange(): Promise<void> {
   try {
-    syncWebchatWirings();
+    await syncWebchatWirings();
   } catch (err) {
     log.error('Webchat live refresh: sync failed', { err });
     return;
@@ -29,7 +29,7 @@ export function refreshWebchatAfterAgentChange(): void {
   if (!broadcaster) return;
 
   try {
-    broadcaster();
+    await broadcaster();
   } catch (err) {
     log.warn('Webchat live refresh: broadcast failed', { err });
   }
@@ -39,8 +39,8 @@ export function refreshWebchatAfterAgentChange(): void {
  * Build a bootstrap payload for one connected user. Used by the web adapter's
  * fan-out when refreshing after agent changes.
  */
-export function bootstrapPayloadForUser(userId: string): WebchatBootstrapPayload {
-  const user = getUser(userId);
+export async function bootstrapPayloadForUser(userId: string): Promise<WebchatBootstrapPayload> {
+  const user = await getUser(userId);
   const displayName = user?.display_name?.trim() || userId;
   return buildWebchatBootstrap(userId, displayName);
 }
