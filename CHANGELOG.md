@@ -1,4 +1,11 @@
-# Changelog
+# nanoclaw-webchat
+
+## 0.6.1
+
+### Patch Changes
+
+- Async host DB APIs for NanoClaw 2026.10.1-rc.2; await auth onLogin wiring failures.
+
 
 ## 0.6.0
 
