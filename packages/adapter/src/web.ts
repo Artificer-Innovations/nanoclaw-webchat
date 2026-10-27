@@ -1402,7 +1402,10 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
       const threadIdStored = threadId ?? MAIN_THREAD;
       const trimmedText = text.trim();
       if (isGroup) {
-        void routeLobbyInbound(
+        // Await so engaged-state mutation + 'engaged' WS broadcast complete before
+        // the HTTP 200 — matching pre-async ordering. Failures propagate to the
+        // request handler's catch (logged 500) instead of becoming unhandled rejections.
+        await routeLobbyInbound(
           storagePlatformId,
           threadId,
           threadIdStored,
