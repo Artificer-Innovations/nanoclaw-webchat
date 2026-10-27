@@ -131,7 +131,12 @@ describe('install', () => {
     const root = makeNanoclawFixture();
     const result = runInstall(root);
     expect(result.copied).toHaveLength(ADAPTER_COPY_RULES.length);
-    expect(result.dependenciesAdded).toEqual(['busboy', '@types/busboy']);
+    expect(result.dependenciesAdded).toEqual([
+      'busboy',
+      'ws',
+      '@types/busboy',
+      '@types/ws',
+    ]);
     expect(result.dependenciesInstalled).toBe(true);
     expect(nodeRunner.runUnderProjectNode).toHaveBeenCalledWith(root, 'pnpm', ['install']);
     expect(result.barrelPatched).toBe(true);
