@@ -2,22 +2,24 @@
  * Durable web chat UI history — threads and messages in data/webchat.db.
  * Single writer: web channel adapter. Not agent session workload.
  */
-import crypto from 'crypto';
-import fs from 'fs';
-import path from 'path';
+import crypto from "crypto";
+import fs from "fs";
+import path from "path";
 
-import Database from 'better-sqlite3';
+import Database from "better-sqlite3";
 
-import { DATA_DIR } from './config.js';
-import { normalizeWebchatPublicPath } from './webchat-public-path.js';
+import { DATA_DIR } from "./config.js";
+import { normalizeWebchatPublicPath } from "./webchat-public-path.js";
 
-export const MAIN_THREAD = 'main';
+export const MAIN_THREAD = "main";
 
 /** Configured public path prefix for attachment URLs (set by the web adapter). */
-let configuredPublicPath = '';
+let configuredPublicPath = "";
 
 /** Wire WEBCHAT_PUBLIC_PATH into the store (same pattern as setWebchatBootstrapBroadcaster). */
-export function setWebchatPublicPath(publicPath: string | undefined | null): void {
+export function setWebchatPublicPath(
+  publicPath: string | undefined | null,
+): void {
   configuredPublicPath = normalizeWebchatPublicPath(publicPath);
 }
 
@@ -99,7 +101,7 @@ export interface WebchatThreadMeta {
 export interface WebchatAttachmentInput {
   name: string;
   mimeType: string;
-  type: 'image' | 'file';
+  type: "image" | "file";
   size?: number;
   data?: string;
   url?: string;
@@ -112,19 +114,19 @@ export interface WebchatCardOption {
 }
 
 export interface WebchatAskQuestionCard {
-  type: 'ask_question';
+  type: "ask_question";
   questionId: string;
   title: string;
   question: string;
   options: WebchatCardOption[];
-  status: 'pending' | 'answered';
+  status: "pending" | "answered";
   selectedValue?: string;
   selectedLabel?: string;
 }
 
 export interface WebchatStoredMessage {
   id: string;
-  direction: 'inbound' | 'outbound';
+  direction: "inbound" | "outbound";
   text: string;
   timestamp: number;
   platformId: string;
@@ -139,7 +141,7 @@ export interface WebchatStoredMessage {
 interface StoredAttachmentMeta {
   name: string;
   mimeType: string;
-  type: 'image' | 'file';
+  type: "image" | "file";
   size: number;
   storageName: string;
 }
@@ -147,17 +149,17 @@ interface StoredAttachmentMeta {
 export type { StoredAttachmentMeta };
 
 export function webchatDbPath(): string {
-  return path.join(DATA_DIR, 'webchat.db');
+  return path.join(DATA_DIR, "webchat.db");
 }
 
 export function webchatFilesDir(): string {
-  return path.join(DATA_DIR, 'webchat', 'files');
+  return path.join(DATA_DIR, "webchat", "files");
 }
 
 function sanitizeMessageId(messageId: string): string | null {
-  if (messageId.includes('/') || messageId.includes('\\')) return null;
+  if (messageId.includes("/") || messageId.includes("\\")) return null;
   const base = path.basename(messageId);
-  if (!base || base === '.' || base === '..') return null;
+  if (!base || base === "." || base === "..") return null;
   if (base !== messageId) return null;
   return base;
 }
@@ -171,9 +173,9 @@ function messageFilesDir(messageId: string): string {
 function openDb(): Database.Database {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   const db = new Database(webchatDbPath());
-  db.pragma('journal_mode = WAL');
-  db.pragma('wal_autocheckpoint = 1000');
-  db.pragma('busy_timeout = 5000');
+  db.pragma("journal_mode = WAL");
+  db.pragma("wal_autocheckpoint = 1000");
+  db.pragma("busy_timeout = 5000");
   return db;
 }
 
@@ -183,17 +185,17 @@ export function ensureWebchatSchema(): void {
   try {
     db.exec(WEBCHAT_SCHEMA);
     try {
-      db.exec('ALTER TABLE web_messages ADD COLUMN thread_seq INTEGER');
+      db.exec("ALTER TABLE web_messages ADD COLUMN thread_seq INTEGER");
     } catch {
       // column already exists
     }
     try {
-      db.exec('ALTER TABLE web_messages ADD COLUMN card_json TEXT');
+      db.exec("ALTER TABLE web_messages ADD COLUMN card_json TEXT");
     } catch {
       // column already exists
     }
     try {
-      db.exec('ALTER TABLE web_messages ADD COLUMN sender_id TEXT');
+      db.exec("ALTER TABLE web_messages ADD COLUMN sender_id TEXT");
     } catch {
       // column already exists
     }
@@ -204,9 +206,13 @@ export function ensureWebchatSchema(): void {
   }
 }
 
-export function backfillThreadSeqForExistingMessages(db: Database.Database): void {
+export function backfillThreadSeqForExistingMessages(
+  db: Database.Database,
+): void {
   const threads = db
-    .prepare(`SELECT DISTINCT platform_id, thread_id FROM web_messages WHERE thread_seq IS NULL`)
+    .prepare(
+      `SELECT DISTINCT platform_id, thread_id FROM web_messages WHERE thread_seq IS NULL`,
+    )
     .all() as Array<{ platform_id: string; thread_id: string }>;
   for (const { platform_id, thread_id } of threads) {
     const rows = db
@@ -226,7 +232,9 @@ export function backfillThreadSeqForExistingMessages(db: Database.Database): voi
           )
           .get(platform_id, thread_id) as { max_seq: number }
       ).max_seq + 1;
-    const update = db.prepare(`UPDATE web_messages SET thread_seq = ? WHERE id = ?`);
+    const update = db.prepare(
+      `UPDATE web_messages SET thread_seq = ? WHERE id = ?`,
+    );
     for (const row of rows) {
       update.run(seq, row.id);
       seq += 1;
@@ -239,14 +247,20 @@ export function backfillThreadSeqForExistingMessages(db: Database.Database): voi
   }
 }
 
-function allocateThreadSeq(db: Database.Database, platformId: string, threadId: string): number {
+function allocateThreadSeq(
+  db: Database.Database,
+  platformId: string,
+  threadId: string,
+): number {
   db.prepare(
     `INSERT INTO web_thread_seq (platform_id, thread_id, next_seq)
      VALUES (?, ?, 1)
      ON CONFLICT(platform_id, thread_id) DO UPDATE SET next_seq = next_seq + 1`,
   ).run(platformId, threadId);
   const row = db
-    .prepare(`SELECT next_seq FROM web_thread_seq WHERE platform_id = ? AND thread_id = ?`)
+    .prepare(
+      `SELECT next_seq FROM web_thread_seq WHERE platform_id = ? AND thread_id = ?`,
+    )
     .get(platformId, threadId) as { next_seq: number };
   return row.next_seq;
 }
@@ -265,13 +279,17 @@ export function listThreads(platformId: string): WebchatThreadMeta[] {
       )
       .all(platformId, MAIN_THREAD) as WebchatThreadMeta[];
     if (rows.some((r) => r.id === MAIN_THREAD)) return rows;
-    return [{ id: MAIN_THREAD, title: 'Main' }, ...rows];
+    return [{ id: MAIN_THREAD, title: "Main" }, ...rows];
   } finally {
     db.close();
   }
 }
 
-export function upsertThread(platformId: string, threadId: string, title: string): void {
+export function upsertThread(
+  platformId: string,
+  threadId: string,
+  title: string,
+): void {
   const now = new Date().toISOString();
   const db = openDb();
   try {
@@ -293,27 +311,30 @@ export function upsertThread(platformId: string, threadId: string, title: string
   }
 }
 
-export function createThread(platformId: string, title: string): WebchatThreadMeta {
+export function createThread(
+  platformId: string,
+  title: string,
+): WebchatThreadMeta {
   const threadId = newThreadId();
   upsertThread(platformId, threadId, title);
   return { id: threadId, title };
 }
 
 function sanitizeStorageName(name: string, index: number): string {
-  const base = path.basename(name).replace(/[^\w.\-()+@]/g, '_');
+  const base = path.basename(name).replace(/[^\w.\-()+@]/g, "_");
   const trimmed = base.length > 0 ? base : `file-${index}`;
   return `${index}-${trimmed}`;
 }
 
 function assertRegularFile(filePath: string): void {
   const st = fs.lstatSync(filePath);
-  if (!st.isFile()) throw new Error('not a file');
+  if (!st.isFile()) throw new Error("not a file");
 }
 
 export interface AttachmentFileSource {
   name: string;
   mimeType: string;
-  type: 'image' | 'file';
+  type: "image" | "file";
   size: number;
   sourcePath: string;
 }
@@ -347,7 +368,8 @@ export function appendMessageWithAttachmentMeta(
   msg: WebchatStoredMessage,
   storedAttachments: StoredAttachmentMeta[],
 ): WebchatStoredMessage {
-  const attachmentsJson = storedAttachments.length > 0 ? JSON.stringify(storedAttachments) : null;
+  const attachmentsJson =
+    storedAttachments.length > 0 ? JSON.stringify(storedAttachments) : null;
   const cardJson = msg.card ? JSON.stringify(msg.card) : null;
 
   let threadSeq = 0;
@@ -376,7 +398,9 @@ export function appendMessageWithAttachmentMeta(
   }
 
   const apiAttachments =
-    storedAttachments.length > 0 ? storedToApiAttachments(msg.id, storedAttachments) : undefined;
+    storedAttachments.length > 0
+      ? storedToApiAttachments(msg.id, storedAttachments)
+      : undefined;
 
   return {
     ...msg,
@@ -397,11 +421,11 @@ export function writeAttachmentFiles(
 
   for (let i = 0; i < attachments.length; i++) {
     const att = attachments[i]!;
-    const data = att.data ?? '';
+    const data = att.data ?? "";
     if (!data) continue;
     const storageName = sanitizeStorageName(att.name, startIndex + i);
     const filePath = path.join(dir, storageName);
-    const decoded = Buffer.from(data, 'base64');
+    const decoded = Buffer.from(data, "base64");
     fs.writeFileSync(filePath, decoded);
     stored.push({
       name: att.name,
@@ -427,12 +451,18 @@ export function deleteMessageFiles(messageId: string): void {
  * only accept `/webchat/api/attachments/...` — unprefixed `/api/attachments/...`
  * fails client-side and 404s at the edge (wrong route).
  */
-export function attachmentApiPath(messageId: string, storageName: string): string {
+export function attachmentApiPath(
+  messageId: string,
+  storageName: string,
+): string {
   const prefix = configuredPublicPath;
   return `${prefix}/api/attachments/${encodeURIComponent(messageId)}/${encodeURIComponent(storageName)}`;
 }
 
-function storedToApiAttachments(messageId: string, stored: StoredAttachmentMeta[]): WebchatAttachmentInput[] {
+function storedToApiAttachments(
+  messageId: string,
+  stored: StoredAttachmentMeta[],
+): WebchatAttachmentInput[] {
   return stored.map((att) => ({
     name: att.name,
     mimeType: att.mimeType,
@@ -451,15 +481,17 @@ function parseStoredAttachments(raw: string | null): StoredAttachmentMeta[] {
   }
 }
 
-function parseStoredCard(raw: string | null): WebchatAskQuestionCard | undefined {
+function parseStoredCard(
+  raw: string | null,
+): WebchatAskQuestionCard | undefined {
   if (!raw) return undefined;
   try {
     const parsed = JSON.parse(raw) as WebchatAskQuestionCard;
-    if (parsed.type !== 'ask_question') return undefined;
-    if (typeof parsed.questionId !== 'string') return undefined;
+    if (parsed.type !== "ask_question") return undefined;
+    if (typeof parsed.questionId !== "string") return undefined;
     return {
       ...parsed,
-      status: parsed.status ?? 'pending',
+      status: parsed.status ?? "pending",
     };
   } catch {
     return undefined;
@@ -469,7 +501,7 @@ function parseStoredCard(raw: string | null): WebchatAskQuestionCard | undefined
 function rowToMessage(
   row: {
     id: string;
-    direction: 'inbound' | 'outbound';
+    direction: "inbound" | "outbound";
     text: string;
     timestamp_ms: number;
     sender_name: string | null;
@@ -482,7 +514,8 @@ function rowToMessage(
   threadId: string,
 ): WebchatStoredMessage {
   const stored = parseStoredAttachments(row.attachments_json);
-  const attachments = stored.length > 0 ? storedToApiAttachments(row.id, stored) : undefined;
+  const attachments =
+    stored.length > 0 ? storedToApiAttachments(row.id, stored) : undefined;
   const card = parseStoredCard(row.card_json ?? null);
   return {
     id: row.id,
@@ -501,7 +534,8 @@ function rowToMessage(
 
 export function appendMessage(msg: WebchatStoredMessage): WebchatStoredMessage {
   const storedAttachments = writeAttachmentFiles(msg.id, msg.attachments ?? []);
-  const attachmentsJson = storedAttachments.length > 0 ? JSON.stringify(storedAttachments) : null;
+  const attachmentsJson =
+    storedAttachments.length > 0 ? JSON.stringify(storedAttachments) : null;
   const cardJson = msg.card ? JSON.stringify(msg.card) : null;
 
   let threadSeq = 0;
@@ -529,7 +563,10 @@ export function appendMessage(msg: WebchatStoredMessage): WebchatStoredMessage {
     db.close();
   }
 
-  const apiAttachments = storedAttachments.length > 0 ? storedToApiAttachments(msg.id, storedAttachments) : undefined;
+  const apiAttachments =
+    storedAttachments.length > 0
+      ? storedToApiAttachments(msg.id, storedAttachments)
+      : undefined;
 
   return {
     ...msg,
@@ -538,7 +575,11 @@ export function appendMessage(msg: WebchatStoredMessage): WebchatStoredMessage {
   };
 }
 
-export function getMessages(platformId: string, threadId: string, sinceMs = 0): WebchatStoredMessage[] {
+export function getMessages(
+  platformId: string,
+  threadId: string,
+  sinceMs = 0,
+): WebchatStoredMessage[] {
   const db = openDb();
   try {
     const rows = db
@@ -550,7 +591,7 @@ export function getMessages(platformId: string, threadId: string, sinceMs = 0): 
       )
       .all(platformId, threadId, sinceMs) as Array<{
       id: string;
-      direction: 'inbound' | 'outbound';
+      direction: "inbound" | "outbound";
       text: string;
       timestamp_ms: number;
       sender_name: string | null;
@@ -566,29 +607,36 @@ export function getMessages(platformId: string, threadId: string, sinceMs = 0): 
   }
 }
 
-export function getMessageAttachmentPath(messageId: string, storageName: string): string | null {
+export function getMessageAttachmentPath(
+  messageId: string,
+  storageName: string,
+): string | null {
   const safeId = sanitizeMessageId(messageId);
   if (!safeId) return null;
-  if (storageName.includes('/') || storageName.includes('\\')) return null;
+  if (storageName.includes("/") || storageName.includes("\\")) return null;
   const safeName = path.basename(storageName);
-  if (!safeName || safeName === '.' || safeName === '..') return null;
+  if (!safeName || safeName === "." || safeName === "..") return null;
   const root = path.join(webchatFilesDir(), safeId);
   const filePath = path.join(root, safeName);
   const resolvedRoot = path.resolve(root);
   const resolvedFile = path.resolve(filePath);
   if (!resolvedFile.startsWith(resolvedRoot + path.sep)) return null;
-  if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) return null;
+  if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory())
+    return null;
   return filePath;
 }
 
-export function getEngagedAgents(platformId: string, threadId: string): string[] {
+export function getEngagedAgents(
+  platformId: string,
+  threadId: string,
+): string[] {
   const db = openDb();
   try {
     const rows = db
       .prepare(
         `SELECT agent_folder FROM web_thread_engaged
          WHERE platform_id = ? AND thread_id = ?
-         ORDER BY engaged_at ASC, agent_folder ASC`,
+         ORDER BY engaged_at ASC, rowid ASC`,
       )
       .all(platformId, threadId) as Array<{ agent_folder: string }>;
     return rows.map((r) => r.agent_folder);
@@ -597,7 +645,11 @@ export function getEngagedAgents(platformId: string, threadId: string): string[]
   }
 }
 
-export function addEngagedAgents(platformId: string, threadId: string, folders: readonly string[]): string[] {
+export function addEngagedAgents(
+  platformId: string,
+  threadId: string,
+  folders: readonly string[],
+): string[] {
   if (folders.length === 0) return getEngagedAgents(platformId, threadId);
 
   const now = Date.now();
@@ -622,7 +674,11 @@ export function addEngagedAgents(platformId: string, threadId: string, folders: 
   return getEngagedAgents(platformId, threadId);
 }
 
-export function removeEngagedAgent(platformId: string, threadId: string, folder: string): string[] {
+export function removeEngagedAgent(
+  platformId: string,
+  threadId: string,
+  folder: string,
+): string[] {
   const db = openDb();
   try {
     db.prepare(
@@ -639,7 +695,11 @@ export function removeEngagedAgent(platformId: string, threadId: string, folder:
   return getEngagedAgents(platformId, threadId);
 }
 
-export function hasBackfillDelivered(platformId: string, threadId: string, folder: string): boolean {
+export function hasBackfillDelivered(
+  platformId: string,
+  threadId: string,
+  folder: string,
+): boolean {
   const db = openDb();
   try {
     const row = db
@@ -654,7 +714,11 @@ export function hasBackfillDelivered(platformId: string, threadId: string, folde
   }
 }
 
-export function markBackfillDelivered(platformId: string, threadId: string, folder: string): void {
+export function markBackfillDelivered(
+  platformId: string,
+  threadId: string,
+  folder: string,
+): void {
   const db = openDb();
   try {
     db.prepare(
@@ -667,13 +731,16 @@ export function markBackfillDelivered(platformId: string, threadId: string, fold
   }
 }
 
-function loadAttachmentDataFromDisk(messageId: string, stored: StoredAttachmentMeta[]): WebchatAttachmentInput[] {
+function loadAttachmentDataFromDisk(
+  messageId: string,
+  stored: StoredAttachmentMeta[],
+): WebchatAttachmentInput[] {
   return stored.map((att) => {
     const filePath = getMessageAttachmentPath(messageId, att.storageName);
     let data: string | undefined;
     if (filePath) {
       try {
-        data = fs.readFileSync(filePath).toString('base64');
+        data = fs.readFileSync(filePath).toString("base64");
       } catch {
         data = undefined;
       }
@@ -683,20 +750,24 @@ function loadAttachmentDataFromDisk(messageId: string, stored: StoredAttachmentM
       mimeType: att.mimeType,
       type: att.type,
       size: att.size,
-      ...(data ? { data } : { url: attachmentApiPath(messageId, att.storageName) }),
+      ...(data
+        ? { data }
+        : { url: attachmentApiPath(messageId, att.storageName) }),
     };
   });
 }
 
-export function enrichMessagesWithAttachmentData(messages: WebchatStoredMessage[]): WebchatStoredMessage[] {
+export function enrichMessagesWithAttachmentData(
+  messages: WebchatStoredMessage[],
+): WebchatStoredMessage[] {
   return messages.map((msg) => {
     if (!msg.attachments?.length) return msg;
     const db = openDb();
     let stored: StoredAttachmentMeta[] = [];
     try {
-      const row = db.prepare('SELECT attachments_json FROM web_messages WHERE id = ?').get(msg.id) as
-        | { attachments_json: string | null }
-        | undefined;
+      const row = db
+        .prepare("SELECT attachments_json FROM web_messages WHERE id = ?")
+        .get(msg.id) as { attachments_json: string | null } | undefined;
       stored = parseStoredAttachments(row?.attachments_json ?? null);
     } finally {
       db.close();
@@ -706,7 +777,11 @@ export function enrichMessagesWithAttachmentData(messages: WebchatStoredMessage[
   });
 }
 
-export function getRecentMessages(platformId: string, threadId: string, limit: number): WebchatStoredMessage[] {
+export function getRecentMessages(
+  platformId: string,
+  threadId: string,
+  limit: number,
+): WebchatStoredMessage[] {
   const db = openDb();
   try {
     const rows = db
@@ -719,7 +794,7 @@ export function getRecentMessages(platformId: string, threadId: string, limit: n
       )
       .all(platformId, threadId, limit) as Array<{
       id: string;
-      direction: 'inbound' | 'outbound';
+      direction: "inbound" | "outbound";
       text: string;
       timestamp_ms: number;
       sender_name: string | null;
@@ -735,23 +810,33 @@ export function getRecentMessages(platformId: string, threadId: string, limit: n
   }
 }
 
-export function deleteThreadData(platformId: string, threadId: string): string[] {
+export function deleteThreadData(
+  platformId: string,
+  threadId: string,
+): string[] {
   const db = openDb();
   const messageIds: string[] = [];
   try {
     db.transaction(() => {
       const rows = db
-        .prepare('SELECT id FROM web_messages WHERE platform_id = ? AND thread_id = ?')
+        .prepare(
+          "SELECT id FROM web_messages WHERE platform_id = ? AND thread_id = ?",
+        )
         .all(platformId, threadId) as Array<{ id: string }>;
       messageIds.push(...rows.map((r) => r.id));
 
-      db.prepare('DELETE FROM web_messages WHERE platform_id = ? AND thread_id = ?').run(platformId, threadId);
-      db.prepare('DELETE FROM web_thread_engaged WHERE platform_id = ? AND thread_id = ?').run(platformId, threadId);
-      db.prepare('DELETE FROM web_thread_backfill_delivered WHERE platform_id = ? AND thread_id = ?').run(
-        platformId,
-        threadId,
-      );
-      db.prepare('DELETE FROM web_threads WHERE platform_id = ? AND thread_id = ?').run(platformId, threadId);
+      db.prepare(
+        "DELETE FROM web_messages WHERE platform_id = ? AND thread_id = ?",
+      ).run(platformId, threadId);
+      db.prepare(
+        "DELETE FROM web_thread_engaged WHERE platform_id = ? AND thread_id = ?",
+      ).run(platformId, threadId);
+      db.prepare(
+        "DELETE FROM web_thread_backfill_delivered WHERE platform_id = ? AND thread_id = ?",
+      ).run(platformId, threadId);
+      db.prepare(
+        "DELETE FROM web_threads WHERE platform_id = ? AND thread_id = ?",
+      ).run(platformId, threadId);
     })();
   } finally {
     db.close();
@@ -763,7 +848,9 @@ export function deleteThreadData(platformId: string, threadId: string): string[]
   return messageIds;
 }
 
-export function findMessagesByQuestionId(questionId: string): WebchatStoredMessage[] {
+export function findMessagesByQuestionId(
+  questionId: string,
+): WebchatStoredMessage[] {
   const db = openDb();
   try {
     const rows = db
@@ -778,7 +865,7 @@ export function findMessagesByQuestionId(questionId: string): WebchatStoredMessa
       )
       .all(questionId) as Array<{
       id: string;
-      direction: 'inbound' | 'outbound';
+      direction: "inbound" | "outbound";
       text: string;
       timestamp_ms: number;
       sender_name: string | null;
@@ -805,7 +892,7 @@ export function findMessagesByQuestionId(questionId: string): WebchatStoredMessa
 
 export type AnswerCardsResult =
   | { ok: true; messages: WebchatStoredMessage[] }
-  | { ok: false; reason: 'already_answered' | 'not_found' };
+  | { ok: false; reason: "already_answered" | "not_found" };
 
 export function answerCardsByQuestionId(
   questionId: string,
@@ -814,7 +901,11 @@ export function answerCardsByQuestionId(
 ): AnswerCardsResult {
   const db = openDb();
   try {
-    const patch = JSON.stringify({ status: 'answered', selectedValue, selectedLabel });
+    const patch = JSON.stringify({
+      status: "answered",
+      selectedValue,
+      selectedLabel,
+    });
     const result = db
       .prepare(
         `UPDATE web_messages
@@ -837,8 +928,8 @@ export function answerCardsByQuestionId(
            LIMIT 1`,
         )
         .get(questionId) as { ok: number } | undefined;
-      if (answered) return { ok: false, reason: 'already_answered' };
-      return { ok: false, reason: 'not_found' };
+      if (answered) return { ok: false, reason: "already_answered" };
+      return { ok: false, reason: "not_found" };
     }
 
     const rows = db
@@ -853,7 +944,7 @@ export function answerCardsByQuestionId(
       )
       .all(questionId) as Array<{
       id: string;
-      direction: 'inbound' | 'outbound';
+      direction: "inbound" | "outbound";
       text: string;
       timestamp_ms: number;
       sender_name: string | null;
@@ -871,7 +962,9 @@ export function answerCardsByQuestionId(
         if (card?.questionId !== questionId) return undefined;
         return rowToMessage(row, row.platform_id, row.thread_id);
       })
-      .filter((message): message is WebchatStoredMessage => message !== undefined);
+      .filter(
+        (message): message is WebchatStoredMessage => message !== undefined,
+      );
 
     return { ok: true, messages };
   } finally {
@@ -883,7 +976,7 @@ export function answerCardsByQuestionId(
 export function revertCardsByQuestionId(questionId: string): void {
   const db = openDb();
   try {
-    const patch = JSON.stringify({ status: 'pending' });
+    const patch = JSON.stringify({ status: "pending" });
     db.prepare(
       `UPDATE web_messages
        SET card_json = json_patch(
@@ -920,7 +1013,7 @@ export function findMessageByQuestionId(
       .get(platformId, threadId, questionId) as
       | {
           id: string;
-          direction: 'inbound' | 'outbound';
+          direction: "inbound" | "outbound";
           text: string;
           timestamp_ms: number;
           sender_name: string | null;
@@ -940,7 +1033,10 @@ export function findMessageByQuestionId(
   }
 }
 
-export function updateMessageCard(messageId: string, card: WebchatAskQuestionCard): WebchatStoredMessage | undefined {
+export function updateMessageCard(
+  messageId: string,
+  card: WebchatAskQuestionCard,
+): WebchatStoredMessage | undefined {
   const db = openDb();
   try {
     const row = db
@@ -952,7 +1048,7 @@ export function updateMessageCard(messageId: string, card: WebchatAskQuestionCar
       .get(messageId) as
       | {
           id: string;
-          direction: 'inbound' | 'outbound';
+          direction: "inbound" | "outbound";
           text: string;
           timestamp_ms: number;
           sender_name: string | null;
@@ -966,9 +1062,16 @@ export function updateMessageCard(messageId: string, card: WebchatAskQuestionCar
       | undefined;
     if (!row) return undefined;
 
-    db.prepare('UPDATE web_messages SET card_json = ? WHERE id = ?').run(JSON.stringify(card), messageId);
+    db.prepare("UPDATE web_messages SET card_json = ? WHERE id = ?").run(
+      JSON.stringify(card),
+      messageId,
+    );
 
-    return rowToMessage({ ...row, card_json: JSON.stringify(card) }, row.platform_id, row.thread_id);
+    return rowToMessage(
+      { ...row, card_json: JSON.stringify(card) },
+      row.platform_id,
+      row.thread_id,
+    );
   } finally {
     db.close();
   }
@@ -997,7 +1100,9 @@ function pruneActivityTurns(
   platformId: string,
   threadId: string,
 ): void {
-  const cutoff = new Date(Date.now() - ACTIVITY_REPLAY_MAX_AGE_MS).toISOString();
+  const cutoff = new Date(
+    Date.now() - ACTIVITY_REPLAY_MAX_AGE_MS,
+  ).toISOString();
   db.prepare(
     `DELETE FROM web_activity WHERE platform_id = ? AND thread_id = ? AND timestamp < ?`,
   ).run(platformId, threadId, cutoff);
@@ -1039,7 +1144,7 @@ export function appendActivityEvent(
     );
 
     // Cap check only when a new turn starts — mid-turn events can't add a turn_id.
-    if (event.seq === 0 || event.kind === 'turn_start') {
+    if (event.seq === 0 || event.kind === "turn_start") {
       pruneActivityTurns(db, platformId, threadId);
     }
   } finally {
@@ -1054,7 +1159,9 @@ export function getActivityEvents(
 ): StoredActivityEvent[] {
   const db = openDb();
   try {
-    const cutoff = new Date(Date.now() - ACTIVITY_REPLAY_MAX_AGE_MS).toISOString();
+    const cutoff = new Date(
+      Date.now() - ACTIVITY_REPLAY_MAX_AGE_MS,
+    ).toISOString();
     const rows = db
       .prepare(
         `SELECT payload_json FROM web_activity
@@ -1062,7 +1169,9 @@ export function getActivityEvents(
          ORDER BY id DESC
          LIMIT ?`,
       )
-      .all(platformId, threadId, cutoff, limit) as Array<{ payload_json: string }>;
+      .all(platformId, threadId, cutoff, limit) as Array<{
+      payload_json: string;
+    }>;
     return rows
       .map((r) => {
         try {
@@ -1078,7 +1187,11 @@ export function getActivityEvents(
   }
 }
 
-export function clearActivityTurn(platformId: string, threadId: string, turnId?: string): void {
+export function clearActivityTurn(
+  platformId: string,
+  threadId: string,
+  turnId?: string,
+): void {
   const db = openDb();
   try {
     if (turnId) {
@@ -1086,10 +1199,9 @@ export function clearActivityTurn(platformId: string, threadId: string, turnId?:
         `DELETE FROM web_activity WHERE platform_id = ? AND thread_id = ? AND turn_id = ?`,
       ).run(platformId, threadId, turnId);
     } else {
-      db.prepare(`DELETE FROM web_activity WHERE platform_id = ? AND thread_id = ?`).run(
-        platformId,
-        threadId,
-      );
+      db.prepare(
+        `DELETE FROM web_activity WHERE platform_id = ? AND thread_id = ?`,
+      ).run(platformId, threadId);
     }
   } finally {
     db.close();
