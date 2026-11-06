@@ -22,7 +22,7 @@ describe('ensureHostAdapterDependencies', () => {
     );
 
     const added = ensureHostAdapterDependencies(root);
-    expect(added).toEqual(['busboy', '@types/busboy']);
+    expect(added).toEqual(['busboy', 'ws', '@types/busboy', '@types/ws']);
     const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')) as {
       dependencies: Record<string, string>;
       devDependencies: Record<string, string>;
@@ -45,8 +45,8 @@ describe('ensureHostAdapterDependencies', () => {
       `${JSON.stringify(
         {
           name: 'host',
-          dependencies: { busboy: '^1.6.0' },
-          devDependencies: { '@types/busboy': '^1.5.4' },
+          dependencies: { busboy: '^1.6.0', ws: '^8.18.3' },
+          devDependencies: { '@types/busboy': '^1.5.4', '@types/ws': '^8.5.12' },
         },
         null,
         2,
@@ -62,7 +62,7 @@ describe('ensureHostAdapterDependencies', () => {
       path.join(root, 'package.json'),
       `${JSON.stringify({ name: 'host', dependencies: { busboy: '^1.6.0' } }, null, 2)}\n`,
     );
-    expect(ensureHostAdapterDependencies(root)).toEqual(['@types/busboy']);
+    expect(ensureHostAdapterDependencies(root)).toEqual(['ws', '@types/busboy', '@types/ws']);
   });
 });
 

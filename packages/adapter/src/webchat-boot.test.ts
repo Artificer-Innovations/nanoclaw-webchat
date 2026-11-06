@@ -64,14 +64,14 @@ vi.mock('./modules/agent-to-agent/guard.js', () => ({ agentsCreate }));
 import { startWebChat } from './webchat-boot.js';
 import { log } from './log.js';
 
-beforeEach(() => {
+beforeEach(async () => {
   process.env.WEBCHAT_ENABLED = 'true';
   vi.clearAllMocks();
   getApprovalHandler.mockReturnValue(undefined);
   reenterGuardedDeliveryAction.mockReturnValue(approvalContinuation);
 });
 
-afterEach(() => {
+afterEach(async () => {
   delete process.env.WEBCHAT_ENABLED;
 });
 

@@ -80,7 +80,7 @@ export async function startWebChat(): Promise<void> {
   }
 
   registerWebchatHosthooks();
-  syncWebchatWirings();
+  await syncWebchatWirings();
   ensureWebchatSchema();
   await installAgentGroupLiveRefresh();
   const port = process.env.WEBCHAT_PORT || env.WEBCHAT_PORT || '3200';
