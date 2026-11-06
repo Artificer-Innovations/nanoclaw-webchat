@@ -5,8 +5,8 @@
  * is wired with @<folder> patterns in the lobby. Re-run on host boot so new
  * agents are picked up automatically.
  */
-import { readEnvFile } from "./env.js";
-import { getAllAgentGroups } from "./db/agent-groups.js";
+import { readEnvFile } from './env.js';
+import { getAllAgentGroups } from './db/agent-groups.js';
 import {
   createMessagingGroup,
   createMessagingGroupAgent,
@@ -15,48 +15,48 @@ import {
   getMessagingGroupAgentByPair,
   updateMessagingGroup,
   updateMessagingGroupAgent,
-} from "./db/messaging-groups.js";
-import { log } from "./log.js";
-import { listThreads, type WebchatThreadMeta } from "./webchat-store.js";
+} from './db/messaging-groups.js';
+import { log } from './log.js';
+import { listThreads, type WebchatThreadMeta } from './webchat-store.js';
 import {
   inboxPlatformForUser,
   toPhysicalPlatformId,
   WEB_INBOX_PLATFORM_ID,
   WEB_LOBBY_PLATFORM_ID,
-} from "./webchat-room-scope.js";
-import { getAllUsers, upsertUser } from "./modules/permissions/db/users.js";
-import { addMember } from "./modules/permissions/db/agent-group-members.js";
+} from './webchat-room-scope.js';
+import { getAllUsers, upsertUser } from './modules/permissions/db/users.js';
+import { addMember } from './modules/permissions/db/agent-group-members.js';
 import {
   grantRole,
   isGlobalAdmin,
   isOwner,
   revokeRole,
-} from "./modules/permissions/db/user-roles.js";
+} from './modules/permissions/db/user-roles.js';
 import {
   deleteUserDm,
   getUserDm,
   upsertUserDm,
-} from "./modules/permissions/db/user-dms.js";
-import type { AgentGroup } from "./types.js";
+} from './modules/permissions/db/user-dms.js';
+import type { AgentGroup } from './types.js';
 
 export { WEB_LOBBY_PLATFORM_ID, WEB_INBOX_PLATFORM_ID };
 
-export const WEB_CHANNEL_TYPE = "web";
+export const WEB_CHANNEL_TYPE = 'web';
 
-function readAuthMode(): "local" | "public" {
-  const env = readEnvFile(["WEBCHAT_AUTH_MODE"]);
-  const raw = process.env.WEBCHAT_AUTH_MODE || env.WEBCHAT_AUTH_MODE || "local";
-  return raw === "public" ? "public" : "local";
+function readAuthMode(): 'local' | 'public' {
+  const env = readEnvFile(['WEBCHAT_AUTH_MODE']);
+  const raw = process.env.WEBCHAT_AUTH_MODE || env.WEBCHAT_AUTH_MODE || 'local';
+  return raw === 'public' ? 'public' : 'local';
 }
 
 function readLocalWebUserId(): string {
-  const env = readEnvFile(["WEBCHAT_USER_ID"]);
-  return process.env.WEBCHAT_USER_ID || env.WEBCHAT_USER_ID || "web:local";
+  const env = readEnvFile(['WEBCHAT_USER_ID']);
+  return process.env.WEBCHAT_USER_ID || env.WEBCHAT_USER_ID || 'web:local';
 }
 
 /** Legacy local-mode operator identity — must not remain an approval owner in public mode. */
 function isLegacyLocalWebUser(userId: string): boolean {
-  return userId === "web:local" || userId === readLocalWebUserId();
+  return userId === 'web:local' || userId === readLocalWebUserId();
 }
 
 /** Drop cached DM rows that still point at the shared local `inbox` platform id. */
@@ -66,7 +66,7 @@ async function clearStaleSharedInboxUserDm(userId: string): Promise<void> {
   const mg = await getMessagingGroup(cached.messaging_group_id);
   if (!mg || mg.platform_id !== WEB_INBOX_PLATFORM_ID) return;
   await deleteUserDm(userId, WEB_CHANNEL_TYPE);
-  log.info("Webchat sync: cleared stale shared-inbox user_dm", {
+  log.info('Webchat sync: cleared stale shared-inbox user_dm', {
     userId,
     messagingGroupId: mg.id,
   });
@@ -77,19 +77,19 @@ async function clearStaleSharedInboxUserDm(userId: string): Promise<void> {
  * user_dms rows still targeting bare `inbox` so approval cards route to real logins.
  */
 export async function revokeLegacyLocalWebApprovers(): Promise<void> {
-  if (readAuthMode() !== "public") return;
+  if (readAuthMode() !== 'public') return;
 
-  const ids = new Set<string>(["web:local", readLocalWebUserId()]);
+  const ids = new Set<string>(['web:local', readLocalWebUserId()]);
   for (const userId of ids) {
     if (await isOwner(userId)) {
-      await revokeRole(userId, "owner", null);
-      log.info("Webchat sync: revoked legacy local web owner in public mode", {
+      await revokeRole(userId, 'owner', null);
+      log.info('Webchat sync: revoked legacy local web owner in public mode', {
         userId,
       });
     }
     if (await isGlobalAdmin(userId)) {
-      await revokeRole(userId, "admin", null);
-      log.info("Webchat sync: revoked legacy local web admin in public mode", {
+      await revokeRole(userId, 'admin', null);
+      log.info('Webchat sync: revoked legacy local web admin in public mode', {
         userId,
       });
     }
@@ -97,7 +97,7 @@ export async function revokeLegacyLocalWebApprovers(): Promise<void> {
 
   // Stale shared-inbox caches can exist for *any* web user (e.g. web:System after
   // openDM previously returned bare `inbox`). Clear them so ensureUserDm re-resolves.
-  for (const user of (await getAllUsers()).filter((u) => u.kind === "web")) {
+  for (const user of (await getAllUsers()).filter((u) => u.kind === 'web')) {
     await clearStaleSharedInboxUserDm(user.id);
   }
 }
@@ -108,17 +108,17 @@ export async function revokeLegacyLocalWebApprovers(): Promise<void> {
  * Follow-up: privilege tiers for broad domain-allowlist multi-user hosts.
  */
 export async function ensurePublicWebOwner(userId: string): Promise<void> {
-  if (readAuthMode() !== "public") return;
+  if (readAuthMode() !== 'public') return;
   if (isLegacyLocalWebUser(userId)) return;
   if (await isOwner(userId)) return;
   await grantRole({
     user_id: userId,
-    role: "owner",
+    role: 'owner',
     agent_group_id: null,
     granted_by: null,
     granted_at: new Date().toISOString(),
   });
-  log.info("Webchat sync: granted owner to public web user", { userId });
+  log.info('Webchat sync: granted owner to public web user', { userId });
 }
 
 function generateId(prefix: string): string {
@@ -154,21 +154,21 @@ async function ensureLobbyMessagingGroup(): Promise<string> {
       WEB_LOBBY_PLATFORM_ID,
     );
     if (!mg) {
-      const id = generateId("mg");
+      const id = generateId('mg');
       await createMessagingGroup({
         id,
         channel_type: WEB_CHANNEL_TYPE,
         platform_id: WEB_LOBBY_PLATFORM_ID,
-        name: "Lobby",
+        name: 'Lobby',
         is_group: 1,
-        unknown_sender_policy: "strict",
+        unknown_sender_policy: 'strict',
         created_at: new Date().toISOString(),
       });
       mg = (await getMessagingGroupByPlatform(
         WEB_CHANNEL_TYPE,
         WEB_LOBBY_PLATFORM_ID,
       ))!;
-      log.info("Webchat sync: created lobby messaging group", { id: mg.id });
+      log.info('Webchat sync: created lobby messaging group', { id: mg.id });
     }
     return mg.id;
   });
@@ -181,18 +181,18 @@ async function ensureDmMessagingGroupForPlatform(
   return withWiringLock(async () => {
     let mg = await getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, platformId);
     if (!mg) {
-      const id = generateId("mg");
+      const id = generateId('mg');
       await createMessagingGroup({
         id,
         channel_type: WEB_CHANNEL_TYPE,
         platform_id: platformId,
         name,
         is_group: 0,
-        unknown_sender_policy: "strict",
+        unknown_sender_policy: 'strict',
         created_at: new Date().toISOString(),
       });
       mg = (await getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, platformId))!;
-      log.info("Webchat sync: created DM messaging group", {
+      log.info('Webchat sync: created DM messaging group', {
         platformId,
         id: mg.id,
       });
@@ -215,18 +215,18 @@ async function ensureInboxMessagingGroupForPlatform(
   return withWiringLock(async () => {
     let mg = await getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, platformId);
     if (!mg) {
-      const id = generateId("mg");
+      const id = generateId('mg');
       await createMessagingGroup({
         id,
         channel_type: WEB_CHANNEL_TYPE,
         platform_id: platformId,
-        name: "Inbox",
+        name: 'Inbox',
         is_group: 0,
-        unknown_sender_policy: "strict",
+        unknown_sender_policy: 'strict',
         created_at: new Date().toISOString(),
       });
       mg = (await getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, platformId))!;
-      log.info("Webchat sync: created inbox messaging group", {
+      log.info('Webchat sync: created inbox messaging group', {
         platformId,
         id: mg.id,
       });
@@ -250,21 +250,21 @@ async function upsertLobbyWiring(
     );
     if (existing) {
       await updateMessagingGroupAgent(existing.id, {
-        engage_mode: "pattern",
+        engage_mode: 'pattern',
         engage_pattern: engagePattern,
-        session_mode: "per-thread",
+        session_mode: 'per-thread',
       });
       return;
     }
     await createMessagingGroupAgent({
-      id: generateId("mga"),
+      id: generateId('mga'),
       messaging_group_id: lobbyMgId,
       agent_group_id: agentGroupId,
-      engage_mode: "pattern",
+      engage_mode: 'pattern',
       engage_pattern: engagePattern,
-      sender_scope: "all",
-      ignored_message_policy: "drop",
-      session_mode: "per-thread",
+      sender_scope: 'all',
+      ignored_message_policy: 'drop',
+      session_mode: 'per-thread',
       priority: 0,
       created_at: new Date().toISOString(),
     });
@@ -279,21 +279,21 @@ async function upsertDmWiring(
     const existing = await getMessagingGroupAgentByPair(dmMgId, agentGroupId);
     if (existing) {
       await updateMessagingGroupAgent(existing.id, {
-        engage_mode: "pattern",
-        engage_pattern: ".",
-        session_mode: "per-thread",
+        engage_mode: 'pattern',
+        engage_pattern: '.',
+        session_mode: 'per-thread',
       });
       return;
     }
     await createMessagingGroupAgent({
-      id: generateId("mga"),
+      id: generateId('mga'),
       messaging_group_id: dmMgId,
       agent_group_id: agentGroupId,
-      engage_mode: "pattern",
-      engage_pattern: ".",
-      sender_scope: "all",
-      ignored_message_policy: "drop",
-      session_mode: "per-thread",
+      engage_mode: 'pattern',
+      engage_pattern: '.',
+      sender_scope: 'all',
+      ignored_message_policy: 'drop',
+      session_mode: 'per-thread',
       priority: 0,
       created_at: new Date().toISOString(),
     });
@@ -306,7 +306,7 @@ async function ensureWebUser(
 ): Promise<void> {
   await upsertUser({
     id: userId,
-    kind: "web",
+    kind: 'web',
     display_name: displayName,
     created_at: new Date().toISOString(),
   });
@@ -344,7 +344,7 @@ export async function ensureUserWebchatWirings(
     await ensureWebUser(userId, displayName);
   }
 
-  if (readAuthMode() === "public") {
+  if (readAuthMode() === 'public') {
     await revokeLegacyLocalWebApprovers();
     await ensurePublicWebOwner(userId);
   }
@@ -387,7 +387,7 @@ export async function ensureUserWebchatWirings(
     }
   }
 
-  log.info("Webchat user wirings synced", {
+  log.info('Webchat user wirings synced', {
     userId,
     agentCount: agents.length,
   });
@@ -396,7 +396,7 @@ export async function ensureUserWebchatWirings(
 export interface WebchatBootstrapRoom {
   platformId: string;
   name: string;
-  kind: "lobby" | "dm" | "inbox";
+  kind: 'lobby' | 'dm' | 'inbox';
   folder?: string;
   threads: WebchatThreadMeta[];
 }
@@ -419,7 +419,7 @@ export async function buildWebchatBootstrap(
 ): Promise<WebchatBootstrapPayload> {
   const agents = await getAllAgentGroups();
   const teamFolder = readTeamFolder();
-  const publicMode = readAuthMode() === "public";
+  const publicMode = readAuthMode() === 'public';
 
   const inboxPhysical = publicMode
     ? inboxPlatformForUser(userId)
@@ -428,14 +428,14 @@ export async function buildWebchatBootstrap(
   const rooms: WebchatBootstrapRoom[] = [
     {
       platformId: WEB_INBOX_PLATFORM_ID,
-      name: "Inbox",
-      kind: "inbox",
+      name: 'Inbox',
+      kind: 'inbox',
       threads: listThreads(inboxPhysical),
     },
     {
       platformId: WEB_LOBBY_PLATFORM_ID,
-      name: "Lobby",
-      kind: "lobby",
+      name: 'Lobby',
+      kind: 'lobby',
       threads: listThreads(WEB_LOBBY_PLATFORM_ID),
     },
     ...agents.map((a) => {
@@ -446,7 +446,7 @@ export async function buildWebchatBootstrap(
       return {
         platformId: logical,
         name: a.name,
-        kind: "dm" as const,
+        kind: 'dm' as const,
         folder: a.folder,
         threads: listThreads(storageId),
       };
@@ -455,8 +455,8 @@ export async function buildWebchatBootstrap(
 
   const agentList: WebchatBootstrapAgent[] = agents.map((a) => ({
     folder: a.folder,
-    name: teamFolder && a.folder === teamFolder ? "Team" : a.name,
-    mention: teamFolder && a.folder === teamFolder ? "@team" : `@${a.folder}`,
+    name: teamFolder && a.folder === teamFolder ? 'Team' : a.name,
+    mention: teamFolder && a.folder === teamFolder ? '@team' : `@${a.folder}`,
   }));
 
   return {
@@ -467,7 +467,7 @@ export async function buildWebchatBootstrap(
 }
 
 export function readTeamFolder(): string | null {
-  const env = readEnvFile(["WEBCHAT_TEAM_FOLDER"]);
+  const env = readEnvFile(['WEBCHAT_TEAM_FOLDER']);
   const raw = process.env.WEBCHAT_TEAM_FOLDER || env.WEBCHAT_TEAM_FOLDER;
   return raw?.trim() || null;
 }
@@ -498,9 +498,9 @@ export async function healWebchatWiringsForUser(
   userId: string,
   displayName: string,
 ): Promise<void> {
-  const env = readEnvFile(["WEBCHAT_ENABLED"]);
+  const env = readEnvFile(['WEBCHAT_ENABLED']);
   const enabled = process.env.WEBCHAT_ENABLED || env.WEBCHAT_ENABLED;
-  if (!enabled || enabled === "false") return;
+  if (!enabled || enabled === 'false') return;
 
   const agents = await getAllAgentGroups();
   await syncLobbyWirings(agents);
@@ -517,26 +517,26 @@ export async function healWebchatWiringsForUser(
  */
 export async function syncWebchatWirings(): Promise<void> {
   const env = readEnvFile([
-    "WEBCHAT_ENABLED",
-    "WEBCHAT_USER_ID",
-    "WEBCHAT_DISPLAY_NAME",
-    "WEBCHAT_AUTH_MODE",
+    'WEBCHAT_ENABLED',
+    'WEBCHAT_USER_ID',
+    'WEBCHAT_DISPLAY_NAME',
+    'WEBCHAT_AUTH_MODE',
   ]);
   const enabled = process.env.WEBCHAT_ENABLED || env.WEBCHAT_ENABLED;
-  if (!enabled || enabled === "false") return;
+  if (!enabled || enabled === 'false') return;
 
-  const publicMode = readAuthMode() === "public";
+  const publicMode = readAuthMode() === 'public';
   const userId =
-    process.env.WEBCHAT_USER_ID || env.WEBCHAT_USER_ID || "web:local";
+    process.env.WEBCHAT_USER_ID || env.WEBCHAT_USER_ID || 'web:local';
   const displayName =
-    process.env.WEBCHAT_DISPLAY_NAME || env.WEBCHAT_DISPLAY_NAME || "Local";
+    process.env.WEBCHAT_DISPLAY_NAME || env.WEBCHAT_DISPLAY_NAME || 'Local';
 
   const agents = await getAllAgentGroups();
   const lobbyMgId = await syncLobbyWirings(agents);
 
   if (publicMode) {
     await revokeLegacyLocalWebApprovers();
-    for (const user of (await getAllUsers()).filter((u) => u.kind === "web")) {
+    for (const user of (await getAllUsers()).filter((u) => u.kind === 'web')) {
       try {
         await ensureUserWebchatWirings(user.id, user.display_name ?? user.id, {
           agents,
@@ -544,13 +544,13 @@ export async function syncWebchatWirings(): Promise<void> {
           skipWebUserUpsert: true,
         });
       } catch (err) {
-        log.error("Webchat sync: failed to wire user", {
+        log.error('Webchat sync: failed to wire user', {
           userId: user.id,
           err,
         });
       }
     }
-    log.info("Webchat wirings synced (public mode)", {
+    log.info('Webchat wirings synced (public mode)', {
       agentCount: agents.length,
       lobbyMgId,
     });
@@ -566,5 +566,5 @@ export async function syncWebchatWirings(): Promise<void> {
     await upsertDmWiring(dmMgId, agent.id);
   }
 
-  log.info("Webchat wirings synced", { agentCount: agents.length, lobbyMgId });
+  log.info('Webchat wirings synced', { agentCount: agents.length, lobbyMgId });
 }

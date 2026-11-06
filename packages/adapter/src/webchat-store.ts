@@ -2,19 +2,19 @@
  * Durable web chat UI history — threads and messages in data/webchat.db.
  * Single writer: web channel adapter. Not agent session workload.
  */
-import crypto from "crypto";
-import fs from "fs";
-import path from "path";
+import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
 
-import Database from "better-sqlite3";
+import Database from 'better-sqlite3';
 
-import { DATA_DIR } from "./config.js";
-import { normalizeWebchatPublicPath } from "./webchat-public-path.js";
+import { DATA_DIR } from './config.js';
+import { normalizeWebchatPublicPath } from './webchat-public-path.js';
 
-export const MAIN_THREAD = "main";
+export const MAIN_THREAD = 'main';
 
 /** Configured public path prefix for attachment URLs (set by the web adapter). */
-let configuredPublicPath = "";
+let configuredPublicPath = '';
 
 /** Wire WEBCHAT_PUBLIC_PATH into the store (same pattern as setWebchatBootstrapBroadcaster). */
 export function setWebchatPublicPath(
@@ -101,7 +101,7 @@ export interface WebchatThreadMeta {
 export interface WebchatAttachmentInput {
   name: string;
   mimeType: string;
-  type: "image" | "file";
+  type: 'image' | 'file';
   size?: number;
   data?: string;
   url?: string;
@@ -114,19 +114,19 @@ export interface WebchatCardOption {
 }
 
 export interface WebchatAskQuestionCard {
-  type: "ask_question";
+  type: 'ask_question';
   questionId: string;
   title: string;
   question: string;
   options: WebchatCardOption[];
-  status: "pending" | "answered";
+  status: 'pending' | 'answered';
   selectedValue?: string;
   selectedLabel?: string;
 }
 
 export interface WebchatStoredMessage {
   id: string;
-  direction: "inbound" | "outbound";
+  direction: 'inbound' | 'outbound';
   text: string;
   timestamp: number;
   platformId: string;
@@ -141,7 +141,7 @@ export interface WebchatStoredMessage {
 interface StoredAttachmentMeta {
   name: string;
   mimeType: string;
-  type: "image" | "file";
+  type: 'image' | 'file';
   size: number;
   storageName: string;
 }
@@ -149,17 +149,17 @@ interface StoredAttachmentMeta {
 export type { StoredAttachmentMeta };
 
 export function webchatDbPath(): string {
-  return path.join(DATA_DIR, "webchat.db");
+  return path.join(DATA_DIR, 'webchat.db');
 }
 
 export function webchatFilesDir(): string {
-  return path.join(DATA_DIR, "webchat", "files");
+  return path.join(DATA_DIR, 'webchat', 'files');
 }
 
 function sanitizeMessageId(messageId: string): string | null {
-  if (messageId.includes("/") || messageId.includes("\\")) return null;
+  if (messageId.includes('/') || messageId.includes('\\')) return null;
   const base = path.basename(messageId);
-  if (!base || base === "." || base === "..") return null;
+  if (!base || base === '.' || base === '..') return null;
   if (base !== messageId) return null;
   return base;
 }
@@ -173,9 +173,9 @@ function messageFilesDir(messageId: string): string {
 function openDb(): Database.Database {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   const db = new Database(webchatDbPath());
-  db.pragma("journal_mode = WAL");
-  db.pragma("wal_autocheckpoint = 1000");
-  db.pragma("busy_timeout = 5000");
+  db.pragma('journal_mode = WAL');
+  db.pragma('wal_autocheckpoint = 1000');
+  db.pragma('busy_timeout = 5000');
   return db;
 }
 
@@ -185,17 +185,17 @@ export function ensureWebchatSchema(): void {
   try {
     db.exec(WEBCHAT_SCHEMA);
     try {
-      db.exec("ALTER TABLE web_messages ADD COLUMN thread_seq INTEGER");
+      db.exec('ALTER TABLE web_messages ADD COLUMN thread_seq INTEGER');
     } catch {
       // column already exists
     }
     try {
-      db.exec("ALTER TABLE web_messages ADD COLUMN card_json TEXT");
+      db.exec('ALTER TABLE web_messages ADD COLUMN card_json TEXT');
     } catch {
       // column already exists
     }
     try {
-      db.exec("ALTER TABLE web_messages ADD COLUMN sender_id TEXT");
+      db.exec('ALTER TABLE web_messages ADD COLUMN sender_id TEXT');
     } catch {
       // column already exists
     }
@@ -279,7 +279,7 @@ export function listThreads(platformId: string): WebchatThreadMeta[] {
       )
       .all(platformId, MAIN_THREAD) as WebchatThreadMeta[];
     if (rows.some((r) => r.id === MAIN_THREAD)) return rows;
-    return [{ id: MAIN_THREAD, title: "Main" }, ...rows];
+    return [{ id: MAIN_THREAD, title: 'Main' }, ...rows];
   } finally {
     db.close();
   }
@@ -321,20 +321,20 @@ export function createThread(
 }
 
 function sanitizeStorageName(name: string, index: number): string {
-  const base = path.basename(name).replace(/[^\w.\-()+@]/g, "_");
+  const base = path.basename(name).replace(/[^\w.\-()+@]/g, '_');
   const trimmed = base.length > 0 ? base : `file-${index}`;
   return `${index}-${trimmed}`;
 }
 
 function assertRegularFile(filePath: string): void {
   const st = fs.lstatSync(filePath);
-  if (!st.isFile()) throw new Error("not a file");
+  if (!st.isFile()) throw new Error('not a file');
 }
 
 export interface AttachmentFileSource {
   name: string;
   mimeType: string;
-  type: "image" | "file";
+  type: 'image' | 'file';
   size: number;
   sourcePath: string;
 }
@@ -421,11 +421,11 @@ export function writeAttachmentFiles(
 
   for (let i = 0; i < attachments.length; i++) {
     const att = attachments[i]!;
-    const data = att.data ?? "";
+    const data = att.data ?? '';
     if (!data) continue;
     const storageName = sanitizeStorageName(att.name, startIndex + i);
     const filePath = path.join(dir, storageName);
-    const decoded = Buffer.from(data, "base64");
+    const decoded = Buffer.from(data, 'base64');
     fs.writeFileSync(filePath, decoded);
     stored.push({
       name: att.name,
@@ -487,11 +487,11 @@ function parseStoredCard(
   if (!raw) return undefined;
   try {
     const parsed = JSON.parse(raw) as WebchatAskQuestionCard;
-    if (parsed.type !== "ask_question") return undefined;
-    if (typeof parsed.questionId !== "string") return undefined;
+    if (parsed.type !== 'ask_question') return undefined;
+    if (typeof parsed.questionId !== 'string') return undefined;
     return {
       ...parsed,
-      status: parsed.status ?? "pending",
+      status: parsed.status ?? 'pending',
     };
   } catch {
     return undefined;
@@ -501,7 +501,7 @@ function parseStoredCard(
 function rowToMessage(
   row: {
     id: string;
-    direction: "inbound" | "outbound";
+    direction: 'inbound' | 'outbound';
     text: string;
     timestamp_ms: number;
     sender_name: string | null;
@@ -591,7 +591,7 @@ export function getMessages(
       )
       .all(platformId, threadId, sinceMs) as Array<{
       id: string;
-      direction: "inbound" | "outbound";
+      direction: 'inbound' | 'outbound';
       text: string;
       timestamp_ms: number;
       sender_name: string | null;
@@ -613,9 +613,9 @@ export function getMessageAttachmentPath(
 ): string | null {
   const safeId = sanitizeMessageId(messageId);
   if (!safeId) return null;
-  if (storageName.includes("/") || storageName.includes("\\")) return null;
+  if (storageName.includes('/') || storageName.includes('\\')) return null;
   const safeName = path.basename(storageName);
-  if (!safeName || safeName === "." || safeName === "..") return null;
+  if (!safeName || safeName === '.' || safeName === '..') return null;
   const root = path.join(webchatFilesDir(), safeId);
   const filePath = path.join(root, safeName);
   const resolvedRoot = path.resolve(root);
@@ -740,7 +740,7 @@ function loadAttachmentDataFromDisk(
     let data: string | undefined;
     if (filePath) {
       try {
-        data = fs.readFileSync(filePath).toString("base64");
+        data = fs.readFileSync(filePath).toString('base64');
       } catch {
         data = undefined;
       }
@@ -766,7 +766,7 @@ export function enrichMessagesWithAttachmentData(
     let stored: StoredAttachmentMeta[] = [];
     try {
       const row = db
-        .prepare("SELECT attachments_json FROM web_messages WHERE id = ?")
+        .prepare('SELECT attachments_json FROM web_messages WHERE id = ?')
         .get(msg.id) as { attachments_json: string | null } | undefined;
       stored = parseStoredAttachments(row?.attachments_json ?? null);
     } finally {
@@ -794,7 +794,7 @@ export function getRecentMessages(
       )
       .all(platformId, threadId, limit) as Array<{
       id: string;
-      direction: "inbound" | "outbound";
+      direction: 'inbound' | 'outbound';
       text: string;
       timestamp_ms: number;
       sender_name: string | null;
@@ -820,22 +820,22 @@ export function deleteThreadData(
     db.transaction(() => {
       const rows = db
         .prepare(
-          "SELECT id FROM web_messages WHERE platform_id = ? AND thread_id = ?",
+          'SELECT id FROM web_messages WHERE platform_id = ? AND thread_id = ?',
         )
         .all(platformId, threadId) as Array<{ id: string }>;
       messageIds.push(...rows.map((r) => r.id));
 
       db.prepare(
-        "DELETE FROM web_messages WHERE platform_id = ? AND thread_id = ?",
+        'DELETE FROM web_messages WHERE platform_id = ? AND thread_id = ?',
       ).run(platformId, threadId);
       db.prepare(
-        "DELETE FROM web_thread_engaged WHERE platform_id = ? AND thread_id = ?",
+        'DELETE FROM web_thread_engaged WHERE platform_id = ? AND thread_id = ?',
       ).run(platformId, threadId);
       db.prepare(
-        "DELETE FROM web_thread_backfill_delivered WHERE platform_id = ? AND thread_id = ?",
+        'DELETE FROM web_thread_backfill_delivered WHERE platform_id = ? AND thread_id = ?',
       ).run(platformId, threadId);
       db.prepare(
-        "DELETE FROM web_threads WHERE platform_id = ? AND thread_id = ?",
+        'DELETE FROM web_threads WHERE platform_id = ? AND thread_id = ?',
       ).run(platformId, threadId);
     })();
   } finally {
@@ -865,7 +865,7 @@ export function findMessagesByQuestionId(
       )
       .all(questionId) as Array<{
       id: string;
-      direction: "inbound" | "outbound";
+      direction: 'inbound' | 'outbound';
       text: string;
       timestamp_ms: number;
       sender_name: string | null;
@@ -892,7 +892,7 @@ export function findMessagesByQuestionId(
 
 export type AnswerCardsResult =
   | { ok: true; messages: WebchatStoredMessage[] }
-  | { ok: false; reason: "already_answered" | "not_found" };
+  | { ok: false; reason: 'already_answered' | 'not_found' };
 
 export function answerCardsByQuestionId(
   questionId: string,
@@ -902,7 +902,7 @@ export function answerCardsByQuestionId(
   const db = openDb();
   try {
     const patch = JSON.stringify({
-      status: "answered",
+      status: 'answered',
       selectedValue,
       selectedLabel,
     });
@@ -928,8 +928,8 @@ export function answerCardsByQuestionId(
            LIMIT 1`,
         )
         .get(questionId) as { ok: number } | undefined;
-      if (answered) return { ok: false, reason: "already_answered" };
-      return { ok: false, reason: "not_found" };
+      if (answered) return { ok: false, reason: 'already_answered' };
+      return { ok: false, reason: 'not_found' };
     }
 
     const rows = db
@@ -944,7 +944,7 @@ export function answerCardsByQuestionId(
       )
       .all(questionId) as Array<{
       id: string;
-      direction: "inbound" | "outbound";
+      direction: 'inbound' | 'outbound';
       text: string;
       timestamp_ms: number;
       sender_name: string | null;
@@ -976,7 +976,7 @@ export function answerCardsByQuestionId(
 export function revertCardsByQuestionId(questionId: string): void {
   const db = openDb();
   try {
-    const patch = JSON.stringify({ status: "pending" });
+    const patch = JSON.stringify({ status: 'pending' });
     db.prepare(
       `UPDATE web_messages
        SET card_json = json_patch(
@@ -1013,7 +1013,7 @@ export function findMessageByQuestionId(
       .get(platformId, threadId, questionId) as
       | {
           id: string;
-          direction: "inbound" | "outbound";
+          direction: 'inbound' | 'outbound';
           text: string;
           timestamp_ms: number;
           sender_name: string | null;
@@ -1048,7 +1048,7 @@ export function updateMessageCard(
       .get(messageId) as
       | {
           id: string;
-          direction: "inbound" | "outbound";
+          direction: 'inbound' | 'outbound';
           text: string;
           timestamp_ms: number;
           sender_name: string | null;
@@ -1062,7 +1062,7 @@ export function updateMessageCard(
       | undefined;
     if (!row) return undefined;
 
-    db.prepare("UPDATE web_messages SET card_json = ? WHERE id = ?").run(
+    db.prepare('UPDATE web_messages SET card_json = ? WHERE id = ?').run(
       JSON.stringify(card),
       messageId,
     );
@@ -1144,7 +1144,7 @@ export function appendActivityEvent(
     );
 
     // Cap check only when a new turn starts — mid-turn events can't add a turn_id.
-    if (event.seq === 0 || event.kind === "turn_start") {
+    if (event.seq === 0 || event.kind === 'turn_start') {
       pruneActivityTurns(db, platformId, threadId);
     }
   } finally {
