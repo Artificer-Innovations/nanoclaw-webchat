@@ -11,10 +11,14 @@ import {
 
 const HOST_ADAPTER_DEPENDENCIES: Record<string, string> = {
   busboy: '^1.6.0',
+  // Upstream NanoClaw (>= 2026.10.x) dropped `ws` from its own dependencies, but
+  // the web adapter's WebSocket transport still needs it. Ensure it on the host.
+  ws: '^8.18.3',
 };
 
 const HOST_ADAPTER_DEV_DEPENDENCIES: Record<string, string> = {
   '@types/busboy': '^1.5.4',
+  '@types/ws': '^8.5.12',
 };
 
 /** Ensure runtime/type deps required by copied adapter sources exist on the host. */

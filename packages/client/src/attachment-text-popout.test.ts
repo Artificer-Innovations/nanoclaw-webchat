@@ -82,6 +82,15 @@ describe('attachment-text-popout', () => {
     expect(ATTACHMENT_HTML_IFRAME_SANDBOX).toContain('allow-scripts');
   });
 
+  it('lets html preview popups escape the sandbox without granting same-origin', () => {
+    // target="_blank"/open-in-new-tab must land on a normal page, not a sandboxed one.
+    expect(ATTACHMENT_HTML_IFRAME_SANDBOX).toContain('allow-popups-to-escape-sandbox');
+    // but never same-origin — the escaped popup must not be able to reach parent/token state.
+    expect(ATTACHMENT_HTML_IFRAME_SANDBOX).not.toContain('allow-same-origin');
+    // escaping applies to popups only; svg previews stay locked down.
+    expect(ATTACHMENT_SVG_IFRAME_SANDBOX).not.toContain('allow-popups-to-escape-sandbox');
+  });
+
   it('builds a csv popout document with table preview', () => {
     const html = buildCsvPopoutDocument('data.csv', 'Name,Count\nAlpha,1', 'data.csv');
     expect(html).toContain('<table class="csv-table">');

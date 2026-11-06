@@ -3116,6 +3116,73 @@ describe('App', () => {
     expect(document.querySelector('.main--drawer-open')).not.toBeInTheDocument();
   });
 
+  it('pre-fills the composer from an attachment compose message without sending', async () => {
+    vi.spyOn(attachments, 'fetchAttachmentText').mockResolvedValue('<h1>Hi</h1>');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        createFetchMock({
+          messages: [
+            {
+              ...messageFixture,
+              text: '',
+              attachments: [
+                {
+                  name: 'page.html',
+                  mimeType: 'text/html',
+                  type: 'file',
+                  data: 'PGgxPkhpPC9oMT4=',
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+    );
+    sessionStorage.setItem('webchat_token', 'secret');
+    render(<App />);
+    await screen.findByRole('heading', { name: 'NanoClaw' });
+
+    fireEvent.click(await screen.findByRole('button', { name: 'page.html' }));
+    const iframe = (await waitFor(() => {
+      const el = document.querySelector('iframe.attachment-drawer-embed');
+      if (!el) throw new Error('iframe not found');
+      return el;
+    })) as HTMLIFrameElement;
+    const composer = document.querySelector('.composer-box textarea') as HTMLTextAreaElement;
+
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: { channel: 'nanoclaw-attachment', type: 'compose', text: 'first suggestion' },
+          source: iframe.contentWindow,
+        }),
+      );
+    });
+    expect(composer.value).toBe('first suggestion');
+
+    // A second suggestion appends rather than clobbering the existing draft…
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: { channel: 'nanoclaw-attachment', type: 'compose', text: 'second suggestion' },
+          source: iframe.contentWindow,
+        }),
+      );
+    });
+    expect(composer.value).toBe('first suggestion\nsecond suggestion');
+
+    // …and nothing was ever auto-sent (a send is a POST to the messages path).
+    const sent = vi
+      .mocked(fetch)
+      .mock.calls.some(
+        ([input, init]) =>
+          String(input).includes('/messages') &&
+          (init as RequestInit | undefined)?.method === 'POST',
+      );
+    expect(sent).toBe(false);
+  });
+
   it('closes the attachment drawer when switching rooms', async () => {
     vi.stubGlobal(
       'fetch',

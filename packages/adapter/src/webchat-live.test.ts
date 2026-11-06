@@ -45,7 +45,7 @@ function now(): string {
   return new Date().toISOString();
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   readEnvFileMock.mockReturnValue({
     WEBCHAT_ENABLED: 'true',
     WEBCHAT_USER_ID: 'web:local',
@@ -54,24 +54,24 @@ beforeEach(() => {
   process.env.WEBCHAT_ENABLED = 'true';
   delete process.env.WEBCHAT_AUTH_MODE;
   resetWebchatData();
-  const db = initTestDb();
-  runMigrations(db);
-  ensureWebchatSchema();
+  const db = await initTestDb();
+  await runMigrations(db, undefined, { mode: 'migrate' });
+  await ensureWebchatSchema();
   setWebchatBootstrapBroadcaster(null);
 });
 
-afterEach(() => {
+afterEach(async () => {
   setWebchatBootstrapBroadcaster(null);
   vi.restoreAllMocks();
   delete process.env.WEBCHAT_ENABLED;
   delete process.env.WEBCHAT_AUTH_MODE;
-  closeDb();
+  await closeDb();
   resetWebchatData();
 });
 
 describe('refreshWebchatAfterAgentChange', () => {
-  it('syncs wirings for newly created agents and invokes the broadcaster', () => {
-    createAgentGroup({
+  it('syncs wirings for newly created agents and invokes the broadcaster', async () => {
+    await createAgentGroup({
       id: 'ag-sarah',
       name: 'Sarah',
       folder: 'sarah',
@@ -82,15 +82,15 @@ describe('refreshWebchatAfterAgentChange', () => {
     const broadcast = vi.fn();
     setWebchatBootstrapBroadcaster(broadcast);
 
-    refreshWebchatAfterAgentChange();
+    await refreshWebchatAfterAgentChange();
 
-    expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, WEB_LOBBY_PLATFORM_ID)).toBeDefined();
-    expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, 'dm:sarah')).toBeDefined();
+    expect(await getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, WEB_LOBBY_PLATFORM_ID)).toBeDefined();
+    expect(await getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, 'dm:sarah')).toBeDefined();
     expect(broadcast).toHaveBeenCalledTimes(1);
   });
 
-  it('still syncs when no broadcaster is registered', () => {
-    createAgentGroup({
+  it('still syncs when no broadcaster is registered', async () => {
+    await createAgentGroup({
       id: 'ag-diego',
       name: 'Diego',
       folder: 'diego',
@@ -98,12 +98,12 @@ describe('refreshWebchatAfterAgentChange', () => {
       created_at: now(),
     });
 
-    refreshWebchatAfterAgentChange();
-    expect(getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, 'dm:diego')).toBeDefined();
+    await refreshWebchatAfterAgentChange();
+    expect(await getMessagingGroupByPlatform(WEB_CHANNEL_TYPE, 'dm:diego')).toBeDefined();
   });
 
-  it('logs when the broadcaster throws', () => {
-    createAgentGroup({
+  it('logs when the broadcaster throws', async () => {
+    await createAgentGroup({
       id: 'ag-rahul',
       name: 'Rahul',
       folder: 'rahul',
@@ -114,7 +114,7 @@ describe('refreshWebchatAfterAgentChange', () => {
       throw new Error('ws down');
     });
 
-    refreshWebchatAfterAgentChange();
+    await refreshWebchatAfterAgentChange();
     expect(vi.mocked(log.warn)).toHaveBeenCalledWith(
       'Webchat live refresh: broadcast failed',
       expect.objectContaining({ err: expect.any(Error) }),
@@ -129,7 +129,7 @@ describe('refreshWebchatAfterAgentChange', () => {
     const broadcast = vi.fn();
     setWebchatBootstrapBroadcaster(broadcast);
 
-    refreshWebchatAfterAgentChange();
+    await refreshWebchatAfterAgentChange();
 
     expect(vi.mocked(log.error)).toHaveBeenCalledWith(
       'Webchat live refresh: sync failed',
@@ -141,14 +141,14 @@ describe('refreshWebchatAfterAgentChange', () => {
 });
 
 describe('bootstrapPayloadForUser', () => {
-  it('uses the stored display name when present', () => {
-    upsertUser({
+  it('uses the stored display name when present', async () => {
+    await upsertUser({
       id: 'web:basic:alice',
       kind: 'web',
       display_name: 'Alice',
       created_at: now(),
     });
-    createAgentGroup({
+    await createAgentGroup({
       id: 'ag-sarah',
       name: 'Sarah',
       folder: 'sarah',
@@ -156,24 +156,24 @@ describe('bootstrapPayloadForUser', () => {
       created_at: now(),
     });
 
-    const payload = bootstrapPayloadForUser('web:basic:alice');
+    const payload = await bootstrapPayloadForUser('web:basic:alice');
     expect(payload.user).toEqual({ id: 'web:basic:alice', displayName: 'Alice' });
     expect(payload.rooms.some((r) => r.kind === 'dm' && r.folder === 'sarah')).toBe(true);
   });
 
-  it('falls back to userId when the user is missing or has a blank display name', () => {
-    expect(bootstrapPayloadForUser('web:missing').user).toEqual({
+  it('falls back to userId when the user is missing or has a blank display name', async () => {
+    expect((await bootstrapPayloadForUser('web:missing')).user).toEqual({
       id: 'web:missing',
       displayName: 'web:missing',
     });
 
-    upsertUser({
+    await upsertUser({
       id: 'web:basic:blank',
       kind: 'web',
       display_name: '   ',
       created_at: now(),
     });
-    expect(bootstrapPayloadForUser('web:basic:blank').user).toEqual({
+    expect((await bootstrapPayloadForUser('web:basic:blank')).user).toEqual({
       id: 'web:basic:blank',
       displayName: 'web:basic:blank',
     });

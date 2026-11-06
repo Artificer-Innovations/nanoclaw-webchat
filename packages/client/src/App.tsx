@@ -657,6 +657,14 @@ export function App() {
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
   }, []);
 
+  // An HTML attachment preview can suggest composer text via postMessage. We
+  // only ever pre-fill the draft — the human still reviews it and presses send.
+  // Append to an existing draft (with a separating newline) so a suggestion
+  // never clobbers what's already typed.
+  const handleComposeFromAttachment = useCallback((text: string) => {
+    setDraft((current) => (current ? `${current}\n${text}` : text));
+  }, []);
+
   useEffect(() => {
     resizeComposer();
   }, [draft, pendingAttachments.length, resizeComposer]);
@@ -1412,6 +1420,7 @@ export function App() {
               maxWidth={drawerMaxWidth}
               onWidthChange={persistDrawerWidth}
               onClose={handleCloseAttachment}
+              onComposeText={handleComposeFromAttachment}
             />
           ) : null}
         </div>

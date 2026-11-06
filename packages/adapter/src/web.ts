@@ -286,17 +286,17 @@ interface ApprovalSessionOrigin {
   agentName?: string;
 }
 
-function resolveApprovalSessionOrigin(questionId: string): ApprovalSessionOrigin | undefined {
+async function resolveApprovalSessionOrigin(questionId: string): Promise<ApprovalSessionOrigin | undefined> {
   try {
     const db = getDb();
-    if (!hasTable(db, 'pending_approvals')) return undefined;
-    const approval = getPendingApproval(questionId);
+    if (!(await hasTable(db, 'pending_approvals'))) return undefined;
+    const approval = await getPendingApproval(questionId);
     if (!approval?.session_id) return undefined;
-    const session = getSession(approval.session_id);
+    const session = await getSession(approval.session_id);
     if (!session?.messaging_group_id) return undefined;
-    const mg = getMessagingGroup(session.messaging_group_id);
+    const mg = await getMessagingGroup(session.messaging_group_id);
     if (!mg || mg.channel_type !== CHANNEL_TYPE) return undefined;
-    const agent = getAgentGroup(session.agent_group_id);
+    const agent = await getAgentGroup(session.agent_group_id);
     return {
       platformId: mg.platform_id,
       threadId: session.thread_id ?? MAIN_THREAD,
@@ -316,11 +316,11 @@ function isInboxDeliveryPlatform(platformId: string): boolean {
  * Host pending_approvals authz (mirrors nanoclaw approvals response-handler).
  * Non-approval ask_question cards (no pending row) are allowed through.
  */
-export function isAuthorizedApprovalActor(actorUserId: string, questionId: string): boolean {
+export async function isAuthorizedApprovalActor(actorUserId: string, questionId: string): Promise<boolean> {
   try {
     const db = getDb();
-    if (!hasTable(db, 'pending_approvals')) return true;
-    const approval = getPendingApproval(questionId);
+    if (!(await hasTable(db, 'pending_approvals'))) return true;
+    const approval = await getPendingApproval(questionId);
     if (!approval) return true;
 
     if (approval.approver_user_id) {
@@ -329,13 +329,13 @@ export function isAuthorizedApprovalActor(actorUserId: string, questionId: strin
 
     const agentGroupId =
       approval.agent_group_id ??
-      (approval.session_id ? getSession(approval.session_id)?.agent_group_id : null);
+      (approval.session_id ? (await getSession(approval.session_id))?.agent_group_id : null);
 
     if (!agentGroupId) {
-      return isOwner(actorUserId) || isGlobalAdmin(actorUserId);
+      return (await isOwner(actorUserId)) || (await isGlobalAdmin(actorUserId));
     }
 
-    return hasAdminPrivilege(actorUserId, agentGroupId);
+    return await hasAdminPrivilege(actorUserId, agentGroupId);
   } catch (err) {
     log.warn('isAuthorizedApprovalActor failed', { questionId, actorUserId, err });
     return false;
@@ -347,12 +347,12 @@ export function isAuthorizedApprovalActor(actorUserId: string, questionId: strin
  * room belongs to the named approver (public). Local mode keeps prior behavior.
  * Exported for unit tests.
  */
-export function shouldMirrorApprovalToOrigin(
+export async function shouldMirrorApprovalToOrigin(
   origin: ApprovalSessionOrigin,
   questionId: string,
   deliveryPlatformId: string,
   publicMode: boolean,
-): boolean {
+): Promise<boolean> {
   if (
     origin.platformId === WEB_INBOX_PLATFORM_ID ||
     origin.platformId === deliveryPlatformId
@@ -364,8 +364,8 @@ export function shouldMirrorApprovalToOrigin(
 
   try {
     const db = getDb();
-    if (!hasTable(db, 'pending_approvals')) return false;
-    const approval = getPendingApproval(questionId);
+    if (!(await hasTable(db, 'pending_approvals'))) return false;
+    const approval = await getPendingApproval(questionId);
     const originOwner = ownerUserIdFromPhysical(origin.platformId);
     if (originOwner === null) return false;
     // Missing approval record OR null approver_user_id (create_agent / install):
@@ -373,7 +373,7 @@ export function shouldMirrorApprovalToOrigin(
     // (Previously only null approver was intended; missing records are rare on this
     // internal path and use the same owner/admin gate.)
     if (!approval?.approver_user_id) {
-      return isOwner(originOwner) || isGlobalAdmin(originOwner);
+      return (await isOwner(originOwner)) || (await isGlobalAdmin(originOwner));
     }
     return originOwner === approval.approver_user_id;
   } catch (err) {
@@ -585,8 +585,8 @@ async function dispatchInbound(platformId: string, threadId: string | null, inbo
   }
 }
 
-function lobbyAgentFolders(): { folders: string[]; teamFolder: string | null; agents: AgentNameRef[] } {
-  const agents = getAllAgentGroups().map((a) => ({
+async function lobbyAgentFolders(): Promise<{ folders: string[]; teamFolder: string | null; agents: AgentNameRef[] }> {
+  const agents = (await getAllAgentGroups()).map((a) => ({
     folder: a.folder,
     displayName: a.name,
   }));
@@ -688,7 +688,7 @@ async function dispatchHistoryReplay(
   engagedAfter: readonly string[],
   history: readonly WebchatStoredMessage[],
 ): Promise<void> {
-  const { folders, teamFolder } = lobbyAgentFolders();
+  const { folders, teamFolder } = await lobbyAgentFolders();
   const mentionOpts = { agentFolders: folders, teamFolder };
   const engagedRefs: ImplicitMentionAgent[] = agentRefsForFolders(engagedAfter, allAgents);
 
@@ -790,7 +790,7 @@ function dispatchBackfillForAgent(
   });
 }
 
-function routeLobbyInbound(
+async function routeLobbyInbound(
   platformId: string,
   threadId: string | null,
   threadIdStored: string,
@@ -800,8 +800,8 @@ function routeLobbyInbound(
   webUserId: string,
   userDisplayName: string,
   broadcastEngaged: (agents: string[]) => void,
-): void {
-  const { folders, teamFolder, agents } = lobbyAgentFolders();
+): Promise<void> {
+  const { folders, teamFolder, agents } = await lobbyAgentFolders();
   const mentionOpts = { agentFolders: folders, teamFolder };
   const explicitMentions = mentionedAgentFolders(trimmedText, mentionOpts);
   const priorEngaged = getEngagedAgents(platformId, threadIdStored);
@@ -891,7 +891,7 @@ async function fanOutPeerReply(
     });
     return;
   }
-  const { agents } = lobbyAgentFolders();
+  const { agents } = await lobbyAgentFolders();
   const engaged = getEngagedAgents(platformId, threadIdStored);
   const senderName = extractSenderName(outboundContent);
   const senderFolder = extractSenderFolder(outboundContent) ?? folderFromSenderName(senderName, agents);
@@ -1402,7 +1402,10 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
       const threadIdStored = threadId ?? MAIN_THREAD;
       const trimmedText = text.trim();
       if (isGroup) {
-        routeLobbyInbound(
+        // Await so engaged-state mutation + 'engaged' WS broadcast complete before
+        // the HTTP 200 — matching pre-async ordering. Failures propagate to the
+        // request handler's catch (logged 500) instead of becoming unhandled rejections.
+        await routeLobbyInbound(
           storagePlatformId,
           threadId,
           threadIdStored,
@@ -1574,7 +1577,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
       return;
     }
 
-    if (!isAuthorizedApprovalActor(actorUserId, questionId)) {
+    if (!(await isAuthorizedApprovalActor(actorUserId, questionId))) {
       log.warn('Ignoring unauthorized webchat approval click', { questionId, actorUserId });
       json(res, 403, { error: 'not authorized' });
       return;
@@ -1658,16 +1661,16 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
     json(res, 200, { id: threadId, title });
   }
 
-  function handleDeleteThread(platformId: string, threadId: string, res: http.ServerResponse): void {
+  async function handleDeleteThread(platformId: string, threadId: string, res: http.ServerResponse): Promise<void> {
     if (threadId === MAIN_THREAD) {
       json(res, 400, { error: 'cannot delete main thread' });
       return;
     }
     deleteThreadData(platformId, threadId);
     try {
-      const mg = getMessagingGroupByPlatform(CHANNEL_TYPE, platformId);
+      const mg = await getMessagingGroupByPlatform(CHANNEL_TYPE, platformId);
       if (mg) {
-        cleanupAgentSessionsForThread(mg.id, threadId);
+        await cleanupAgentSessionsForThread(mg.id, threadId);
       }
     } catch (err) {
       log.error('Web thread session cleanup failed', { err, platformId, threadId });
@@ -1751,7 +1754,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
                 url,
                 opts.publicAuth!,
                 json,
-                (user) => ensureUserWebchatWirings(user.userId, user.displayName),
+                async (user) => { await ensureUserWebchatWirings(user.userId, user.displayName); },
                 opts.publicPath,
               );
               if (handled) return;
@@ -1761,7 +1764,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
               const established = await tryEstablishExternalSession(
                 opts.publicAuth!,
                 req,
-                (user) => ensureUserWebchatWirings(user.userId, user.displayName),
+                async (user) => { await ensureUserWebchatWirings(user.userId, user.displayName); },
                 res,
               );
               if (established) {
@@ -1781,9 +1784,9 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
             if (req.method === 'GET' && url.pathname === '/api/bootstrap') {
               // Heal lobby + this user's DMs only (CLI create, etc.). Full syncWebchatWirings
               // walks every web user in public mode — too expensive for page load.
-              healWebchatWiringsForUser(requestUser.userId, requestUser.displayName);
+              await healWebchatWiringsForUser(requestUser.userId, requestUser.displayName);
               json(res, 200, {
-                ...buildWebchatBootstrap(requestUser.userId, requestUser.displayName),
+                ...(await buildWebchatBootstrap(requestUser.userId, requestUser.displayName)),
                 authMode: opts.authMode,
               });
               return;
@@ -1846,7 +1849,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
                 return;
               }
               if (req.method === 'DELETE') {
-                handleDeleteThread(storagePlatformId, threadId, res);
+                await handleDeleteThread(storagePlatformId, threadId, res);
                 return;
               }
             }
@@ -1995,7 +1998,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
               const verified = await verifyExternalSessionUser(opts.publicAuth!, req);
               if (verified) {
                 try {
-                  ensureUserWebchatWirings(verified.userId, verified.displayName);
+                  await ensureUserWebchatWirings(verified.userId, verified.displayName);
                   externalUser = verified;
                 } catch (err) {
                   log.error('Webchat external WS onLogin failed', { err, userId: verified.userId });
@@ -2037,11 +2040,11 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
         });
       });
 
-      setWebchatBootstrapBroadcaster(() => {
+      setWebchatBootstrapBroadcaster(async () => {
         for (const client of wsClients) {
           if (client.ws.readyState !== WebSocket.OPEN) continue;
           const userId = client.userId ?? opts.userId;
-          const bootstrap = bootstrapPayloadForUser(userId);
+          const bootstrap = await bootstrapPayloadForUser(userId);
           // Per-client payload: forUserId matches the recipient, so no extra filter needed.
           const event: Record<string, unknown> = { type: 'bootstrap', bootstrap };
           if (isPublicMode()) {
@@ -2087,7 +2090,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
         const card = buildAskQuestionCard(askQuestion);
         const text = cardFallbackText(card.title, card.question);
         const origin = isInboxDeliveryPlatform(platformId)
-          ? resolveApprovalSessionOrigin(askQuestion.questionId)
+          ? await resolveApprovalSessionOrigin(askQuestion.questionId)
           : undefined;
         const senderName = extractSenderName(message.content) ?? origin?.agentName;
         const id = `web-out-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -2104,7 +2107,7 @@ export function createWebAdapter(opts: WebAdapterOptions): ChannelAdapter {
 
         if (
           origin &&
-          shouldMirrorApprovalToOrigin(origin, askQuestion.questionId, platformId, isPublicMode())
+          (await shouldMirrorApprovalToOrigin(origin, askQuestion.questionId, platformId, isPublicMode()))
         ) {
           const mirrorId = `web-out-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
           persistAndBroadcast({

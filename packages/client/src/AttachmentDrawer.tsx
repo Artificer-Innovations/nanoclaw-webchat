@@ -49,6 +49,7 @@ import {
   fetchAttachmentText,
   videoMimeTypePlayable,
 } from './attachments';
+import { parseAttachmentComposeMessage } from './attachment-compose';
 import { CodePreview } from './CodePreview';
 import { JsonPreview } from './JsonPreview';
 import { CsvPreview } from './CsvPreview';
@@ -65,6 +66,7 @@ export function AttachmentDrawer({
   width: controlledWidth,
   onWidthChange,
   maxWidth,
+  onComposeText,
 }: {
   attachment: WebChatAttachment;
   token: string;
@@ -72,6 +74,7 @@ export function AttachmentDrawer({
   width?: number;
   onWidthChange?: (width: number) => void;
   maxWidth?: number;
+  onComposeText?: (text: string) => void;
 }) {
   const att = useMemo(() => normalizeAttachment(attachment), [attachment]);
   const category = attachmentTextCategory(att.mimeType, att.name);
@@ -80,6 +83,7 @@ export function AttachmentDrawer({
   const copyActionLabel = mode === 'text' ? 'Copy content' : 'Copy link';
 
   const bodyRef = useRef<HTMLDivElement>(null);
+  const htmlPreviewRef = useRef<HTMLIFrameElement>(null);
   const copiedTimeoutRef = useRef<number | null>(null);
   const [uncontrolledWidth, setUncontrolledWidth] = useState(getStoredAttachmentDrawerWidth);
   const width = controlledWidth ?? uncontrolledWidth;
@@ -156,6 +160,24 @@ export function AttachmentDrawer({
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [onClose]);
+
+  // Listen for compose requests from the HTML attachment preview. The preview
+  // renders in a null-origin sandbox (no allow-same-origin), so event.origin is
+  // meaningless — we trust the message only if it came from *this* iframe's
+  // window. Even then the payload can only pre-fill the composer draft; it is
+  // never auto-sent.
+  useEffect(() => {
+    if (!onComposeText) return;
+    const onMessage = (event: MessageEvent) => {
+      const frame = htmlPreviewRef.current;
+      if (!frame || event.source !== frame.contentWindow) return;
+      const parsed = parseAttachmentComposeMessage(event.data);
+      if (!parsed) return;
+      onComposeText(parsed.text);
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [onComposeText]);
 
   useEffect(
     () => () => {
@@ -370,6 +392,7 @@ export function AttachmentDrawer({
         {showTextError ? <p className="attachment-drawer-error">{loadError}</p> : null}
         {mode === 'text' && category === 'html' && textView === 'preview' && textContent !== null ? (
           <iframe
+            ref={htmlPreviewRef}
             className="attachment-drawer-embed"
             title={att.name}
             srcDoc={textContent}
