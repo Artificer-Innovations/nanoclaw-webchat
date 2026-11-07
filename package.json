@@ -1,6 +1,7 @@
 {
   "name": "nanoclaw-webchat",
   "version": "0.6.1",
+  "packageManager": "pnpm@9.15.0",
   "description": "Web chat interface for NanoClaw AI agent framework",
   "type": "module",
   "license": "MIT",
@@ -103,7 +104,7 @@
       "nanoid": "3.3.18",
       "postcss": "8.5.23",
       "proxy-addr": "2.0.8",
-      "qs": "6.16.0",
+      "qs": "6.16.1",
       "read-yaml-file": "2.1.0",
       "source-map-js": "1.2.2",
       "undici": "7.30.1",
